@@ -1,0 +1,77 @@
+{
+  "name": "gestament",
+  "version": "0.1.0",
+  "description": "TypeScript based test driver for GTK",
+  "keywords": [
+    "test",
+    "driver",
+    "gtk3",
+    "gtk4",
+    "capture",
+    "linux"
+  ],
+  "author": "Kouji Matsui (@kekyo@mi.kekyo.net)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kekyo/gestament.git"
+  },
+  "homepage": "https://github.com/kekyo/gestament#readme",
+  "readme": "README_pack.md",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.cjs",
+      "require": "./dist/index.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.cjs",
+      "require": "./dist/testing.cjs"
+    }
+  },
+  "bin": {
+    "gestament-config": "./dist/gestament-config.cjs",
+    "gestament-xvfb": "./dist/gestament-xvfb.cjs"
+  },
+  "files": [
+    "dist",
+    "include",
+    "prebuilds",
+    "images/gestament-120.png"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "./build.sh build",
+    "build:internal": "vite build",
+    "test": "./build.sh test",
+    "test:internal": "vitest run",
+    "pack": "./build_package.sh --target npm"
+  },
+  "dependencies": {
+    "@tesseract.js-data/eng": ">=1.0.0",
+    "async-primitives": ">=1.7.0",
+    "node-gyp-build": ">=4.8.0",
+    "pixelmatch": ">=7.2.0",
+    "pngjs": ">=7.0.0",
+    "ssim.js": ">=3.5.0",
+    "tesseract.js": ">=7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": ">=20.0.0",
+    "@types/pngjs": ">=6.0.5",
+    "prettier-max": ">=1.16.0",
+    "rollup": "npm:@rollup/wasm-node@^4.60.2",
+    "screw-up": ">=1.33.0",
+    "typescript": ">=5.7.0",
+    "vite": "^6.4.1",
+    "vite-plugin-dts": "^5.0.0",
+    "vitest": "^3.2.4"
+  }
+}
