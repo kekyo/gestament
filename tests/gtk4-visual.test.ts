@@ -341,6 +341,40 @@ const launcher = createGtkAppLauncher({
   );
 
   it(
+    'resolves element paths by accessible id and child order',
+    async () => {
+      const app = await launcher.launch();
+
+      const mainWindow = expectElementKind(
+        await app.getByPath('main_window'),
+        'window'
+      );
+      await expect(mainWindow.info()).resolves.toMatchObject({
+        accessibleId: 'main_window',
+      });
+
+      const entry = expectElementKind(
+        await app.getByPath('main_window.0:0'),
+        'entry'
+      );
+      await entry.setText('PATH');
+
+      const button = expectElementKind(
+        await app.getByPath('main_window:0;1'),
+        'button'
+      );
+      await button.click();
+
+      const label = expectElementKind(
+        await app.findByPath('main_window,0.2'),
+        'label'
+      );
+      await expect.poll(() => label.text()).toBe('PATH');
+    },
+    testTimeoutMs
+  );
+
+  it(
     'captures real screen pixels for an accessible id',
     async () => {
       const app = await launcher.launch();
@@ -499,6 +533,28 @@ const launcher = createGtkAppLauncher({
   );
 
   it(
+    'reports undefined when an element path is missing',
+    async () => {
+      const app = await shortLauncher.launch();
+
+      await expect(app.findByPath('main_window.0.3')).resolves.toBeUndefined();
+    },
+    testTimeoutMs
+  );
+
+  it(
+    'rejects when an element path is missing',
+    async () => {
+      const app = await shortLauncher.launch();
+
+      await expect(app.getByPath('main_window.0.3')).rejects.toMatchObject({
+        code: 'ELEMENT_NOT_FOUND',
+      });
+    },
+    testTimeoutMs
+  );
+
+  it(
     'rejects invalid indexes as invalid arguments',
     async () => {
       const app = await launcher.launch();
@@ -514,6 +570,20 @@ const launcher = createGtkAppLauncher({
         code: 'INVALID_ARGUMENT',
       });
       await expect(app.trayItemAt(-1)).rejects.toMatchObject({
+        code: 'INVALID_ARGUMENT',
+      });
+      await expect(app.getByPath('main_window..0')).rejects.toMatchObject({
+        code: 'INVALID_ARGUMENT',
+      });
+      await expect(app.findByPath('main_window.-1')).rejects.toMatchObject({
+        code: 'INVALID_ARGUMENT',
+      });
+      await expect(app.findByPath('main_window.child')).rejects.toMatchObject({
+        code: 'INVALID_ARGUMENT',
+      });
+      await expect(
+        app.findByPath('main_window.9007199254740992')
+      ).rejects.toMatchObject({
         code: 'INVALID_ARGUMENT',
       });
     },

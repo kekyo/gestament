@@ -339,6 +339,8 @@ it('launches the app', async () => {
 | `GtkApp.capture()`          | Captures the entire X11 root window pointed to by `DISPLAY` as a PNG and returns a `GtkCapture` containing the image and display bounds.          |
 | `GtkApp.findById()`         | Waits for an element matching the accessible ID and returns a `GtkWidgetElement` if found. Returns `undefined` if not found.                      |
 | `GtkApp.getById()`          | Waits for an element matching the accessible ID and returns a `GtkWidgetElement`. Throws an exception if not found.                               |
+| `GtkApp.findByPath()`       | Waits for an accessible ID plus child indexes separated by `.`, `:`, `;`, or `,`. Returns `undefined` if not found.                               |
+| `GtkApp.getByPath()`        | Waits for an accessible ID plus child indexes separated by `.`, `:`, `;`, or `,`. Throws an exception if not found.                               |
 | `GtkApp.windowAt()`         | Gets a top-level window by AT-SPI traversal order and returns a `GtkWidgetElement` if it exists.                                                  |
 | `GtkApp.getWindowCount()`   | Returns the number of top-level windows exposed by the application.                                                                               |
 | `GtkApp.findTrayItem()`     | Waits for a tray item matching a StatusNotifierItem ID, title, or DBus information and returns a `GtkTrayItem` if found.                          |
@@ -352,6 +354,10 @@ Code example:
 // Get the main window.
 const mainWindow = await app.getById('main_window');
 expect(mainWindow).toBeDefined();
+
+// Get a descendant in one lookup
+const resultLabel = await app.getByPath('main_window.0.2');
+expect(resultLabel).toBeDefined();
 
 // Get the window count.
 const windowCount = await app.getWindowCount();
@@ -367,6 +373,10 @@ expect(screenCapture.bounds.y).toBe(0);
 const secondWindow = await app.windowAt(1);
 expect(secondWindow).toBeUndefined();
 ```
+
+- Using `getByPath()` and `findByPath()` can reduce the tedious waiting involved in locating child elements.
+  `getByPath(‘main_window.0.2’)` is roughly equivalent to `getById(‘main_window’).childAt(0).childAt(2)`, but
+  when combining `getById()` and `childAt()`, you need to use `await` for each step.
 
 ### Operating GTK widgets
 

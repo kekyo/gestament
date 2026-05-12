@@ -55,6 +55,15 @@ interface ProcessState {
   exitSignal: NodeJS.Signals | null;
 }
 
+interface ParsedElementPath {
+  readonly id: string;
+  readonly childIndexes: readonly number[];
+}
+
+interface GtkPathChildContainer {
+  readonly childAt: (index: number) => Promise<GtkWidgetElement | undefined>;
+}
+
 const formatProcessOutput = (state: ProcessState): string => {
   const stdout = state.stdout.join('').trim();
   const stderr = state.stderr.join('').trim();
@@ -92,6 +101,41 @@ const assertNonNegativeIndex = (name: string, index: number): void => {
     );
   }
 };
+
+const parseElementPath = (path: string): ParsedElementPath => {
+  const segments = path.split(/[.:;,]/u);
+  const id = segments[0];
+  if (id === undefined || id.length === 0) {
+    throw createGtkInvalidArgumentError(
+      'path must start with an accessible id.'
+    );
+  }
+
+  const childIndexes: number[] = [];
+  for (let index = 1; index < segments.length; index += 1) {
+    const segment = segments[index];
+    if (segment === undefined || !/^\d+$/u.test(segment)) {
+      throw createGtkInvalidArgumentError(
+        'path child indexes must be non-negative decimal integers.'
+      );
+    }
+
+    const childIndex = Number(segment);
+    if (!Number.isSafeInteger(childIndex)) {
+      throw createGtkInvalidArgumentError(
+        'path child indexes must be safe non-negative integers.'
+      );
+    }
+
+    childIndexes.push(childIndex);
+  }
+
+  return { id, childIndexes };
+};
+
+const isPathChildContainer = (
+  element: GtkWidgetElement
+): element is GtkWidgetElement & GtkPathChildContainer => 'childAt' in element;
 
 const waitForAtspiReady = async (
   state: ProcessState,
@@ -241,6 +285,63 @@ export const launchGtkApp = (
     return element;
   };
 
+  const findByPath = async (
+    path: string
+  ): Promise<GtkWidgetElement | undefined> => {
+    const parsedPath = parseElementPath(path);
+    const startedAt = Date.now();
+    await waitForAtspiReady(state, appPath, _timeoutMs, startedAt);
+
+    while (Date.now() - startedAt <= _timeoutMs) {
+      const processId = assertProcessRunning(state, appPath);
+
+      try {
+        const handle = nativeFindById(processId, parsedPath.id);
+        if (handle !== undefined) {
+          let element = createGtkElement(handle);
+          let resolved = true;
+
+          for (const childIndex of parsedPath.childIndexes) {
+            if (!isPathChildContainer(element)) {
+              resolved = false;
+              break;
+            }
+
+            const child = await element.childAt(childIndex);
+            if (child === undefined) {
+              resolved = false;
+              break;
+            }
+
+            element = child;
+          }
+
+          if (resolved) {
+            return element;
+          }
+        }
+      } catch (error) {
+        throw normalizeNativeError(error);
+      }
+
+      await delay(50);
+    }
+
+    assertProcessRunning(state, appPath);
+    return undefined;
+  };
+
+  const getByPath = async (path: string): Promise<GtkWidgetElement> => {
+    const element = await findByPath(path);
+    if (element === undefined) {
+      throw createGtkElementNotFoundError(
+        `Element path was not found: ${path}`
+      );
+    }
+
+    return element;
+  };
+
   const findTrayItem = async (
     selector: GtkTrayItemSelector
   ): Promise<GtkTrayItem | undefined> => {
@@ -299,7 +400,9 @@ export const launchGtkApp = (
       }
     },
     findById,
+    findByPath,
     getById,
+    getByPath,
     windowAt: async (index: number): Promise<GtkWidgetElement | undefined> => {
       assertNonNegativeIndex('index', index);
       const processId = await waitForAtspiReady(

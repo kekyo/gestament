@@ -1036,6 +1036,28 @@ export interface GtkApp extends Releasable, GtkCapturable {
   readonly getById: (id: string) => Promise<GtkWidgetElement>;
 
   /**
+   * Waits for an accessible path and returns an element when it exists.
+   *
+   * @param path - Accessible id followed by zero or more child indexes separated by `.`, `:`, `;`, or `,`.
+   * @returns A promise that resolves to the matching element, or undefined when it is not found before timeout.
+   * @remarks
+   * For example, `main_window.0.2` resolves `getById('main_window')`,
+   * then `childAt(0)`, then `childAt(2)`.
+   */
+  readonly findByPath: (path: string) => Promise<GtkWidgetElement | undefined>;
+
+  /**
+   * Waits for an accessible path and rejects when it does not exist.
+   *
+   * @param path - Accessible id followed by zero or more child indexes separated by `.`, `:`, `;`, or `,`.
+   * @returns A promise that resolves to the matching element.
+   * @remarks
+   * For example, `main_window.0.2` resolves `getById('main_window')`,
+   * then `childAt(0)`, then `childAt(2)`.
+   */
+  readonly getByPath: (path: string) => Promise<GtkWidgetElement>;
+
+  /**
    * Resolves a top-level window by AT-SPI traversal order.
    *
    * @param index - Zero-based top-level window index.
