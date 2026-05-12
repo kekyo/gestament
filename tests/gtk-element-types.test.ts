@@ -223,6 +223,11 @@ const assertKindExtractor = async (
 const assertAppOperations = async (app: GtkApp): Promise<void> => {
   expectType<GtkCapturable>(app);
   expectType<GtkCapture>(await app.capture());
+  const pathElement: GtkWidgetElement = await app.getByPath('main_window.0.0');
+  const optionalPathElement: GtkWidgetElement | undefined =
+    await app.findByPath('main_window.0.0');
+  expectType<GtkWidgetElement>(pathElement);
+  expectType<GtkWidgetElement | undefined>(optionalPathElement);
 
   // @ts-expect-error Apps do not expose element metadata operations.
   await app.info();

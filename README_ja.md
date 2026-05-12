@@ -338,6 +338,8 @@ it('launches the app', async () => {
 | `GtkApp.capture()`          | `DISPLAY` が指すX11 root window全体をPNGとしてキャプチャし、画像と表示範囲情報を含む `GtkCapture` を返します                                   |
 | `GtkApp.findById()`         | accessible IDに一致する要素を待機し、見つかった場合は `GtkWidgetElement` を返します。見つからない場合は `undefined` を返します                 |
 | `GtkApp.getById()`          | accessible IDに一致する要素を待機し、`GtkWidgetElement` を返します。見つからない場合は例外を送出します                                         |
+| `GtkApp.findByPath()`       | accessible IDと `.`, `:`, `;`, `,` 区切りの子要素インデックス列に一致する要素を待機します。見つからない場合は `undefined` を返します           |
+| `GtkApp.getByPath()`        | accessible IDと `.`, `:`, `;`, `,` 区切りの子要素インデックス列に一致する要素を待機します。見つからない場合は例外を送出します                  |
 | `GtkApp.windowAt()`         | トップレベルウインドウをAT-SPIの走査順で取得し、存在する場合は `GtkWidgetElement` を返します                                                   |
 | `GtkApp.getWindowCount()`   | アプリケーションが公開しているトップレベルウインドウ数を返します                                                                               |
 | `GtkApp.findTrayItem()`     | StatusNotifierItemのID、タイトル、またはDBus情報に一致するトレイアイテムを待機し、見つかった場合は `GtkTrayItem` を返します                    |
@@ -351,6 +353,10 @@ it('launches the app', async () => {
 // メインウインドウを取得
 const mainWindow = await app.getById('main_window');
 expect(mainWindow).toBeDefined();
+
+// 子孫を一度に取得
+const resultLabel = await app.getByPath('main_window.0.2');
+expect(resultLabel).toBeDefined();
 
 // ウインドウ数を取得
 const windowCount = await app.getWindowCount();
@@ -366,6 +372,10 @@ expect(screenCapture.bounds.y).toBe(0);
 const secondWindow = await app.windowAt(1);
 expect(secondWindow).toBeUndefined();
 ```
+
+- `getByPath()`, `findByPath()` を使用すると、子要素の特定で煩雑な待機を削減できます。
+  `getByPath('main_window.0.2')` は、おおよそ `getById('main_window').childAt(0).childAt(2)` に相当しますが、
+  `getById()`, `childAt()` を組み合わせる場合は、それぞれで `await` による待機が必要です。
 
 ### GTKウィジェットの操作
 
