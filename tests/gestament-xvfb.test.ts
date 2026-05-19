@@ -10,6 +10,14 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { spawnText } from './support/process';
+import {
+  xvfbLauncherChildEnvironmentTimeoutMs,
+  xvfbLauncherScriptTimeoutMs,
+  xvfbPoolChildEnvironmentTimeoutMs,
+  xvfbPoolScriptTimeoutMs,
+} from './support/testTimeouts';
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 const xvfbBin = fileURLToPath(
@@ -136,25 +144,27 @@ describe('gestament-xvfb', () => {
     );
   });
 
-  it('starts launcher-scoped Xvfb sessions from createGtkAppLauncher', () => {
-    const tempDirectory = mkdtempSync(join(tmpdir(), 'gestament-xvfb-'));
-    const firstAppEnvPath = join(tempDirectory, 'first-app-env.json');
-    const secondAppEnvPath = join(tempDirectory, 'second-app-env.json');
-    const hostFallbackAppEnvPath = join(
-      tempDirectory,
-      'host-fallback-app-env.json'
-    );
-    const env = { ...process.env };
-    delete env.AT_SPI_BUS_ADDRESS;
-    delete env.DBUS_SESSION_BUS_ADDRESS;
-    delete env.DISPLAY;
-    delete env.GESTAMENT_XVFB_ACTIVE;
-    delete env.GSETTINGS_BACKEND;
-    delete env.GTK_THEME;
-    delete env.WAYLAND_DISPLAY;
+  it(
+    'starts launcher-scoped Xvfb sessions from createGtkAppLauncher',
+    async () => {
+      const tempDirectory = mkdtempSync(join(tmpdir(), 'gestament-xvfb-'));
+      const firstAppEnvPath = join(tempDirectory, 'first-app-env.json');
+      const secondAppEnvPath = join(tempDirectory, 'second-app-env.json');
+      const hostFallbackAppEnvPath = join(
+        tempDirectory,
+        'host-fallback-app-env.json'
+      );
+      const env = { ...process.env };
+      delete env.AT_SPI_BUS_ADDRESS;
+      delete env.DBUS_SESSION_BUS_ADDRESS;
+      delete env.DISPLAY;
+      delete env.GESTAMENT_XVFB_ACTIVE;
+      delete env.GSETTINGS_BACKEND;
+      delete env.GTK_THEME;
+      delete env.WAYLAND_DISPLAY;
 
-    try {
-      const script = `
+      try {
+        const script = `
 const { existsSync, readFileSync, writeFileSync } = require('node:fs');
 const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
 const childScript = (appEnvPath) => [
@@ -170,7 +180,9 @@ const childScript = (appEnvPath) => [
 ].join("\\n");
 const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
 const waitForAppEnv = async (appEnvPath) => {
-  for (let index = 0; index < 40; index += 1) {
+  const startedAt = Date.now();
+  const timeoutMs = ${JSON.stringify(xvfbLauncherChildEnvironmentTimeoutMs)};
+  while (Date.now() - startedAt <= timeoutMs) {
     if (existsSync(appEnvPath)) {
       return JSON.parse(readFileSync(appEnvPath, 'utf8'));
     }
@@ -248,95 +260,98 @@ const secondLauncher = createGtkAppLauncher({
   process.exit(1);
 });
 `;
-      const result = spawnSync(process.execPath, ['-e', script], {
-        encoding: 'utf8',
-        env,
-        timeout: 60_000,
-      });
+        const result = await spawnText(process.execPath, ['-e', script], {
+          env,
+          timeoutMs: xvfbLauncherScriptTimeoutMs,
+        });
 
-      expect(result.status, result.stderr).toBe(0);
-      const outputLine = result.stdout.trim().split('\n').at(-1);
-      expect(outputLine).toBeDefined();
-      const output = JSON.parse(outputLine as string) as {
-        readonly firstAppEnv: {
-          readonly dbusSessionBusAddress: string | null;
-          readonly display: string | null;
-          readonly gdkBackend: string | null;
-          readonly gsettingsBackend: string | null;
-          readonly gtkTheme: string | null;
+        expect(result.status, result.stderr).toBe(0);
+        const outputLine = result.stdout.trim().split('\n').at(-1);
+        expect(outputLine).toBeDefined();
+        const output = JSON.parse(outputLine as string) as {
+          readonly firstAppEnv: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+            readonly gdkBackend: string | null;
+            readonly gsettingsBackend: string | null;
+            readonly gtkTheme: string | null;
+          };
+          readonly firstBounds: {
+            readonly height: number;
+            readonly width: number;
+          };
+          readonly hostFallbackAppEnv: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+          readonly hostFallbackBounds: {
+            readonly height: number;
+            readonly width: number;
+          };
+          readonly invalidIndexCode: string | null;
+          readonly parentDbusSessionBusAddress: string | null;
+          readonly parentDisplay: string | null;
+          readonly secondAppEnv: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+          readonly secondBounds: {
+            readonly height: number;
+            readonly width: number;
+          };
+          readonly sessionsAreDifferent: boolean;
         };
-        readonly firstBounds: {
-          readonly height: number;
-          readonly width: number;
-        };
-        readonly hostFallbackAppEnv: {
-          readonly dbusSessionBusAddress: string | null;
-          readonly display: string | null;
-        };
-        readonly hostFallbackBounds: {
-          readonly height: number;
-          readonly width: number;
-        };
-        readonly invalidIndexCode: string | null;
-        readonly parentDbusSessionBusAddress: string | null;
-        readonly parentDisplay: string | null;
-        readonly secondAppEnv: {
-          readonly dbusSessionBusAddress: string | null;
-          readonly display: string | null;
-        };
-        readonly secondBounds: {
-          readonly height: number;
-          readonly width: number;
-        };
-        readonly sessionsAreDifferent: boolean;
-      };
 
-      expect(output.firstAppEnv).toMatchObject({
-        gdkBackend: 'x11',
-        gsettingsBackend: null,
-        gtkTheme: null,
-      });
-      expect(output.firstBounds).toMatchObject({
-        height: 480,
-        width: 640,
-      });
-      expect(output.secondBounds).toMatchObject({
-        height: 600,
-        width: 800,
-      });
-      expect(output.hostFallbackBounds).toMatchObject({
-        height: 240,
-        width: 320,
-      });
-      expect(output.invalidIndexCode).toBe('INVALID_ARGUMENT');
-      expect(output.parentDbusSessionBusAddress).toBeNull();
-      expect(output.parentDisplay).toBeNull();
-      expect(output.firstAppEnv.display).toMatch(/^:[0-9]+(?:\\.[0-9]+)?$/u);
-      expect(output.secondAppEnv.display).toMatch(/^:[0-9]+(?:\\.[0-9]+)?$/u);
-      expect(output.hostFallbackAppEnv.display).toMatch(
-        /^:[0-9]+(?:\\.[0-9]+)?$/u
-      );
-      expect(output.firstAppEnv.dbusSessionBusAddress).not.toBeNull();
-      expect(output.secondAppEnv.dbusSessionBusAddress).not.toBeNull();
-      expect(output.sessionsAreDifferent).toBe(true);
-    } finally {
-      rmSync(tempDirectory, { force: true, recursive: true });
-    }
-  });
+        expect(output.firstAppEnv).toMatchObject({
+          gdkBackend: 'x11',
+          gsettingsBackend: null,
+          gtkTheme: null,
+        });
+        expect(output.firstBounds).toMatchObject({
+          height: 480,
+          width: 640,
+        });
+        expect(output.secondBounds).toMatchObject({
+          height: 600,
+          width: 800,
+        });
+        expect(output.hostFallbackBounds).toMatchObject({
+          height: 240,
+          width: 320,
+        });
+        expect(output.invalidIndexCode).toBe('INVALID_ARGUMENT');
+        expect(output.parentDbusSessionBusAddress).toBeNull();
+        expect(output.parentDisplay).toBeNull();
+        expect(output.firstAppEnv.display).toMatch(/^:[0-9]+(?:\\.[0-9]+)?$/u);
+        expect(output.secondAppEnv.display).toMatch(/^:[0-9]+(?:\\.[0-9]+)?$/u);
+        expect(output.hostFallbackAppEnv.display).toMatch(
+          /^:[0-9]+(?:\\.[0-9]+)?$/u
+        );
+        expect(output.firstAppEnv.dbusSessionBusAddress).not.toBeNull();
+        expect(output.secondAppEnv.dbusSessionBusAddress).not.toBeNull();
+        expect(output.sessionsAreDifferent).toBe(true);
+      } finally {
+        rmSync(tempDirectory, { force: true, recursive: true });
+      }
+    },
+    xvfbLauncherScriptTimeoutMs + 30_000
+  );
 
-  it('reuses Xvfb resources only when xvfbPool opts in', () => {
-    const tempDirectory = mkdtempSync(join(tmpdir(), 'gestament-xvfb-pool-'));
-    const env = { ...process.env };
-    delete env.AT_SPI_BUS_ADDRESS;
-    delete env.DBUS_SESSION_BUS_ADDRESS;
-    delete env.DISPLAY;
-    delete env.GESTAMENT_XVFB_ACTIVE;
-    delete env.GSETTINGS_BACKEND;
-    delete env.GTK_THEME;
-    delete env.WAYLAND_DISPLAY;
+  it(
+    'reuses Xvfb resources only when xvfbPool opts in',
+    async () => {
+      const tempDirectory = mkdtempSync(join(tmpdir(), 'gestament-xvfb-pool-'));
+      const env = { ...process.env };
+      delete env.AT_SPI_BUS_ADDRESS;
+      delete env.DBUS_SESSION_BUS_ADDRESS;
+      delete env.DISPLAY;
+      delete env.GESTAMENT_XVFB_ACTIVE;
+      delete env.GSETTINGS_BACKEND;
+      delete env.GTK_THEME;
+      delete env.WAYLAND_DISPLAY;
 
-    try {
-      const script = `
+      try {
+        const script = `
 const { existsSync, readFileSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
@@ -352,7 +367,9 @@ const childScript = (appEnvPath) => [
 ].join("\\n");
 const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
 const waitForAppEnv = async (appEnvPath) => {
-  for (let index = 0; index < 80; index += 1) {
+  const startedAt = Date.now();
+  const timeoutMs = ${JSON.stringify(xvfbPoolChildEnvironmentTimeoutMs)};
+  while (Date.now() - startedAt <= timeoutMs) {
     if (existsSync(appEnvPath)) {
       return JSON.parse(readFileSync(appEnvPath, 'utf8'));
     }
@@ -562,144 +579,159 @@ const displaySet = (launched) =>
   process.exit(1);
 });
 `;
-      const result = spawnSync(process.execPath, ['-e', script], {
-        encoding: 'utf8',
-        env,
-        timeout: 120_000,
-      });
+        const result = await spawnText(process.execPath, ['-e', script], {
+          env,
+          timeoutMs: xvfbPoolScriptTimeoutMs,
+        });
 
-      expect(result.status, result.stderr).toBe(0);
-      const outputLine = result.stdout.trim().split('\n').at(-1);
-      expect(outputLine).toBeDefined();
-      const output = JSON.parse(outputLine as string) as {
-        readonly coverWindowIsAbsent: boolean;
-        readonly firstAll: {
-          readonly bounds: { readonly height: number; readonly width: number };
-          readonly env: {
-            readonly dbusSessionBusAddress: string | null;
-            readonly display: string | null;
+        expect(result.status, result.stderr).toBe(0);
+        const outputLine = result.stdout.trim().split('\n').at(-1);
+        expect(outputLine).toBeDefined();
+        const output = JSON.parse(outputLine as string) as {
+          readonly coverWindowIsAbsent: boolean;
+          readonly firstAll: {
+            readonly bounds: {
+              readonly height: number;
+              readonly width: number;
+            };
+            readonly env: {
+              readonly dbusSessionBusAddress: string | null;
+              readonly display: string | null;
+            };
+          };
+          readonly firstFixtureWindowCount: number;
+          readonly firstNoRetain: {
+            readonly env: {
+              readonly dbusSessionBusAddress: string | null;
+              readonly display: string | null;
+            };
+          };
+          readonly firstNoRetainPerKey: {
+            readonly env: {
+              readonly dbusSessionBusAddress: string | null;
+              readonly display: string | null;
+            };
+          };
+          readonly firstPairDisplays: string;
+          readonly firstXvfb: {
+            readonly bounds: {
+              readonly height: number;
+              readonly width: number;
+            };
+            readonly env: {
+              readonly dbusSessionBusAddress: string | null;
+              readonly display: string | null;
+            };
+          };
+          readonly invalidPoolCodes: readonly (string | null)[];
+          readonly oldAllAppCode: string | null;
+          readonly oldFixtureAppCode: string | null;
+          readonly secondAll: {
+            readonly bounds: {
+              readonly height: number;
+              readonly width: number;
+            };
+            readonly env: {
+              readonly dbusSessionBusAddress: string | null;
+              readonly display: string | null;
+            };
+          };
+          readonly secondFixtureWindowCount: number;
+          readonly secondNoRetain: {
+            readonly env: {
+              readonly dbusSessionBusAddress: string | null;
+              readonly display: string | null;
+            };
+          };
+          readonly secondNoRetainPerKey: {
+            readonly env: {
+              readonly dbusSessionBusAddress: string | null;
+              readonly display: string | null;
+            };
+          };
+          readonly secondPairDisplays: string;
+          readonly secondXvfb: {
+            readonly env: {
+              readonly dbusSessionBusAddress: string | null;
+              readonly display: string | null;
+            };
+          };
+          readonly staleElementCode: string | null;
+          readonly thirdXvfb: {
+            readonly bounds: {
+              readonly height: number;
+              readonly width: number;
+            };
+            readonly env: {
+              readonly display: string | null;
+            };
+          };
+          readonly totalPoolResults: {
+            readonly firstWasEvicted: boolean;
+            readonly secondWasRetained: boolean;
           };
         };
-        readonly firstFixtureWindowCount: number;
-        readonly firstNoRetain: {
-          readonly env: {
-            readonly dbusSessionBusAddress: string | null;
-            readonly display: string | null;
-          };
-        };
-        readonly firstNoRetainPerKey: {
-          readonly env: {
-            readonly dbusSessionBusAddress: string | null;
-            readonly display: string | null;
-          };
-        };
-        readonly firstPairDisplays: string;
-        readonly firstXvfb: {
-          readonly bounds: { readonly height: number; readonly width: number };
-          readonly env: {
-            readonly dbusSessionBusAddress: string | null;
-            readonly display: string | null;
-          };
-        };
-        readonly invalidPoolCodes: readonly (string | null)[];
-        readonly oldAllAppCode: string | null;
-        readonly oldFixtureAppCode: string | null;
-        readonly secondAll: {
-          readonly bounds: { readonly height: number; readonly width: number };
-          readonly env: {
-            readonly dbusSessionBusAddress: string | null;
-            readonly display: string | null;
-          };
-        };
-        readonly secondFixtureWindowCount: number;
-        readonly secondNoRetain: {
-          readonly env: {
-            readonly dbusSessionBusAddress: string | null;
-            readonly display: string | null;
-          };
-        };
-        readonly secondNoRetainPerKey: {
-          readonly env: {
-            readonly dbusSessionBusAddress: string | null;
-            readonly display: string | null;
-          };
-        };
-        readonly secondPairDisplays: string;
-        readonly secondXvfb: {
-          readonly env: {
-            readonly dbusSessionBusAddress: string | null;
-            readonly display: string | null;
-          };
-        };
-        readonly staleElementCode: string | null;
-        readonly thirdXvfb: {
-          readonly bounds: { readonly height: number; readonly width: number };
-          readonly env: {
-            readonly display: string | null;
-          };
-        };
-        readonly totalPoolResults: {
-          readonly firstWasEvicted: boolean;
-          readonly secondWasRetained: boolean;
-        };
-      };
 
-      expect(output.invalidPoolCodes).toEqual([
-        'INVALID_ARGUMENT',
-        'INVALID_ARGUMENT',
-        'INVALID_ARGUMENT',
-        'INVALID_ARGUMENT',
-        'INVALID_ARGUMENT',
-        'INVALID_ARGUMENT',
-      ]);
-      expect(output.firstXvfb.bounds).toMatchObject({
-        height: 240,
-        width: 360,
-      });
-      expect(output.thirdXvfb.bounds).toMatchObject({
-        height: 260,
-        width: 390,
-      });
-      expect(output.firstXvfb.env.display).toBe(output.secondXvfb.env.display);
-      expect(output.firstXvfb.env.dbusSessionBusAddress).not.toBe(
-        output.secondXvfb.env.dbusSessionBusAddress
-      );
-      expect(output.thirdXvfb.env.display).not.toBe(
-        output.firstXvfb.env.display
-      );
-      expect(output.firstNoRetain.env.dbusSessionBusAddress).not.toBe(
-        output.secondNoRetain.env.dbusSessionBusAddress
-      );
-      expect(output.firstNoRetainPerKey.env.dbusSessionBusAddress).not.toBe(
-        output.secondNoRetainPerKey.env.dbusSessionBusAddress
-      );
-      expect(output.firstPairDisplays).toBe(output.secondPairDisplays);
-      expect(output.totalPoolResults).toMatchObject({
-        firstWasEvicted: true,
-        secondWasRetained: true,
-      });
+        expect(output.invalidPoolCodes).toEqual([
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+        ]);
+        expect(output.firstXvfb.bounds).toMatchObject({
+          height: 240,
+          width: 360,
+        });
+        expect(output.thirdXvfb.bounds).toMatchObject({
+          height: 260,
+          width: 390,
+        });
+        expect(output.firstXvfb.env.display).toBe(
+          output.secondXvfb.env.display
+        );
+        expect(output.firstXvfb.env.dbusSessionBusAddress).not.toBe(
+          output.secondXvfb.env.dbusSessionBusAddress
+        );
+        expect(output.thirdXvfb.env.display).not.toBe(
+          output.firstXvfb.env.display
+        );
+        expect(output.firstNoRetain.env.dbusSessionBusAddress).not.toBe(
+          output.secondNoRetain.env.dbusSessionBusAddress
+        );
+        expect(output.firstNoRetainPerKey.env.dbusSessionBusAddress).not.toBe(
+          output.secondNoRetainPerKey.env.dbusSessionBusAddress
+        );
+        expect(output.firstPairDisplays).toBe(output.secondPairDisplays);
+        expect(output.totalPoolResults).toMatchObject({
+          firstWasEvicted: true,
+          secondWasRetained: true,
+        });
 
-      expect(output.firstAll.bounds).toMatchObject({
-        height: 310,
-        width: 430,
-      });
-      expect(output.firstAll.env.display).toBe(output.secondAll.env.display);
-      expect(output.firstAll.env.dbusSessionBusAddress).toBe(
-        output.secondAll.env.dbusSessionBusAddress
-      );
-      expect(output.oldAllAppCode).toBe('APP_EXITED');
-      if (fixtureAppExists) {
-        expect(output.oldFixtureAppCode).toBe('APP_EXITED');
-        expect(output.staleElementCode).toBe('STALE_ELEMENT');
-        expect(output.firstFixtureWindowCount).toBeGreaterThanOrEqual(1);
-        expect(output.secondFixtureWindowCount).toBeGreaterThanOrEqual(1);
-        expect(output.coverWindowIsAbsent).toBe(true);
-      } else {
-        expect(output.oldFixtureAppCode).toBe('SKIPPED');
-        expect(output.staleElementCode).toBe('SKIPPED');
+        expect(output.firstAll.bounds).toMatchObject({
+          height: 310,
+          width: 430,
+        });
+        expect(output.firstAll.env.display).toBe(output.secondAll.env.display);
+        expect(output.firstAll.env.dbusSessionBusAddress).toBe(
+          output.secondAll.env.dbusSessionBusAddress
+        );
+        expect(output.oldAllAppCode).toBe('APP_EXITED');
+        if (fixtureAppExists) {
+          expect(output.oldFixtureAppCode).toBe('APP_EXITED');
+          expect(output.staleElementCode).toBe('STALE_ELEMENT');
+          expect(output.firstFixtureWindowCount).toBeGreaterThanOrEqual(1);
+          expect(output.secondFixtureWindowCount).toBeGreaterThanOrEqual(1);
+          expect(output.coverWindowIsAbsent).toBe(true);
+        } else {
+          expect(output.oldFixtureAppCode).toBe('SKIPPED');
+          expect(output.staleElementCode).toBe('SKIPPED');
+        }
+      } finally {
+        rmSync(tempDirectory, { force: true, recursive: true });
       }
-    } finally {
-      rmSync(tempDirectory, { force: true, recursive: true });
-    }
-  });
+    },
+    xvfbPoolScriptTimeoutMs + 30_000
+  );
 });

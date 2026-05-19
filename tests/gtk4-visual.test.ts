@@ -4,7 +4,6 @@
 // https://github.com/kekyo/gestament
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import pixelmatch from 'pixelmatch';
 import { PNG } from 'pngjs';
@@ -30,7 +29,13 @@ import {
   expectCaptureRegionToMatchCapture,
   expectCaptureSurfaceText,
 } from './support/captureAssertions';
+import { spawnText } from './support/process';
 import { saveCaptureArtifact } from './support/testArtifacts';
+import {
+  gtk4FixtureTimeoutMs as fixtureTimeoutMs,
+  gtk4MissingLookupTimeoutMs as missingLookupTimeoutMs,
+  gtk4VisualTestTimeoutMs as testTimeoutMs,
+} from './support/testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -42,9 +47,6 @@ const packageEntryPath = fileURLToPath(
 );
 const testBackend = process.env.GESTAMENT_TEST_BACKEND;
 const describeGtk4 = testBackend === 'gtk4' ? describe : describe.skip;
-const fixtureTimeoutMs = 90_000;
-const missingLookupTimeoutMs = 10_000;
-const testTimeoutMs = 240_000;
 const spMonImageUrl = new URL('./images/sp_mon.png', import.meta.url);
 const dawnCatImageUrl = new URL('./images/dawn_cat.png', import.meta.url);
 const spMonImageSize = {
@@ -236,7 +238,7 @@ afterEach(() => {
 describeGtk4('GTK4 AT-SPI automation', () => {
   it(
     'waits for GTK4 AT-SPI readiness before the first accessible lookup',
-    () => {
+    async () => {
       const script = `
 const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
 const launcher = createGtkAppLauncher({
@@ -255,13 +257,12 @@ const launcher = createGtkAppLauncher({
   process.exit(1);
 });
 `;
-      const result = spawnSync(process.execPath, ['-e', script], {
-        encoding: 'utf8',
+      const result = await spawnText(process.execPath, ['-e', script], {
         env: {
           ...process.env,
           GESTAMENT_GTK_BACKEND: 'gtk4',
         },
-        timeout: testTimeoutMs,
+        timeoutMs: testTimeoutMs - 30_000,
       });
 
       expect(result.status, result.stderr).toBe(0);

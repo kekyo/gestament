@@ -7,20 +7,24 @@ import { defineConfig } from 'vitest/config';
 
 import { createTestArtifactsReporter } from './tests/support/artifactReporter';
 import { initializeTestRunTimestamp } from './tests/support/testArtifacts';
+import {
+  isGroupedTestRun,
+  vitestPollTimeoutMs,
+  vitestTestTimeoutMs,
+} from './tests/support/testTimeouts';
 
 initializeTestRunTimestamp();
 
-const isGroupedArtifactRun =
-  process.env.GESTAMENT_TEST_RESULTS_GROUP !== undefined &&
-  process.env.GESTAMENT_TEST_RESULTS_GROUP.length > 0;
-const serializedGroupedArtifactArchitectures = new Set(['arm64', 'riscv64']);
+const serializedGroupedArtifactArchitectures = new Set([
+  'arm64',
+  'armv7l',
+  'riscv64',
+]);
 const isSerializedGroupedArtifactRun =
-  isGroupedArtifactRun &&
+  isGroupedTestRun &&
   serializedGroupedArtifactArchitectures.has(
     process.env.GESTAMENT_TEST_RESULTS_ARCH ?? ''
   );
-const testTimeout = isGroupedArtifactRun ? 600_000 : 20_000;
-const pollTimeout = isGroupedArtifactRun ? 90_000 : 1_000;
 
 export default defineConfig({
   test: {
@@ -29,7 +33,7 @@ export default defineConfig({
     fileParallelism: !isSerializedGroupedArtifactRun,
     expect: {
       poll: {
-        timeout: pollTimeout,
+        timeout: vitestPollTimeoutMs,
       },
     },
     globals: true,
@@ -40,7 +44,7 @@ export default defineConfig({
     },
     reporters: ['default', createTestArtifactsReporter()],
     setupFiles: ['./tests/support/setupArtifacts.ts'],
-    testTimeout,
+    testTimeout: vitestTestTimeoutMs,
   },
   esbuild: {
     target: 'node20',
