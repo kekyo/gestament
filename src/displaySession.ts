@@ -22,6 +22,7 @@ import {
   createGtkOperationFailedError,
 } from './errors';
 import { currentWaitDeadlineMs } from './wait';
+import { appendPrerequisiteInstallHint } from './prerequisites';
 import type {
   DriverAppRef,
   DriverCommand,
@@ -774,7 +775,9 @@ const spawnDirectXvfb = async (screen: string): Promise<PooledXvfb> => {
       leasedDisplayNumbers.delete(displayNumber);
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('ENOENT')) {
-        throw createGtkOperationFailedError(`Failed to start Xvfb: ${message}`);
+        throw createGtkOperationFailedError(
+          appendPrerequisiteInstallHint(`Failed to start Xvfb: ${message}`)
+        );
       }
     }
   }
@@ -1036,8 +1039,10 @@ const waitForDriverReady = (
     const rejectFromError = (error: Error): void => {
       rejectOnce(
         createGtkOperationFailedError(
-          `Launcher driver failed to start: ${error.message}` +
-            formatOutputTail(processState.stdout, processState.stderr)
+          appendPrerequisiteInstallHint(
+            `Launcher driver failed to start: ${error.message}` +
+              formatOutputTail(processState.stdout, processState.stderr)
+          )
         )
       );
     };
@@ -1048,10 +1053,12 @@ const waitForDriverReady = (
     ): void => {
       rejectOnce(
         createGtkOperationFailedError(
-          `Launcher driver exited before ready: code=${String(
-            code
-          )}, signal=${String(signal)}` +
-            formatOutputTail(processState.stdout, processState.stderr)
+          appendPrerequisiteInstallHint(
+            `Launcher driver exited before ready: code=${String(
+              code
+            )}, signal=${String(signal)}` +
+              formatOutputTail(processState.stdout, processState.stderr)
+          )
         )
       );
     };

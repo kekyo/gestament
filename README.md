@@ -98,9 +98,7 @@ The following example is for Debian/Ubuntu:
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  at-spi2-core dbus dbus-x11 \
-  libx11-6 libxtst6 \
-  xauth xvfb
+  at-spi2-core dbus dbus-x11 libx11-6 libxtst6 xauth xvfb
 ```
 
 - `at-spi2-core` is the AT-SPI runtime environment that gestament uses to identify and operate widgets.

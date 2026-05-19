@@ -70,6 +70,32 @@ const atSpiBusNumber = (address: string): string => {
 };
 
 describe('gestament-xvfb', () => {
+  it('prints a prerequisite installation hint when xvfb-run cannot start', () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'gestament-empty-path-'));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [xvfbBin, '--screen=640x480x24', '--', process.execPath, '-e', ''],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: tempDirectory,
+          },
+          timeout: 30_000,
+        }
+      );
+
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain('gestament-xvfb failed to start');
+      expect(result.stderr).toContain('sudo apt-get update');
+      expect(result.stderr).toContain('at-spi2-core dbus dbus-x11');
+      expect(result.stderr).toContain('xauth xvfb');
+    } finally {
+      rmSync(tempDirectory, { force: true, recursive: true });
+    }
+  });
+
   it('starts the session bus inside Xvfb for AT-SPI isolation', () => {
     const result = spawnSync(
       process.execPath,

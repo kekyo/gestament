@@ -15,6 +15,7 @@ import {
 } from './errors';
 import { createDriverBackedGtkAppLauncher } from './displaySession';
 import { createGtkElement } from './element';
+import { appendPrerequisiteInstallHint } from './prerequisites';
 import { effectiveWaitTimeoutMs } from './wait';
 import {
   nativeFindById,
@@ -162,9 +163,11 @@ const waitForAtspiReady = async (
 
   assertProcessRunning(state, command);
   throw createGtkOperationFailedError(
-    `AT-SPI did not become ready for GTK application: ${command} ` +
-      `(last readiness: ${state.atspiReadiness})` +
-      formatProcessOutput(state)
+    appendPrerequisiteInstallHint(
+      `AT-SPI did not become ready for GTK application: ${command} ` +
+        `(last readiness: ${state.atspiReadiness})` +
+        formatProcessOutput(state)
+    )
   );
 };
 

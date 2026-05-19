@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 import { normalizeNativeError } from './errors';
 import { version as packageVersion } from './generated/packageMetadata';
+import { appendPrerequisiteInstallHint } from './prerequisites';
 import type { GtkAutomationError } from './types';
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -327,11 +328,13 @@ const loadNativeAddon = (): NativeAddon => {
   }
 
   throw createNativeLoadError(
-    `Failed to load a compatible gestament native prebuild from ${packageRoot} ` +
-      `(GESTAMENT_GTK_BACKEND=${selectedGtkBackend()}). Ensure this package ` +
-      'includes prebuilds for the current Linux/glibc architecture and selected ' +
-      'GTK backend, and that runtime libraries such as libatspi, glib, gio, ' +
-      `GTK, X11, and dbus are installed. Original errors: ${errors.join(' | ')}`
+    appendPrerequisiteInstallHint(
+      `Failed to load a compatible gestament native prebuild from ${packageRoot} ` +
+        `(GESTAMENT_GTK_BACKEND=${selectedGtkBackend()}). Ensure this package ` +
+        'includes prebuilds for the current Linux/glibc architecture and selected ' +
+        'GTK backend, and that runtime libraries such as libatspi, glib, gio, ' +
+        `GTK, X11, and dbus are installed. Original errors: ${errors.join(' | ')}`
+    )
   );
 };
 

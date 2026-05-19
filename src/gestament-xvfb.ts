@@ -8,6 +8,8 @@ import { spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+import { appendPrerequisiteInstallHint } from './prerequisites';
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 interface ParsedArguments {
@@ -133,7 +135,11 @@ const run = (): void => {
   );
 
   child.on('error', (error) => {
-    process.stderr.write(`gestament-xvfb failed to start: ${error.message}\n`);
+    process.stderr.write(
+      `${appendPrerequisiteInstallHint(
+        `gestament-xvfb failed to start: ${error.message}`
+      )}\n`
+    );
     process.exitCode = 1;
   });
 

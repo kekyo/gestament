@@ -96,9 +96,7 @@ GTKアプリケーション開発環境としてGTK本体、GLib、GDK Pixbufな
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  at-spi2-core dbus dbus-x11 \
-  libx11-6 libxtst6 \
-  xauth xvfb
+  at-spi2-core dbus dbus-x11 libx11-6 libxtst6 xauth xvfb
 ```
 
 - `at-spi2-core` は、gestamentがウィジェットを特定・操作するために使用するAT-SPIの実行環境です。
