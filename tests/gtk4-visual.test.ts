@@ -19,7 +19,7 @@ import type {
   GtkWidgetElement,
 } from '../src/types';
 import { createGtkAppLauncher } from '../src/launchGtkApp';
-import { createGtkCaptureExpect } from '../src/testing';
+import { createGtkCaptureExpect, waitForResult } from '../src/testing';
 import {
   expectPngRegionToContainNonLightPixels,
   expectPngToContainDarkPixels,
@@ -528,6 +528,27 @@ const launcher = createGtkAppLauncher({
       await expect(app.getById('missing_accessible_id')).rejects.toMatchObject({
         code: 'ELEMENT_NOT_FOUND',
       });
+    },
+    testTimeoutMs
+  );
+
+  it(
+    'shares waitForResult deadlines with driver-backed lookups',
+    async () => {
+      const app = await shortLauncher.launch();
+      const startedAt = Date.now();
+
+      await expect(
+        waitForResult(() => app.getById('missing_accessible_id'), {
+          intervalMs: 10,
+          message: 'missing lookup should use the outer wait deadline.',
+          timeoutMs: 200,
+        })
+      ).rejects.toMatchObject({
+        code: 'TIMEOUT',
+        message: expect.stringContaining('outer wait deadline'),
+      });
+      expect(Date.now() - startedAt).toBeLessThan(missingLookupTimeoutMs / 2);
     },
     testTimeoutMs
   );

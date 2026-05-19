@@ -16,6 +16,7 @@ import {
   createGtkUnsupportedInterfaceError,
 } from './errors';
 import { launchGtkApp } from './launchGtkApp';
+import { runWithWaitDeadline } from './wait';
 import type {
   DriverAppPayload,
   DriverAppRef,
@@ -807,7 +808,12 @@ const handleRequestLine = async (
 ): Promise<void> => {
   const request = JSON.parse(line) as DriverRequest;
   try {
-    const value = await handleRequest(request);
+    const value =
+      request.deadlineMs === undefined || request.deadlineMs === null
+        ? await handleRequest(request)
+        : await runWithWaitDeadline(request.deadlineMs, () =>
+            handleRequest(request)
+          );
     writeResponse(socket, request.id, { ok: true, value });
     if (request.command === 'launcher.release') {
       socket.end();

@@ -65,6 +65,7 @@ export const normalizeNativeError = (error: unknown): GtkAutomationError => {
       maybeCode === 'NATIVE_LOAD_FAILED' ||
       maybeCode === 'OPERATION_FAILED' ||
       maybeCode === 'STALE_ELEMENT' ||
+      maybeCode === 'TIMEOUT' ||
       maybeCode === 'UNSUPPORTED_INTERFACE'
     ) {
       return createGtkAutomationError(maybeCode, error.message);

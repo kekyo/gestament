@@ -136,6 +136,7 @@ export interface DriverReadyMessage {
 export interface DriverRequest {
   readonly id: number;
   readonly command: DriverCommand;
+  readonly deadlineMs?: number | null | undefined;
   readonly payload: unknown;
 }
 

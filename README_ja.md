@@ -450,7 +450,30 @@ const capture = await label.capture();
 expect(capture.visibleBounds.width).toBeGreaterThan(0);
 ```
 
-注意: `GtkWidgetKind` は、GTKの実型名ではなくAT-SPIのroleやcapabilityから導出した分類です。
+GTKのレイアウト、描画、アプリケーション側の更新が落ち着いてから成立する条件には、
+`gestament/testing` の再試行ヘルパーも使用できます:
+
+```typescript
+import { toPass, waitForResult } from 'gestament/testing';
+
+// ハンドラが成立するまで待機
+await toPass(async () => {
+  expect(await label.text()).toBe('ABC');
+});
+
+// ハンドラが成立するまで待機して結果を返却
+const capture = await waitForResult(async () => {
+  const nextCapture = await label.capture();
+  expect(nextCapture.visibleBounds.width).toBeGreaterThan(0);
+  return nextCapture;
+});
+```
+
+これらのヘルパーは、再試行ブロック内で呼び出したgestamentの要素待機APIと
+タイムアウトdeadlineを共有するため、`getById()` や `getByPath()` が外側の
+再試行処理より長く待機することを避けられます。
+
+`GtkWidgetKind` は、GTKの実型名ではなくAT-SPIのroleやcapabilityから導出した分類です。
 `switch` を使用してGTK3/GTK4差分をある程度吸収した分岐を書けます:
 
 ```typescript

@@ -454,7 +454,31 @@ const capture = await label.capture();
 expect(capture.visibleBounds.width).toBeGreaterThan(0);
 ```
 
-Note: `GtkWidgetKind` is a classification derived from AT-SPI roles and capabilities, not a GTK runtime type name.
+For conditions that become true only after GTK layout, drawing, or an
+application-side update settles, `gestament/testing` also provides retry
+helpers:
+
+```typescript
+import { toPass, waitForResult } from 'gestament/testing';
+
+// Wait until the handler completes
+await toPass(async () => {
+  expect(await label.text()).toBe('ABC');
+});
+
+// Wait until the handler completes, then return the result
+const capture = await waitForResult(async () => {
+  const nextCapture = await label.capture();
+  expect(nextCapture.visibleBounds.width).toBeGreaterThan(0);
+  return nextCapture;
+});
+```
+
+These helpers share a timeout deadline with gestament lookups called inside
+the retry block, so `getById()` and `getByPath()` do not wait longer than the
+outer retry operation.
+
+`GtkWidgetKind` is a classification derived from AT-SPI roles and capabilities, not a GTK runtime type name.
 You can use `switch` to write branches that absorb GTK3/GTK4 differences to some extent:
 
 ```typescript

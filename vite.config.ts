@@ -42,6 +42,7 @@ export default defineConfig({
         '@tesseract.js-data/eng',
         'node-gyp-build',
         'node:assert',
+        'node:async_hooks',
         'node:child_process',
         'node:crypto',
         'node:fs',

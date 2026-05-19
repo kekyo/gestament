@@ -21,6 +21,7 @@ import {
   createGtkInvalidArgumentError,
   createGtkOperationFailedError,
 } from './errors';
+import { currentWaitDeadlineMs } from './wait';
 import type {
   DriverAppRef,
   DriverCommand,
@@ -1136,7 +1137,11 @@ const serializeRequest = (
   command: DriverCommand,
   payload: unknown
 ): string => {
-  const request: DriverRequest = { command, id, payload };
+  const deadlineMs = currentWaitDeadlineMs();
+  const request: DriverRequest =
+    deadlineMs === undefined
+      ? { command, id, payload }
+      : { command, deadlineMs, id, payload };
   return `${JSON.stringify(request)}\n`;
 };
 

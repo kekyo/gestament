@@ -15,6 +15,7 @@ import {
 } from './errors';
 import { createDriverBackedGtkAppLauncher } from './displaySession';
 import { createGtkElement } from './element';
+import { effectiveWaitTimeoutMs } from './wait';
 import {
   nativeFindById,
   nativeCaptureScreen,
@@ -261,9 +262,10 @@ export const launchGtkApp = (
     id: string
   ): Promise<GtkWidgetElement | undefined> => {
     const startedAt = Date.now();
-    await waitForAtspiReady(state, appPath, _timeoutMs, startedAt);
+    const timeoutMs = effectiveWaitTimeoutMs(_timeoutMs);
+    await waitForAtspiReady(state, appPath, timeoutMs, startedAt);
 
-    while (Date.now() - startedAt <= _timeoutMs) {
+    while (Date.now() - startedAt <= timeoutMs) {
       const processId = assertProcessRunning(state, appPath);
 
       try {
@@ -296,9 +298,10 @@ export const launchGtkApp = (
   ): Promise<GtkWidgetElement | undefined> => {
     const parsedPath = parseElementPath(path);
     const startedAt = Date.now();
-    await waitForAtspiReady(state, appPath, _timeoutMs, startedAt);
+    const timeoutMs = effectiveWaitTimeoutMs(_timeoutMs);
+    await waitForAtspiReady(state, appPath, timeoutMs, startedAt);
 
-    while (Date.now() - startedAt <= _timeoutMs) {
+    while (Date.now() - startedAt <= timeoutMs) {
       const processId = assertProcessRunning(state, appPath);
 
       try {
@@ -352,8 +355,9 @@ export const launchGtkApp = (
     selector: GtkTrayItemSelector
   ): Promise<GtkTrayItem | undefined> => {
     const startedAt = Date.now();
+    const timeoutMs = effectiveWaitTimeoutMs(_timeoutMs);
 
-    while (Date.now() - startedAt <= _timeoutMs) {
+    while (Date.now() - startedAt <= timeoutMs) {
       const processId = assertProcessRunning(state, appPath);
 
       try {
@@ -411,11 +415,12 @@ export const launchGtkApp = (
     getByPath,
     windowAt: async (index: number): Promise<GtkWidgetElement | undefined> => {
       assertNonNegativeIndex('index', index);
+      const startedAt = Date.now();
       const processId = await waitForAtspiReady(
         state,
         appPath,
-        _timeoutMs,
-        Date.now()
+        effectiveWaitTimeoutMs(_timeoutMs),
+        startedAt
       );
 
       try {
@@ -426,11 +431,12 @@ export const launchGtkApp = (
       }
     },
     getWindowCount: async (): Promise<number> => {
+      const startedAt = Date.now();
       const processId = await waitForAtspiReady(
         state,
         appPath,
-        _timeoutMs,
-        Date.now()
+        effectiveWaitTimeoutMs(_timeoutMs),
+        startedAt
       );
 
       try {
