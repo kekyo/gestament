@@ -13,6 +13,7 @@ import {
   createGtkOperationFailedError,
   normalizeNativeError,
 } from './errors';
+import { prepareGtkAppDisplay } from './displaySession';
 import { createGtkElement } from './element';
 import {
   nativeFindById,
@@ -188,6 +189,11 @@ export const createGtkAppEnvironment = (
     ...overrides,
   };
   delete env.NO_AT_BRIDGE;
+  for (const key of Object.keys(env)) {
+    if (env[key] === undefined) {
+      delete env[key];
+    }
+  }
   return env;
 };
 
@@ -479,8 +485,9 @@ export const createGtkAppLauncher = (
   const launchedApps: GtkApp[] = [];
 
   const launch = async (args?: readonly string[]): Promise<GtkApp> => {
+    const display = await prepareGtkAppDisplay(options);
     const launchOptions: LaunchGtkAppOptions = {
-      env: options.env,
+      env: display.env,
       timeoutMs: options.timeoutMs,
     };
 

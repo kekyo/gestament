@@ -103,7 +103,7 @@ sudo apt-get install -y \
 
 - `at-spi2-core` は、gestamentがウィジェットを特定・操作するために使用するAT-SPIの実行環境です。
 - `libx11-6` と `libxtst6` は、X11画面キャプチャと入力操作で使用します。
-- `dbus` / `dbus-x11` と `xvfb` / `xauth` は、`gestament-xvfb` でヘッドレス実行する場合に使用します。
+- `dbus` / `dbus-x11` と `xvfb` / `xauth` は、内部Xvfbまたは `gestament-xvfb` でヘッドレス実行する場合に使用します。
 
 以上でネイティブ環境の準備が出来ました。
 
@@ -294,6 +294,12 @@ describe('foobar GTK3 app test', () => {
 });
 ```
 
+`createGtkAppLauncher()` のデフォルトの構成では、XvfbバックエンドによるX11仮想デスクトップを使用して、
+あなたが使用しているデスクトップ環境に影響されない、独立した環境でテストを実行します。
+
+Xvfbバックエンドは、テスト実行時に自動的に起動され、テスト終了時に自動的に終了されます。
+従って、テスト記述時に細部を気にする必要はありませんが、もし現在のデスクトップ環境を使ってテストを行いたい場合は、オプション `display` などを指定する必要があります（後述）。
+
 ---
 
 ## gestamentテストAPI
@@ -306,7 +312,7 @@ gestamentが用意するテスト用のAPIを示します。
 | :-------------------------- | :-------------------------------------------------------------------------------------------------------------------------- |
 | `launchGtkApp()`            | GTKアプリケーションを直接起動し、操作対象の `GtkApp` を返します。起動引数、環境変数、待機タイムアウトを指定できます         |
 | `createGtkAppEnvironment()` | GTKアプリケーション起動時に渡す環境変数を生成します。通常は `launchGtkApp()` や `createGtkAppLauncher()` が内部で使用します |
-| `createGtkAppLauncher()`    | 指定されたアプリケーションパス、共通引数、環境変数、待機タイムアウトを保持するランチャーオブジェクトを生成します            |
+| `createGtkAppLauncher()`    | 指定されたアプリケーションパス、共通引数、表示環境、環境変数、待機タイムアウトを保持するランチャーオブジェクトを生成します  |
 | `GtkAppLauncher.launch()`   | ランチャーオブジェクトが示すGTKアプリケーションを起動し、起動したアプリケーションを表す `GtkApp` を返します                 |
 | `GtkAppLauncher.release()`  | ランチャーから起動した全ての `GtkApp` を終了させます                                                                        |
 
@@ -320,6 +326,11 @@ import { createGtkAppLauncher } from 'gestament';
 const launcher = createGtkAppLauncher({
   appPath: './my-app',
   args: ['--test-mode'],
+  display: 'xvfb',
+  xvfbScreen: '1280x720x24',
+  xvfbTrayHost: true,
+  gsettings: 'memory',
+  theme: 'Adwaita',
   timeoutMs: 15_000,
 });
 
@@ -799,28 +810,29 @@ const gtkExpect = createGtkCaptureExpect({
 
 ### テスト用環境変数の指定 (Advanced topic)
 
-gestamentでは、GTKのテスト実行に必要な共通設定は、GTKアプリケーションの起動引数ではなく環境変数で指定します。
+gestamentでは、GTKのテスト実行に必要な共通設定は、GTKアプリケーションの起動引数ではなく `createGtkAppLauncher()` のオプションで指定します。
 デフォルトは以下のように指定されます:
 
 - `GDK_BACKEND=x11` は、Xvfb上でGTKアプリケーションを動かすためにGDKバックエンドをX11へ固定します。
 - `GSETTINGS_BACKEND=memory` は、GSettingsの読み書きをメモリ上に限定し、ユーザー環境の設定にテスト結果が左右されないようにします。
 - `GTK_THEME=Adwaita` は、標準GTKテーマに固定してビジュアルテストをユーザー環境のテーマから分離します。
 
-`gestament-xvfb` と `launchGtkApp()` / `createGtkAppLauncher()` は、これらの環境変数をデフォルトとして指定します。
+`createGtkAppLauncher()` は、デフォルトで内部Xvfbを起動します。
+`xvfbScreen` のデフォルトは `1280x720x24`、`xvfbTrayHost` のデフォルトは `true` です。
+`gsettings` と `theme` はそれぞれ `GSETTINGS_BACKEND` と `GTK_THEME` を指定し、`null` を指定した場合は該当する環境変数を設定しません。
 
 `GtkApp.capture()` はX11 root windowをキャプチャするため、`DISPLAY` がX11ディスプレイを指している必要があります。
-`gestament-xvfb` の下ではXvfbの仮想スクリーン全体が対象になります。
-画像サイズはX11 root windowの現在の幅と高さで決まり、`gestament-xvfb` では `--screen=WIDTHxHEIGHTxDEPTH` で指定した `WIDTH` と `HEIGHT` が使われます。
+内部Xvfbの下ではXvfbの仮想スクリーン全体が対象になります。
+画像サイズはX11 root windowの現在の幅と高さで決まり、内部Xvfbでは `xvfbScreen` で指定した `WIDTH` と `HEIGHT` が使われます。
 未指定時のデフォルトは `1280x720x24` なので、PNGは通常 `1280x720` になります。
 
-Waylandで起動したい場合や、GSettingsの永続化をテストしたい場合だけ、以下のように `env` で上書きします:
+ホストの表示環境で起動したい場合や、GSettingsの永続化をテストしたい場合は、以下のように指定します:
 
 ```typescript
-const app = await launchGtkApp('./my-app', [], {
-  env: {
-    GDK_BACKEND: 'wayland',
-    GSETTINGS_BACKEND: 'dconf',
-  },
+const launcher = createGtkAppLauncher({
+  appPath: './my-app',
+  display: 'host',
+  gsettings: 'dconf',
 });
 ```
 

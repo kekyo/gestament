@@ -105,7 +105,7 @@ sudo apt-get install -y \
 
 - `at-spi2-core` is the AT-SPI runtime environment that gestament uses to identify and operate widgets.
 - `libx11-6` and `libxtst6` are used for X11 screen capture and input operations.
-- `dbus` / `dbus-x11` and `xvfb` / `xauth` are used when running tests headlessly with `gestament-xvfb`.
+- `dbus` / `dbus-x11` and `xvfb` / `xauth` are used when running tests headlessly with the internal Xvfb session or `gestament-xvfb`.
 
 This completes the native environment setup.
 
@@ -295,6 +295,14 @@ describe('foobar GTK3 app test', () => {
 });
 ```
 
+By default, `createGtkAppLauncher()` uses an X11 virtual desktop by the Xvfb backend
+to run tests in an isolated environment that is not affected by your desktop environment.
+
+The Xvfb backend is automatically started when a test runs and automatically terminated when the test finishes.
+Therefore, you do not need to worry about the details when writing tests;
+however, if you want to run tests using your current desktop environment,
+you must specify options such as `display` (described later).
+
 ---
 
 ## gestament test APIs
@@ -303,13 +311,13 @@ The following are the testing APIs provided by gestament.
 
 ### GTK application launch management
 
-| API function                | Details                                                                                                                                            |
-| :-------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `launchGtkApp()`            | Directly launches a GTK application and returns the target `GtkApp`. You can specify launch arguments, environment variables, and wait timeout.    |
-| `createGtkAppEnvironment()` | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`. |
-| `createGtkAppLauncher()`    | Creates a launcher object that holds the specified application path, common arguments, environment variables, and wait timeout.                    |
-| `GtkAppLauncher.launch()`   | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application.                      |
-| `GtkAppLauncher.release()`  | Terminates all `GtkApp` instances launched from the launcher.                                                                                      |
+| API function                | Details                                                                                                                                              |
+| :-------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `launchGtkApp()`            | Directly launches a GTK application and returns the target `GtkApp`. You can specify launch arguments, environment variables, and wait timeout.      |
+| `createGtkAppEnvironment()` | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`.   |
+| `createGtkAppLauncher()`    | Creates a launcher object that holds the specified application path, common arguments, display environment, environment variables, and wait timeout. |
+| `GtkAppLauncher.launch()`   | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application.                        |
+| `GtkAppLauncher.release()`  | Terminates all `GtkApp` instances launched from the launcher.                                                                                        |
 
 The following example manually manages GTK application launches without using `launchGtkApp()` directly:
 
@@ -321,6 +329,11 @@ import { createGtkAppLauncher } from 'gestament';
 const launcher = createGtkAppLauncher({
   appPath: './my-app',
   args: ['--test-mode'],
+  display: 'xvfb',
+  xvfbScreen: '1280x720x24',
+  xvfbTrayHost: true,
+  gsettings: 'memory',
+  theme: 'Adwaita',
   timeoutMs: 15_000,
 });
 
@@ -800,28 +813,29 @@ If you use shared workers, call `release()` on each `GtkCaptureExpect` after tes
 
 ### Specifying test environment variables (Advanced topic)
 
-gestament specifies common settings required for GTK tests through environment variables, not GTK application launch arguments.
+gestament specifies common settings required for GTK tests through `createGtkAppLauncher()` options, not GTK application launch arguments.
 By default, the following values are specified:
 
 - `GDK_BACKEND=x11` fixes the GDK backend to X11 so GTK applications run on Xvfb.
 - `GSETTINGS_BACKEND=memory` limits GSettings reads and writes to memory so test results are not affected by the user's environment settings.
 - `GTK_THEME=Adwaita` fixes the theme to the standard GTK theme and isolates visual tests from the user's environment theme.
 
-`gestament-xvfb` and `launchGtkApp()` / `createGtkAppLauncher()` specify these environment variables by default.
+`createGtkAppLauncher()` starts an internal Xvfb session by default.
+`xvfbScreen` defaults to `1280x720x24`, and `xvfbTrayHost` defaults to `true`.
+`gsettings` and `theme` set `GSETTINGS_BACKEND` and `GTK_THEME`; use `null` to leave the corresponding environment variable unset.
 
 `GtkApp.capture()` captures the X11 root window, so `DISPLAY` must point to an X11 display.
-Under `gestament-xvfb`, the target is the entire Xvfb virtual screen.
-The image size is determined by the current width and height of the X11 root window, and `gestament-xvfb` uses the `WIDTH` and `HEIGHT` values specified by `--screen=WIDTHxHEIGHTxDEPTH`.
+Under the internal Xvfb session, the target is the entire Xvfb virtual screen.
+The image size is determined by the current width and height of the X11 root window, and the internal Xvfb session uses the `WIDTH` and `HEIGHT` values specified by `xvfbScreen`.
 The default when unspecified is `1280x720x24`, so the PNG is normally `1280x720`.
 
-Only override these values with `env` when you want to launch on Wayland or test GSettings persistence:
+Specify these launcher options when you want to launch on the host display or test GSettings persistence:
 
 ```typescript
-const app = await launchGtkApp('./my-app', [], {
-  env: {
-    GDK_BACKEND: 'wayland',
-    GSETTINGS_BACKEND: 'dconf',
-  },
+const launcher = createGtkAppLauncher({
+  appPath: './my-app',
+  display: 'host',
+  gsettings: 'dconf',
 });
 ```
 

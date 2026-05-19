@@ -93,6 +93,7 @@ const run = (): void => {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     GDK_BACKEND: 'x11',
+    GESTAMENT_XVFB_ACTIVE: '1',
     GSETTINGS_BACKEND: 'memory',
     GTK_THEME: process.env.GTK_THEME ?? 'Adwaita',
   };

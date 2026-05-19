@@ -216,7 +216,7 @@ run_tests_backend() {
         GESTAMENT_GTK_BACKEND="${backend}" \
         GESTAMENT_TEST_BACKEND="${backend}" \
         GTK_THEME="${GTK_THEME:-Adwaita}" \
-        node dist/gestament-xvfb.cjs --with-tray-host -- npm run test:internal
+        npm run test:internal
       ;;
     *)
       echo "Unsupported GESTAMENT_DISPLAY_BACKEND: ${display_backend}" >&2

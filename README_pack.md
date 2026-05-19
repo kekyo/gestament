@@ -93,7 +93,7 @@ sudo apt-get install -y \
 
 - `at-spi2-core` is the AT-SPI runtime environment that gestament uses to identify and operate widgets.
 - `libx11-6` and `libxtst6` are used for X11 screen capture and input operations.
-- `dbus` / `dbus-x11` and `xvfb` / `xauth` are used when running tests headlessly with `gestament-xvfb`.
+- `dbus` / `dbus-x11` and `xvfb` / `xauth` are used when running tests headlessly with gestament's internal Xvfb session or `gestament-xvfb`.
 
 This completes the native environment setup.
 
@@ -115,7 +115,7 @@ npm install -D vitest @types/node gestament
 
 ## Documentation
 
-See [the repository documentation](https://github.com/kekyo/gestament/).
+More information, see [the repository documentation](https://github.com/kekyo/gestament/).
 
 ## License
 

@@ -25,6 +25,8 @@ export default defineConfig({
       entry: {
         index: 'src/index.ts',
         'gestament-config': 'src/gestament-config.ts',
+        'gestament-display-session-host':
+          'src/gestament-display-session-host.ts',
         testing: 'src/testing.ts',
         'gestament-tray-host': 'src/gestament-tray-host.ts',
         'gestament-xvfb': 'src/gestament-xvfb.ts',
