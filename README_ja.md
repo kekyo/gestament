@@ -62,6 +62,10 @@ describe('sample GTK app', () => {
 });
 ```
 
+例えば、これを `npm test` などとして、Vitestでテストできます:
+
+![Vitest](./images/vitest.png)
+
 ### 機能
 
 - GTKアプリケーションを子プロセスとして起動し、テストから操作できます。

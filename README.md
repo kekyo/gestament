@@ -65,6 +65,10 @@ describe('sample GTK app', () => {
 });
 ```
 
+For example, run Vitest with `npm test`:
+
+![Vitest](./images/vitest.png)
+
 ### Features
 
 - Launches GTK applications as child processes, allowing them to be controlled from within tests.
