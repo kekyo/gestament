@@ -374,9 +374,12 @@ const releaseApp = async (appId: string): Promise<void> => {
   await app.release();
 };
 
-const releaseAll = async (): Promise<void> => {
+const releaseApps = async (): Promise<void> => {
   const appIds = [...apps.keys()];
   await Promise.all(appIds.map((appId) => releaseApp(appId)));
+};
+
+const stopTrayHost = (): void => {
   if (
     trayHostProcess !== undefined &&
     trayHostProcess.exitCode === null &&
@@ -384,6 +387,11 @@ const releaseAll = async (): Promise<void> => {
   ) {
     trayHostProcess.kill('SIGTERM');
   }
+};
+
+const releaseAll = async (): Promise<void> => {
+  await releaseApps();
+  stopTrayHost();
 };
 
 const asMethod = (
@@ -482,6 +490,14 @@ const handleLauncherCommand = async (
     case 'launcher.release':
       await releaseAll();
       return null;
+    case 'launcher.reset':
+      await releaseApps();
+      return {
+        appCount: apps.size,
+        elementCount: elements.size,
+        imageInfoCount: imageInfos.size,
+        trayItemCount: trayItems.size,
+      };
     default:
       throw createGtkOperationFailedError(`Unsupported command: ${command}`);
   }

@@ -317,7 +317,7 @@ gestamentが用意するテスト用のAPIを示します。
 | `createGtkAppEnvironment()` | GTKアプリケーション起動時に渡す環境変数を生成します。通常は `launchGtkApp()` や `createGtkAppLauncher()` が内部で使用します |
 | `createGtkAppLauncher()`    | 指定されたアプリケーションパス、共通引数、表示環境、環境変数、待機タイムアウトを保持するランチャーオブジェクトを生成します  |
 | `GtkAppLauncher.launch()`   | ランチャーオブジェクトが示すGTKアプリケーションを起動し、起動したアプリケーションを表す `GtkApp` を返します                 |
-| `GtkAppLauncher.release()`  | ランチャーから起動した全ての `GtkApp` を終了し、ランチャーがXvfbを起動していた場合は終了させます                          |
+| `GtkAppLauncher.release()`  | ランチャーから起動した全ての `GtkApp` を終了し、ランチャーがXvfbを起動していた場合は終了させます                            |
 
 以下は、`launchGtkApp()` を使用せず、GTKアプリケーション起動管理を手動で行う例です:
 
@@ -847,6 +847,45 @@ const launcher = createGtkAppLauncher({
 
 - `GESTAMENT_VISUAL_OUTPUT_RESULT_PATH` は、actual/diffなどの診断ファイルの保存先を指定します。未指定の場合、診断ファイルは保存されません。
 - `GESTAMENT_VISUAL_VARIANT` は、診断ファイルを分けるvariant名を指定します。未指定の場合は `GESTAMENT_TEST_BACKEND`、それも未指定の場合は `default` が使用されます。
+
+### Xvfbプーリングによる高速化 (Advanced topic)
+
+`xvfbPool` は、`launcher.release()` 後のXvfb関連リソースをプールし、後続のランチャーで再利用するかどうかを制御するモードです。
+デフォルトは `none` で、テスト再現性を重視して再利用しません。
+
+選択する場合の推奨は以下です:
+
+- 安定性優先: `xvfbPool: 'none'`
+- Xvfbの起動時間だけ少し削りたい: `xvfbPool: 'xvfb'`
+- 実験的に最大再利用したい: `xvfbPool: 'all'`
+
+| Mode   | 再利用されるリソース                           | Pool key                      |
+| ------ | ---------------------------------------------- | ----------------------------- |
+| `none` | なし。Xvfb/DBus/driverを毎回再生成します     | なし                          |
+| `xvfb` | Xvfb processのみ。DBus/driverは毎回freshです | `xvfbScreen`                  |
+| `all`  | Xvfb、DBus session、driver、tray host        | `xvfbScreen` + `xvfbTrayHost` |
+
+プールはNode.jsプロセスやテストワーカーをまたいで共有されず、プールが再利用された場合は、同時に1つのランチャーに利用されます。
+内部プールは、再利用可能条件毎に最大1個、全体で最大4個まで保持します。
+
+`display: 'host'` が既存のホスト表示環境を使用する場合、`xvfbPool` は意味を持ちません。
+`display: 'host'` がXvfbへフォールバックした場合は、指定されたプールモードが適用されます。
+再利用する際のクリーンチェックでウインドウが検出された場合や、X serverのプローブに失敗した場合、そのセッションは再利用せず破棄されます。
+
+考えられる副作用を以下に示します:
+
+| 副作用                            | 主に発生し得る mode | 影響                                                  | すぐテストに影響するか |
+| --------------------------------- | ------------------- | ----------------------------------------------------- | ---------------------- |
+| 前回windowの残存                  | `xvfb`, `all`       | capture/click が汚染される                            | 高い                   |
+| orphan X client の残存            | `xvfb`, `all`       | AT-SPIには見えないが画面に映る可能性がある            | 高い                   |
+| accessible ID / window列挙の混入  | `all`               | `findById`, `windowAt`, `getWindowCount` が誤る       | 高い                   |
+| tray item の残存                  | `all`               | `findTrayItem`, tray capture が誤る                   | 高い                   |
+| focus / stacking order の持ち越し | `xvfb`, `all`       | 入力先やcaptureが不安定になる                         | 中〜高                 |
+| pointer / keyboard modifier 状態  | `xvfb`, `all`       | click/key操作が不安定になる                           | 中                     |
+| root window property / background | `xvfb`, `all`       | full-screen captureや環境判定に影響                   | 中                     |
+| clipboard / PRIMARY selection     | `all`               | selection/clipboard系テストに影響                     | 中                     |
+| DBus service / AT-SPI cache 状態  | `all`               | 古いserviceやcacheが観測される可能性がある            | 中〜高                 |
+| X server内部状態 / Atom table     | `xvfb`, `all`       | 通常は直接影響しにくいが、完全なfresh X11状態ではない | 低〜中                 |
 
 ---
 

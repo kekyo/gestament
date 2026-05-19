@@ -28,6 +28,7 @@ export default defineConfig({
         'gestament-launcher-driver': 'src/gestament-launcher-driver.ts',
         testing: 'src/testing.ts',
         'gestament-tray-host': 'src/gestament-tray-host.ts',
+        'gestament-xvfb-pool-probe': 'src/gestament-xvfb-pool-probe.ts',
         'gestament-xvfb': 'src/gestament-xvfb.ts',
         'gestament-xvfb-worker': 'src/gestament-xvfb-worker.ts',
       },

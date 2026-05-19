@@ -5,7 +5,12 @@
 
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { createServer, type Server, type Socket } from 'node:net';
+import {
+  createConnection,
+  createServer,
+  type Server,
+  type Socket,
+} from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -37,6 +42,7 @@ import type {
   GtkAppDisplay,
   GtkAppLauncher,
   GtkAppLauncherOptions,
+  GtkAppXvfbPool,
   GtkCapture,
   GtkElementInfo,
   GtkImageInfo,
@@ -52,6 +58,7 @@ import type {
 interface XvfbSessionOptions {
   readonly screen: string;
   readonly trayHost: boolean;
+  readonly pool: GtkAppXvfbPool;
 }
 
 interface EffectiveDisplay {
@@ -72,6 +79,49 @@ interface DriverSession {
     payload: unknown
   ) => Promise<Result>;
   readonly release: () => Promise<void>;
+  readonly terminate: () => Promise<void>;
+}
+
+interface PooledXvfb {
+  readonly child: ChildProcessByStdio<null, Readable, Readable>;
+  readonly display: string;
+  readonly displayNumber: number;
+  readonly key: string;
+  readonly screen: string;
+  readonly stderr: string[];
+  readonly stdout: string[];
+  lastUsedAt: number;
+}
+
+interface PooledAllSession {
+  readonly key: string;
+  readonly session: DriverSession;
+  readonly xvfb: PooledXvfb;
+  lastUsedAt: number;
+}
+
+interface XvfbProbeResult {
+  readonly bounds: {
+    readonly height: number;
+    readonly width: number;
+    readonly x: number;
+    readonly y: number;
+  };
+  readonly mappedWindowCount: number;
+}
+
+interface DriverResetResult {
+  readonly appCount: number;
+  readonly elementCount: number;
+  readonly imageInfoCount: number;
+  readonly trayItemCount: number;
+}
+
+interface DriverSessionPoolOptions {
+  readonly allKey: string | undefined;
+  readonly mode: 'none' | 'xvfb' | 'all';
+  readonly xvfb: PooledXvfb | undefined;
+  readonly allowedMappedWindowCount: number;
 }
 
 interface StartupConnection {
@@ -96,11 +146,22 @@ const defaultGSettings = 'memory';
 const defaultTheme = 'Adwaita';
 const defaultXvfbScreen = '1280x720x24';
 const defaultXvfbTrayHost = true;
+const defaultXvfbPool: GtkAppXvfbPool = 'none';
 const screenPattern = /^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$/;
 const sessionStartupTimeoutMs = 30_000;
 const sessionReleaseTimeoutMs = 5_000;
+const xvfbStartupTimeoutMs = 10_000;
+const xvfbPoolProbeTimeoutMs = 5_000;
+const maxIdlePoolSize = 4;
+const firstPooledDisplayNumber = 90;
+const lastPooledDisplayNumber = 590;
 
 let socketCounter = 0;
+const leasedDisplayNumbers = new Set<number>();
+const idleXvfbByKey = new Map<string, PooledXvfb>();
+const idleAllByKey = new Map<string, PooledAllSession>();
+const directXvfbs = new Set<PooledXvfb>();
+let poolCleanupInstalled = false;
 
 const hasValue = (value: string | undefined): value is string =>
   value !== undefined && value.length > 0;
@@ -165,6 +226,18 @@ const resolveDisplay = (display: GtkAppDisplay | undefined): GtkAppDisplay => {
   );
 };
 
+const resolveXvfbPool = (pool: GtkAppXvfbPool | undefined): GtkAppXvfbPool => {
+  if (pool === undefined) {
+    return defaultXvfbPool;
+  }
+  if (pool === 'none' || pool === 'xvfb' || pool === 'all') {
+    return pool;
+  }
+  throw createGtkInvalidArgumentError(
+    `xvfbPool must be "none", "xvfb", or "all": ${String(pool)}`
+  );
+};
+
 const resolveXvfbOptions = (
   options: GtkAppLauncherOptions
 ): XvfbSessionOptions => {
@@ -176,6 +249,7 @@ const resolveXvfbOptions = (
   }
 
   return {
+    pool: resolveXvfbPool(options.xvfbPool),
     screen,
     trayHost: options.xvfbTrayHost ?? defaultXvfbTrayHost,
   };
@@ -268,8 +342,24 @@ const resolveDriverPath = (): string => {
   return driverPath;
 };
 
+const resolveXvfbPoolProbePath = (): string => {
+  const probePath = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'dist',
+    'gestament-xvfb-pool-probe.cjs'
+  );
+  if (!existsSync(probePath)) {
+    throw createGtkOperationFailedError(
+      `Internal Xvfb pool probe was not found: ${probePath}`
+    );
+  }
+  return probePath;
+};
+
 const createDriverEnvironment = (
-  effective: EffectiveDisplay
+  effective: EffectiveDisplay,
+  xvfb: PooledXvfb | undefined
 ): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.AT_SPI_BUS_ADDRESS;
@@ -278,15 +368,349 @@ const createDriverEnvironment = (
   if (effective.kind === 'xvfb') {
     env.GDK_BACKEND = 'x11';
     env.GESTAMENT_XVFB_ACTIVE = '1';
+    if (xvfb !== undefined) {
+      env.DISPLAY = xvfb.display;
+      delete env.XAUTHORITY;
+    }
   }
 
   return env;
 };
 
+const xvfbSocketPath = (displayNumber: number): string =>
+  `/tmp/.X11-unix/X${displayNumber}`;
+
+const isDisplayNumberAvailable = (displayNumber: number): boolean =>
+  !leasedDisplayNumbers.has(displayNumber) &&
+  !existsSync(xvfbSocketPath(displayNumber));
+
+const connectUnixSocket = (path: string, timeoutMs: number): Promise<void> =>
+  new Promise<void>((resolveConnect, rejectConnect) => {
+    const socket = createConnection(path);
+    let settled = false;
+
+    const settle = (callback: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      socket.destroy();
+      callback();
+    };
+
+    const timeout = setTimeout(() => {
+      settle(() => {
+        rejectConnect(
+          createGtkOperationFailedError(`Timed out connecting to ${path}.`)
+        );
+      });
+    }, timeoutMs);
+
+    socket.once('connect', () => {
+      settle(resolveConnect);
+    });
+    socket.once('error', (error) => {
+      settle(() => {
+        rejectConnect(error);
+      });
+    });
+  });
+
+const waitForXvfbReady = async (displayNumber: number): Promise<void> => {
+  const startedAt = Date.now();
+  const path = xvfbSocketPath(displayNumber);
+  while (Date.now() - startedAt <= xvfbStartupTimeoutMs) {
+    if (existsSync(path)) {
+      try {
+        await connectUnixSocket(path, 250);
+        return;
+      } catch {
+        // Keep polling until the X server accepts local connections.
+      }
+    }
+    await delay(25);
+  }
+
+  throw createGtkOperationFailedError(
+    `Timed out waiting for Xvfb display :${displayNumber}.`
+  );
+};
+
+const killXvfbNow = (xvfb: PooledXvfb): void => {
+  if (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
+    xvfb.child.kill('SIGTERM');
+  }
+};
+
+const installPoolCleanup = (): void => {
+  if (poolCleanupInstalled) {
+    return;
+  }
+  poolCleanupInstalled = true;
+  process.once('exit', () => {
+    for (const xvfb of directXvfbs) {
+      killXvfbNow(xvfb);
+    }
+  });
+};
+
+const spawnDirectXvfb = async (screen: string): Promise<PooledXvfb> => {
+  installPoolCleanup();
+  for (
+    let displayNumber = firstPooledDisplayNumber;
+    displayNumber <= lastPooledDisplayNumber;
+    displayNumber += 1
+  ) {
+    if (!isDisplayNumberAvailable(displayNumber)) {
+      continue;
+    }
+
+    leasedDisplayNumbers.add(displayNumber);
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const child = spawn(
+      'Xvfb',
+      [`:${displayNumber}`, '-screen', '0', screen, '-nolisten', 'tcp'],
+      {
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
+    child.stdout.on('data', (chunk: Buffer) => {
+      appendOutput(stdout, chunk);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      appendOutput(stderr, chunk);
+    });
+    child.unref();
+    unrefHandle(child.stdout);
+    unrefHandle(child.stderr);
+
+    try {
+      await Promise.race([
+        waitForXvfbReady(displayNumber),
+        new Promise<never>((_resolve, reject) => {
+          child.once('error', reject);
+        }),
+        new Promise<never>((_resolve, reject) => {
+          child.once('exit', (code, signal) => {
+            reject(
+              createGtkOperationFailedError(
+                `Xvfb exited before ready: code=${String(
+                  code
+                )}, signal=${String(signal)}` + formatOutputTail(stdout, stderr)
+              )
+            );
+          });
+        }),
+      ]);
+      const xvfb = {
+        child,
+        display: `:${displayNumber}`,
+        displayNumber,
+        key: screen,
+        lastUsedAt: Date.now(),
+        screen,
+        stderr,
+        stdout,
+      };
+      directXvfbs.add(xvfb);
+      return xvfb;
+    } catch (error) {
+      killXvfbNow({
+        child,
+        display: `:${displayNumber}`,
+        displayNumber,
+        key: screen,
+        lastUsedAt: Date.now(),
+        screen,
+        stderr,
+        stdout,
+      });
+      leasedDisplayNumbers.delete(displayNumber);
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('ENOENT')) {
+        throw createGtkOperationFailedError(`Failed to start Xvfb: ${message}`);
+      }
+    }
+  }
+
+  throw createGtkOperationFailedError(
+    `Failed to allocate a pooled Xvfb display for screen ${screen}.`
+  );
+};
+
+const terminateXvfb = async (xvfb: PooledXvfb): Promise<void> => {
+  idleXvfbByKey.delete(xvfb.key);
+  directXvfbs.delete(xvfb);
+  if (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
+    xvfb.child.kill('SIGTERM');
+    const startedAt = Date.now();
+    while (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
+      if (Date.now() - startedAt > sessionReleaseTimeoutMs) {
+        xvfb.child.kill('SIGKILL');
+        break;
+      }
+      await delay(25);
+    }
+  }
+  leasedDisplayNumbers.delete(xvfb.displayNumber);
+};
+
+const leaseXvfb = async (screen: string): Promise<PooledXvfb> => {
+  const idle = idleXvfbByKey.get(screen);
+  if (idle !== undefined) {
+    idleXvfbByKey.delete(screen);
+    if (idle.child.exitCode === null && idle.child.signalCode === null) {
+      idle.lastUsedAt = Date.now();
+      return idle;
+    }
+    await terminateXvfb(idle);
+  }
+  return spawnDirectXvfb(screen);
+};
+
+const runXvfbProbe = (xvfb: PooledXvfb): Promise<XvfbProbeResult> =>
+  new Promise<XvfbProbeResult>((resolveProbe, rejectProbe) => {
+    const probePath = resolveXvfbPoolProbePath();
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const child = spawn(process.execPath, [probePath], {
+      env: {
+        ...process.env,
+        DISPLAY: xvfb.display,
+        GDK_BACKEND: 'x11',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+      rejectProbe(
+        createGtkOperationFailedError('Timed out probing Xvfb pool.')
+      );
+    }, xvfbPoolProbeTimeoutMs);
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      appendOutput(stdout, chunk);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      appendOutput(stderr, chunk);
+    });
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      rejectProbe(error);
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        rejectProbe(
+          createGtkOperationFailedError(
+            `Xvfb pool probe failed: code=${String(code)}, signal=${String(
+              signal
+            )}` + formatOutputTail(stdout, stderr)
+          )
+        );
+        return;
+      }
+
+      const output = stdout.join('').trim().split('\n').at(-1);
+      if (output === undefined || output.length === 0) {
+        rejectProbe(
+          createGtkOperationFailedError(
+            'Xvfb pool probe did not return a result.' +
+              formatOutputTail(stdout, stderr)
+          )
+        );
+        return;
+      }
+
+      try {
+        resolveProbe(JSON.parse(output) as XvfbProbeResult);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        rejectProbe(
+          createGtkOperationFailedError(
+            `Xvfb pool probe returned invalid JSON: ${message}` +
+              formatOutputTail(stdout, stderr)
+          )
+        );
+      }
+    });
+  });
+
+const cleanCheckXvfb = async (
+  xvfb: PooledXvfb,
+  allowedMappedWindowCount: number
+): Promise<boolean> => {
+  try {
+    const probe = await runXvfbProbe(xvfb);
+    return probe.mappedWindowCount <= allowedMappedWindowCount;
+  } catch {
+    return false;
+  }
+};
+
+const totalIdlePoolSize = (): number => idleXvfbByKey.size + idleAllByKey.size;
+
+const evictIdlePools = async (): Promise<void> => {
+  while (totalIdlePoolSize() > maxIdlePoolSize) {
+    const candidates = [
+      ...[...idleXvfbByKey.values()].map((xvfb) => ({
+        kind: 'xvfb' as const,
+        key: xvfb.key,
+        lastUsedAt: xvfb.lastUsedAt,
+      })),
+      ...[...idleAllByKey.values()].map((session) => ({
+        kind: 'all' as const,
+        key: session.key,
+        lastUsedAt: session.lastUsedAt,
+      })),
+    ].sort((first, second) => first.lastUsedAt - second.lastUsedAt);
+    const candidate = candidates[0];
+    if (candidate === undefined) {
+      return;
+    }
+    if (candidate.kind === 'xvfb') {
+      const xvfb = idleXvfbByKey.get(candidate.key);
+      if (xvfb !== undefined) {
+        await terminateXvfb(xvfb);
+      }
+    } else {
+      const pooled = idleAllByKey.get(candidate.key);
+      if (pooled !== undefined) {
+        idleAllByKey.delete(candidate.key);
+        await pooled.session.terminate();
+      }
+    }
+  }
+};
+
+const returnXvfbToPool = async (xvfb: PooledXvfb): Promise<void> => {
+  const clean = await cleanCheckXvfb(xvfb, 0);
+  if (!clean) {
+    await terminateXvfb(xvfb);
+    return;
+  }
+
+  const existing = idleXvfbByKey.get(xvfb.key);
+  if (existing !== undefined && existing !== xvfb) {
+    await terminateXvfb(existing);
+  }
+  xvfb.lastUsedAt = Date.now();
+  idleXvfbByKey.set(xvfb.key, xvfb);
+  await evictIdlePools();
+};
+
+const allPoolKey = (xvfb: XvfbSessionOptions): string =>
+  `${xvfb.screen}\n${xvfb.trayHost ? 'tray' : 'no-tray'}`;
+
 const spawnDriverProcess = (
   driverPath: string,
   socketPath: string,
-  effective: EffectiveDisplay
+  effective: EffectiveDisplay,
+  xvfb: PooledXvfb | undefined
 ): DriverProcess => {
   const driverArgs = [
     '--socket',
@@ -295,12 +719,12 @@ const spawnDriverProcess = (
       ? ['--with-tray-host']
       : []),
   ];
-  const env = createDriverEnvironment(effective);
+  const env = createDriverEnvironment(effective, xvfb);
   const stdout: string[] = [];
   const stderr: string[] = [];
 
   const command =
-    effective.kind === 'xvfb'
+    effective.kind === 'xvfb' && xvfb === undefined
       ? {
           args: [
             '-a',
@@ -315,10 +739,15 @@ const spawnDriverProcess = (
           ],
           bin: 'xvfb-run',
         }
-      : {
-          args: [driverPath, ...driverArgs],
-          bin: process.execPath,
-        };
+      : effective.kind === 'xvfb'
+        ? {
+            args: ['--', process.execPath, driverPath, ...driverArgs],
+            bin: 'dbus-run-session',
+          }
+        : {
+            args: [driverPath, ...driverArgs],
+            bin: process.execPath,
+          };
 
   const child = spawn(command.bin, command.args, {
     env,
@@ -532,7 +961,8 @@ const createDriverSession = (
   socket: Socket,
   bufferedInput: string,
   processState: DriverProcess,
-  tempDirectory: string
+  tempDirectory: string,
+  poolOptions: DriverSessionPoolOptions
 ): DriverSession => {
   const pending = new Map<number, PendingRequest>();
   let input = bufferedInput;
@@ -657,7 +1087,7 @@ const createDriverSession = (
     }
   };
 
-  const release = async (): Promise<void> => {
+  const closeDriver = async (): Promise<void> => {
     if (!closed) {
       try {
         await request<null>('launcher.release', null);
@@ -674,15 +1104,92 @@ const createDriverSession = (
     rmSync(tempDirectory, { force: true, recursive: true });
   };
 
-  return { release, request };
+  const terminate = async (): Promise<void> => {
+    try {
+      await closeDriver();
+    } finally {
+      if (poolOptions.xvfb !== undefined) {
+        await terminateXvfb(poolOptions.xvfb);
+      }
+    }
+  };
+
+  let session: DriverSession;
+
+  const release = async (): Promise<void> => {
+    if (poolOptions.mode === 'none') {
+      await closeDriver();
+      return;
+    }
+
+    if (poolOptions.mode === 'xvfb') {
+      try {
+        await closeDriver();
+      } catch (error) {
+        if (poolOptions.xvfb !== undefined) {
+          await terminateXvfb(poolOptions.xvfb);
+        }
+        throw error;
+      }
+      if (poolOptions.xvfb !== undefined) {
+        await returnXvfbToPool(poolOptions.xvfb);
+      }
+      return;
+    }
+
+    if (poolOptions.xvfb === undefined || poolOptions.allKey === undefined) {
+      await terminate();
+      return;
+    }
+
+    let resetResult: DriverResetResult;
+    try {
+      resetResult = await request<DriverResetResult>('launcher.reset', null);
+    } catch (error) {
+      await terminate().catch(() => undefined);
+      throw error;
+    }
+
+    const tablesAreEmpty =
+      resetResult.appCount === 0 &&
+      resetResult.elementCount === 0 &&
+      resetResult.imageInfoCount === 0 &&
+      resetResult.trayItemCount === 0;
+    const clean =
+      tablesAreEmpty &&
+      (await cleanCheckXvfb(
+        poolOptions.xvfb,
+        poolOptions.allowedMappedWindowCount
+      ));
+    if (!clean) {
+      await terminate();
+      return;
+    }
+
+    const existing = idleAllByKey.get(poolOptions.allKey);
+    if (existing !== undefined && existing.session !== session) {
+      idleAllByKey.delete(poolOptions.allKey);
+      await existing.session.terminate();
+    }
+    poolOptions.xvfb.lastUsedAt = Date.now();
+    idleAllByKey.set(poolOptions.allKey, {
+      key: poolOptions.allKey,
+      lastUsedAt: Date.now(),
+      session,
+      xvfb: poolOptions.xvfb,
+    });
+    await evictIdlePools();
+  };
+
+  session = { release, request, terminate };
+  return session;
 };
 
-const startDriverSession = async (
-  options: GtkAppLauncherOptions
+const startFreshDriverSession = async (
+  effective: EffectiveDisplay,
+  xvfb: PooledXvfb | undefined,
+  poolOptions: DriverSessionPoolOptions
 ): Promise<DriverSession> => {
-  const display = resolveDisplay(options.display);
-  const xvfb = resolveXvfbOptions(options);
-  const effective = resolveEffectiveDisplay(display, xvfb);
   const driverPath = resolveDriverPath();
   const tempDirectory = mkdtempSync(
     join(tmpdir(), `gestament-launcher-${process.pid}-${socketCounter}-`)
@@ -696,14 +1203,23 @@ const startDriverSession = async (
     await listenOnSocket(server, socketPath);
     server.unref();
 
-    processState = spawnDriverProcess(driverPath, socketPath, effective);
+    processState = spawnDriverProcess(driverPath, socketPath, effective, xvfb);
     const connection = await waitForDriverReady(server, processState);
     server.close();
+    const resolvedPoolOptions =
+      poolOptions.mode === 'all' && xvfb !== undefined
+        ? {
+            ...poolOptions,
+            allowedMappedWindowCount: (await runXvfbProbe(xvfb))
+              .mappedWindowCount,
+          }
+        : poolOptions;
     return createDriverSession(
       connection.socket,
       connection.bufferedInput,
       processState,
-      tempDirectory
+      tempDirectory,
+      resolvedPoolOptions
     );
   } catch (error) {
     server.close();
@@ -714,9 +1230,70 @@ const startDriverSession = async (
     ) {
       processState.child.kill('SIGTERM');
     }
+    if (xvfb !== undefined) {
+      await terminateXvfb(xvfb);
+    }
     rmSync(tempDirectory, { force: true, recursive: true });
     throw error;
   }
+};
+
+const startDriverSession = async (
+  options: GtkAppLauncherOptions
+): Promise<DriverSession> => {
+  const display = resolveDisplay(options.display);
+  const xvfbOptions = resolveXvfbOptions(options);
+  const effective = resolveEffectiveDisplay(display, xvfbOptions);
+
+  if (effective.kind !== 'xvfb' || effective.xvfb === undefined) {
+    return startFreshDriverSession(effective, undefined, {
+      allKey: undefined,
+      allowedMappedWindowCount: 0,
+      mode: 'none',
+      xvfb: undefined,
+    });
+  }
+
+  if (effective.xvfb.pool === 'none') {
+    return startFreshDriverSession(effective, undefined, {
+      allKey: undefined,
+      allowedMappedWindowCount: 0,
+      mode: 'none',
+      xvfb: undefined,
+    });
+  }
+
+  if (effective.xvfb.pool === 'xvfb') {
+    const xvfb = await leaseXvfb(effective.xvfb.screen);
+    return startFreshDriverSession(effective, xvfb, {
+      allKey: undefined,
+      allowedMappedWindowCount: 0,
+      mode: 'xvfb',
+      xvfb,
+    });
+  }
+
+  const key = allPoolKey(effective.xvfb);
+  const idle = idleAllByKey.get(key);
+  if (idle !== undefined) {
+    idleAllByKey.delete(key);
+    if (
+      idle.xvfb.child.exitCode === null &&
+      idle.xvfb.child.signalCode === null
+    ) {
+      idle.lastUsedAt = Date.now();
+      return idle.session;
+    }
+    await idle.session.terminate().catch(() => undefined);
+  }
+
+  const xvfb = await leaseXvfb(effective.xvfb.screen);
+  return startFreshDriverSession(effective, xvfb, {
+    allKey: key,
+    allowedMappedWindowCount: 0,
+    mode: 'all',
+    xvfb,
+  });
 };
 
 const createLaunchPayload = (

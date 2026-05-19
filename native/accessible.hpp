@@ -258,6 +258,9 @@ bool capture_screen(CaptureResult *result, NativeError *error);
 bool capture_screen_bounds(const CaptureBounds &bounds, CaptureResult *result,
                            NativeError *error);
 
+/** Counts mapped top-level X11 windows on the current DISPLAY. */
+bool count_mapped_x11_windows(guint *count, NativeError *error);
+
 /** Reads AT-SPI metadata for an element within a process. */
 bool read_accessible_proxy_info(guint process_id, AtspiAccessible *accessible,
                                 AccessibleInfo *info, NativeError *error);

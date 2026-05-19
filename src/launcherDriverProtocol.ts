@@ -17,6 +17,7 @@ import type {
 export type DriverCommand =
   | 'launcher.launch'
   | 'launcher.release'
+  | 'launcher.reset'
   | 'app.release'
   | 'app.capture'
   | 'app.findById'

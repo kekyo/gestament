@@ -4,7 +4,7 @@
 // https://github.com/kekyo/gestament
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,14 @@ const xvfbBin = fileURLToPath(
 const packageEntryPath = fileURLToPath(
   new URL('../dist/index.cjs', import.meta.url)
 );
+const testBackend = process.env.GESTAMENT_TEST_BACKEND ?? 'gtk3';
+const fixtureAppPath = fileURLToPath(
+  new URL(
+    `../.build/${testBackend}-test-app/${testBackend}-test-app`,
+    import.meta.url
+  )
+);
+const fixtureAppExists = existsSync(fixtureAppPath);
 
 const atSpiProbeScript = `
 const { spawnSync } = require('node:child_process');
@@ -285,6 +293,251 @@ const secondLauncher = createGtkAppLauncher({
       expect(output.firstAppEnv.dbusSessionBusAddress).not.toBeNull();
       expect(output.secondAppEnv.dbusSessionBusAddress).not.toBeNull();
       expect(output.sessionsAreDifferent).toBe(true);
+    } finally {
+      rmSync(tempDirectory, { force: true, recursive: true });
+    }
+  });
+
+  it('reuses Xvfb resources only when xvfbPool opts in', () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'gestament-xvfb-pool-'));
+    const env = { ...process.env };
+    delete env.AT_SPI_BUS_ADDRESS;
+    delete env.DBUS_SESSION_BUS_ADDRESS;
+    delete env.DISPLAY;
+    delete env.GESTAMENT_XVFB_ACTIVE;
+    delete env.GSETTINGS_BACKEND;
+    delete env.GTK_THEME;
+    delete env.WAYLAND_DISPLAY;
+
+    try {
+      const script = `
+const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
+const tempDirectory = ${JSON.stringify(tempDirectory)};
+let appEnvIndex = 0;
+const childScript = (appEnvPath) => [
+  "const { writeFileSync } = require('node:fs');",
+  "writeFileSync(" + JSON.stringify(appEnvPath) + ", JSON.stringify({",
+  "  dbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,",
+  "  display: process.env.DISPLAY ?? null,",
+  "}));",
+  "setInterval(() => {}, 2147483647);",
+].join("\\n");
+const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
+const waitForAppEnv = async (appEnvPath) => {
+  for (let index = 0; index < 80; index += 1) {
+    if (existsSync(appEnvPath)) {
+      return JSON.parse(readFileSync(appEnvPath, 'utf8'));
+    }
+    await delay(25);
+  }
+  throw new Error('Timed out waiting for child environment output.');
+};
+const nodeAppOptions = (options) => {
+  const appEnvPath = join(tempDirectory, "app-env-" + appEnvIndex + ".json");
+  appEnvIndex += 1;
+  return {
+    appEnvPath,
+    launcherOptions: {
+      ...options,
+      appPath: process.execPath,
+      args: ['-e', childScript(appEnvPath)],
+      xvfbTrayHost: false,
+    },
+  };
+};
+const launchNodeApp = async (options) => {
+  const resolvedOptions = nodeAppOptions(options);
+  const launcher = createGtkAppLauncher(resolvedOptions.launcherOptions);
+  const app = await launcher.launch();
+  const env = await waitForAppEnv(resolvedOptions.appEnvPath);
+  const capture = await app.capture();
+  return { app, bounds: capture.bounds, env, launcher };
+};
+const releaseNodeApp = async (options) => {
+  const launched = await launchNodeApp(options);
+  await launched.launcher.release();
+  return { bounds: launched.bounds, env: launched.env };
+};
+const errorCode = async (operation) => operation().then(
+  () => null,
+  (error) => error && error.code ? error.code : null
+);
+(async () => {
+  const invalidLauncher = createGtkAppLauncher({
+    appPath: process.execPath,
+    xvfbPool: 'invalid',
+  });
+  const invalidPoolCode = await errorCode(() => invalidLauncher.launch());
+
+  const firstXvfb = await releaseNodeApp({
+    xvfbPool: 'xvfb',
+    xvfbScreen: '360x240x24',
+  });
+  const secondXvfb = await releaseNodeApp({
+    xvfbPool: 'xvfb',
+    xvfbScreen: '360x240x24',
+  });
+  const thirdXvfb = await releaseNodeApp({
+    xvfbPool: 'xvfb',
+    xvfbScreen: '390x260x24',
+  });
+
+  const firstAll = await launchNodeApp({
+    xvfbPool: 'all',
+    xvfbScreen: '430x310x24',
+  });
+  await firstAll.launcher.release();
+  const oldAllAppCode = await errorCode(() => firstAll.app.capture());
+  const secondAll = await releaseNodeApp({
+    xvfbPool: 'all',
+    xvfbScreen: '430x310x24',
+  });
+
+  let coverWindowIsAbsent = true;
+  let firstFixtureWindowCount = 0;
+  let oldFixtureAppCode = 'SKIPPED';
+  let secondFixtureWindowCount = 0;
+  let staleElementCode = 'SKIPPED';
+  if (${JSON.stringify(fixtureAppExists)}) {
+    const fixtureLauncher = createGtkAppLauncher({
+      appPath: ${JSON.stringify(fixtureAppPath)},
+      args: ['--cover-submit-button'],
+      timeoutMs: 3000,
+      xvfbPool: 'all',
+      xvfbScreen: '500x350x24',
+      xvfbTrayHost: false,
+    });
+    const fixtureApp = await fixtureLauncher.launch();
+    const heldElement = await fixtureApp.getById('main_window');
+    firstFixtureWindowCount = await fixtureApp.getWindowCount();
+    await fixtureLauncher.release();
+    oldFixtureAppCode = await errorCode(() => fixtureApp.getWindowCount());
+    staleElementCode = await errorCode(() => heldElement.info());
+
+    const nextFixtureLauncher = createGtkAppLauncher({
+      appPath: ${JSON.stringify(fixtureAppPath)},
+      timeoutMs: 3000,
+      xvfbPool: 'all',
+      xvfbScreen: '500x350x24',
+      xvfbTrayHost: false,
+    });
+    try {
+      const nextFixtureApp = await nextFixtureLauncher.launch();
+      secondFixtureWindowCount = await nextFixtureApp.getWindowCount();
+      coverWindowIsAbsent = (await nextFixtureApp.findById('cover_window')) === undefined;
+    } finally {
+      await nextFixtureLauncher.release();
+    }
+  }
+  console.log(JSON.stringify({
+    coverWindowIsAbsent,
+    firstAll,
+    firstFixtureWindowCount,
+    firstXvfb,
+    invalidPoolCode,
+    oldAllAppCode,
+    oldFixtureAppCode,
+    secondAll,
+    secondFixtureWindowCount,
+    secondXvfb,
+    staleElementCode,
+    thirdXvfb,
+  }));
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+`;
+      const result = spawnSync(process.execPath, ['-e', script], {
+        encoding: 'utf8',
+        env,
+        timeout: 120_000,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      const outputLine = result.stdout.trim().split('\n').at(-1);
+      expect(outputLine).toBeDefined();
+      const output = JSON.parse(outputLine as string) as {
+        readonly coverWindowIsAbsent: boolean;
+        readonly firstAll: {
+          readonly bounds: { readonly height: number; readonly width: number };
+          readonly env: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+        };
+        readonly firstFixtureWindowCount: number;
+        readonly firstXvfb: {
+          readonly bounds: { readonly height: number; readonly width: number };
+          readonly env: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+        };
+        readonly invalidPoolCode: string | null;
+        readonly oldAllAppCode: string | null;
+        readonly oldFixtureAppCode: string | null;
+        readonly secondAll: {
+          readonly bounds: { readonly height: number; readonly width: number };
+          readonly env: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+        };
+        readonly secondFixtureWindowCount: number;
+        readonly secondXvfb: {
+          readonly env: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+        };
+        readonly staleElementCode: string | null;
+        readonly thirdXvfb: {
+          readonly bounds: { readonly height: number; readonly width: number };
+          readonly env: {
+            readonly display: string | null;
+          };
+        };
+      };
+
+      expect(output.invalidPoolCode).toBe('INVALID_ARGUMENT');
+      expect(output.firstXvfb.bounds).toMatchObject({
+        height: 240,
+        width: 360,
+      });
+      expect(output.thirdXvfb.bounds).toMatchObject({
+        height: 260,
+        width: 390,
+      });
+      expect(output.firstXvfb.env.display).toBe(output.secondXvfb.env.display);
+      expect(output.firstXvfb.env.dbusSessionBusAddress).not.toBe(
+        output.secondXvfb.env.dbusSessionBusAddress
+      );
+      expect(output.thirdXvfb.env.display).not.toBe(
+        output.firstXvfb.env.display
+      );
+
+      expect(output.firstAll.bounds).toMatchObject({
+        height: 310,
+        width: 430,
+      });
+      expect(output.firstAll.env.display).toBe(output.secondAll.env.display);
+      expect(output.firstAll.env.dbusSessionBusAddress).toBe(
+        output.secondAll.env.dbusSessionBusAddress
+      );
+      expect(output.oldAllAppCode).toBe('APP_EXITED');
+      if (fixtureAppExists) {
+        expect(output.oldFixtureAppCode).toBe('APP_EXITED');
+        expect(output.staleElementCode).toBe('STALE_ELEMENT');
+        expect(output.firstFixtureWindowCount).toBeGreaterThanOrEqual(1);
+        expect(output.secondFixtureWindowCount).toBeGreaterThanOrEqual(1);
+        expect(output.coverWindowIsAbsent).toBe(true);
+      } else {
+        expect(output.oldFixtureAppCode).toBe('SKIPPED');
+        expect(output.staleElementCode).toBe('SKIPPED');
+      }
     } finally {
       rmSync(tempDirectory, { force: true, recursive: true });
     }

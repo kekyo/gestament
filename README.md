@@ -321,7 +321,7 @@ The following are the testing APIs provided by gestament.
 | `createGtkAppEnvironment()` | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`.   |
 | `createGtkAppLauncher()`    | Creates a launcher object that holds the specified application path, common arguments, display environment, environment variables, and wait timeout. |
 | `GtkAppLauncher.launch()`   | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application.                        |
-| `GtkAppLauncher.release()`  | Terminate all `GtkApp` instances launched from the launcher, and if the launcher was running Xvfb, terminate it as well.  |
+| `GtkAppLauncher.release()`  | Terminate all `GtkApp` instances launched from the launcher, and if the launcher was running Xvfb, terminate it as well.                             |
 
 The following example manually manages GTK application launches without using `launchGtkApp()` directly:
 
@@ -851,6 +851,44 @@ Image comparisons in `gestament/testing` also refer to the following environment
 
 - `GESTAMENT_VISUAL_OUTPUT_RESULT_PATH` specifies where diagnostic files such as actual/diff images are saved. If omitted, diagnostic files are not saved.
 - `GESTAMENT_VISUAL_VARIANT` specifies the variant name used to separate diagnostic files. If omitted, `GESTAMENT_TEST_BACKEND` is used, and if that is also omitted, `default` is used.
+
+### Speed Optimization Using Xvfb Pooling (Advanced topic)
+
+`xvfbPool` is a mode that controls whether Xvfb-related resources are pooled after `launcher.release()` and reused by subsequent launchers.
+The default is `none`, and we do not reuse them in order to prioritize test reproducibility.
+
+The following are the recommended settings when using this mode:
+
+- Stability first: `xvfbPool: 'none'`
+- Trim only Xvfb startup time: `xvfbPool: 'xvfb'`
+- Experiment with maximum reuse: `xvfbPool: 'all'`
+
+| Mode   | Reused resources                          | Pool key                      |
+| ------ | ----------------------------------------- | ----------------------------- |
+| `none` | Nothing. Xvfb/DBus/driver are recreated.  | none                          |
+| `xvfb` | Xvfb process only. DBus/driver are fresh. | `xvfbScreen`                  |
+| `all`  | Xvfb, DBus session, driver, tray host.    | `xvfbScreen` + `xvfbTrayHost` |
+
+Pools are not shared across Node.js processes or test workers; if a pool is reused, it is used by a single launcher at a time.
+Internal pools maintain a maximum of one per reusable condition, up to a total of four.
+
+If `display: ‘host’` uses an existing host display environment, `xvfbPool` has no effect. If `display: ‘host’` falls back to Xvfb, the specified pool mode is applied.
+If a window is detected during the clean check for reuse, or if the X server probe fails, that session is discarded and not reused.
+
+Possible side effects are listed below:
+
+| Side effect                                | Mainly possible mode | Impact                                                       | Immediately affects tests |
+| ------------------------------------------ | -------------------- | ------------------------------------------------------------ | ------------------------- |
+| Previous window remains                    | `xvfb`, `all`        | Pollutes capture/click results                               | High                      |
+| Orphan X client remains                    | `xvfb`, `all`        | May be visible even if AT-SPI does not expose it             | High                      |
+| Accessible ID / window enumeration leakage | `all`                | Can make `findById`, `windowAt`, or `getWindowCount` wrong   | High                      |
+| Tray item remains                          | `all`                | Can make `findTrayItem` or tray capture wrong                | High                      |
+| Focus / stacking order carries over        | `xvfb`, `all`        | Can destabilize input target or capture                      | Medium to high            |
+| Pointer / keyboard modifier state          | `xvfb`, `all`        | Can destabilize click/key operations                         | Medium                    |
+| Root window property / background          | `xvfb`, `all`        | Can affect full-screen capture or environment checks         | Medium                    |
+| Clipboard / PRIMARY selection              | `all`                | Can affect selection/clipboard tests                         | Medium                    |
+| DBus service / AT-SPI cache state          | `all`                | Old services or cache entries may be observed                | Medium to high            |
+| X server internal state / Atom table       | `xvfb`, `all`        | Usually not directly visible, but not a completely fresh X11 | Low to medium             |
 
 ---
 

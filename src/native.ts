@@ -206,6 +206,7 @@ interface NativeAddon {
     width: number,
     height: number
   ) => NativeCapture;
+  readonly mappedX11WindowCount: () => number;
   readonly elementInfo: (element: NativeElementHandle) => NativeElementInfo;
   readonly trayItems: (processId: number) => NativeTrayItem[];
   readonly runTrayHost: () => void;
@@ -591,6 +592,10 @@ export const nativeCaptureBounds = (
       bounds.height
     )
   );
+
+/** Counts mapped top-level X11 windows currently addressed by DISPLAY. */
+export const nativeMappedX11WindowCount = (): number =>
+  callNative(() => loadNativeAddon().mappedX11WindowCount());
 
 /** Reads AT-SPI metadata for the accessible resolved by an element handle. */
 export const nativeElementInfo = (
