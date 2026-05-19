@@ -295,13 +295,17 @@ describe('foobar GTK3 app test', () => {
 });
 ```
 
-By default, `createGtkAppLauncher()` uses an X11 virtual desktop by the Xvfb backend
-to run tests in an isolated environment that is not affected by your desktop environment.
+By default, `createGtkAppLauncher()` uses an X11 virtual desktop by the Xvfb backend to
+run tests in an isolated environment that is unaffected by your current desktop environment.
 
-The Xvfb backend is automatically started when a test runs and automatically terminated when the test finishes.
+The Xvfb backend is automatically started when the GTK application launches and is automatically terminated when `launcher.release()` is called.
 Therefore, you do not need to worry about the details when writing tests;
 however, if you want to run tests using your current desktop environment,
 you must specify options such as `display` (described later).
+
+If you want to isolate the display environment for concurrent test execution - such as with `test.concurrent`, please create a launcher within each test.
+If the same launcher is shared among concurrent tests, the display sessions within that launcher will also be shared,
+which may cause interference on the screen.
 
 ---
 
@@ -317,7 +321,7 @@ The following are the testing APIs provided by gestament.
 | `createGtkAppEnvironment()` | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`.   |
 | `createGtkAppLauncher()`    | Creates a launcher object that holds the specified application path, common arguments, display environment, environment variables, and wait timeout. |
 | `GtkAppLauncher.launch()`   | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application.                        |
-| `GtkAppLauncher.release()`  | Terminates all `GtkApp` instances launched from the launcher.                                                                                        |
+| `GtkAppLauncher.release()`  | Terminate all `GtkApp` instances launched from the launcher, and if the launcher was running Xvfb, terminate it as well.  |
 
 The following example manually manages GTK application launches without using `launchGtkApp()` directly:
 
@@ -821,6 +825,7 @@ By default, the following values are specified:
 - `GTK_THEME=Adwaita` fixes the theme to the standard GTK theme and isolates visual tests from the user's environment theme.
 
 `createGtkAppLauncher()` starts an internal Xvfb session by default.
+This session is launcher-scoped: apps launched from the same launcher share one Xvfb/DBus session, while separate launchers get separate sessions.
 `xvfbScreen` defaults to `1280x720x24`, and `xvfbTrayHost` defaults to `true`.
 `gsettings` and `theme` set `GSETTINGS_BACKEND` and `GTK_THEME`; use `null` to leave the corresponding environment variable unset.
 
@@ -838,6 +843,9 @@ const launcher = createGtkAppLauncher({
   gsettings: 'dconf',
 });
 ```
+
+`display: 'host'` uses the current host display when `DISPLAY` or `WAYLAND_DISPLAY` exists, so the physical or already-running display itself is not isolated.
+When no host display is available, gestament falls back to a launcher-scoped Xvfb session.
 
 Image comparisons in `gestament/testing` also refer to the following environment variables:
 

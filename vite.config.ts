@@ -25,8 +25,7 @@ export default defineConfig({
       entry: {
         index: 'src/index.ts',
         'gestament-config': 'src/gestament-config.ts',
-        'gestament-display-session-host':
-          'src/gestament-display-session-host.ts',
+        'gestament-launcher-driver': 'src/gestament-launcher-driver.ts',
         testing: 'src/testing.ts',
         'gestament-tray-host': 'src/gestament-tray-host.ts',
         'gestament-xvfb': 'src/gestament-xvfb.ts',
@@ -47,6 +46,8 @@ export default defineConfig({
         'node:fs',
         'node:fs/promises',
         'node:module',
+        'node:net',
+        'node:os',
         'node:path',
         'node:url',
         'node:zlib',

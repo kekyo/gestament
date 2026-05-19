@@ -13,7 +13,7 @@ import {
   createGtkOperationFailedError,
   normalizeNativeError,
 } from './errors';
-import { prepareGtkAppDisplay } from './displaySession';
+import { createDriverBackedGtkAppLauncher } from './displaySession';
 import { createGtkElement } from './element';
 import {
   nativeFindById,
@@ -481,33 +481,4 @@ export const launchGtkApp = (
  */
 export const createGtkAppLauncher = (
   options: GtkAppLauncherOptions
-): GtkAppLauncher => {
-  const launchedApps: GtkApp[] = [];
-
-  const launch = async (args?: readonly string[]): Promise<GtkApp> => {
-    const display = await prepareGtkAppDisplay(options);
-    const launchOptions: LaunchGtkAppOptions = {
-      env: display.env,
-      timeoutMs: options.timeoutMs,
-    };
-
-    const app = await launchGtkApp(
-      options.appPath,
-      [...(options.args ?? []), ...(args ?? [])],
-      launchOptions
-    );
-    launchedApps.push(app);
-    return app;
-  };
-
-  const release = async (): Promise<void> => {
-    const apps = launchedApps.splice(0);
-    await Promise.all(apps.map((app) => app.release()));
-  };
-
-  return {
-    launch,
-    release,
-    [Symbol.asyncDispose]: release,
-  };
-};
+): GtkAppLauncher => createDriverBackedGtkAppLauncher(options);

@@ -66,7 +66,7 @@ describe('sample GTK app', () => {
 - These APIs can be used to check and manipulate widget states.
 - Captures the rendering output of GTK applications to verify the display area and clip state.
 - Detects StatusNotifierItem-based tray icons and allows you to click them, retrieve metadata, and capture screenshots.
-- Runs GTK applications on `xvfb` to enable stable testing in headless environments.
+- Runs GTK applications on launcher-scoped `xvfb` sessions to enable stable testing in headless and concurrent environments.
 
 ### Environment
 
@@ -93,7 +93,7 @@ sudo apt-get install -y \
 
 - `at-spi2-core` is the AT-SPI runtime environment that gestament uses to identify and operate widgets.
 - `libx11-6` and `libxtst6` are used for X11 screen capture and input operations.
-- `dbus` / `dbus-x11` and `xvfb` / `xauth` are used when running tests headlessly with gestament's internal Xvfb session or `gestament-xvfb`.
+- `dbus` / `dbus-x11` and `xvfb` / `xauth` are used when running tests headlessly with gestament's launcher-scoped internal Xvfb sessions or `gestament-xvfb`.
 
 This completes the native environment setup.
 

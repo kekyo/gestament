@@ -102,9 +102,14 @@ describe('gestament-xvfb', () => {
     );
   });
 
-  it('starts an internal Xvfb session from createGtkAppLauncher', () => {
+  it('starts launcher-scoped Xvfb sessions from createGtkAppLauncher', () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), 'gestament-xvfb-'));
-    const appEnvPath = join(tempDirectory, 'app-env.json');
+    const firstAppEnvPath = join(tempDirectory, 'first-app-env.json');
+    const secondAppEnvPath = join(tempDirectory, 'second-app-env.json');
+    const hostFallbackAppEnvPath = join(
+      tempDirectory,
+      'host-fallback-app-env.json'
+    );
     const env = { ...process.env };
     delete env.AT_SPI_BUS_ADDRESS;
     delete env.DBUS_SESSION_BUS_ADDRESS;
@@ -118,10 +123,11 @@ describe('gestament-xvfb', () => {
       const script = `
 const { existsSync, readFileSync, writeFileSync } = require('node:fs');
 const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
-const appEnvPath = ${JSON.stringify(appEnvPath)};
-const childScript = [
+const childScript = (appEnvPath) => [
   "const { writeFileSync } = require('node:fs');",
   "writeFileSync(" + JSON.stringify(appEnvPath) + ", JSON.stringify({",
+  "  dbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,",
+  "  display: process.env.DISPLAY ?? null,",
   "  gdkBackend: process.env.GDK_BACKEND ?? null,",
   "  gsettingsBackend: process.env.GSETTINGS_BACKEND ?? null,",
   "  gtkTheme: process.env.GTK_THEME ?? null,",
@@ -129,7 +135,7 @@ const childScript = [
   "setInterval(() => {}, 2147483647);",
 ].join("\\n");
 const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
-const waitForAppEnv = async () => {
+const waitForAppEnv = async (appEnvPath) => {
   for (let index = 0; index < 40; index += 1) {
     if (existsSync(appEnvPath)) {
       return JSON.parse(readFileSync(appEnvPath, 'utf8'));
@@ -138,42 +144,70 @@ const waitForAppEnv = async () => {
   }
   throw new Error('Timed out waiting for child environment output.');
 };
-const launcher = createGtkAppLauncher({
+const firstLauncher = createGtkAppLauncher({
   appPath: process.execPath,
-  args: ['-e', childScript],
+  args: ['-e', childScript(${JSON.stringify(firstAppEnvPath)})],
   gsettings: null,
   theme: null,
   xvfbScreen: '640x480x24',
   xvfbTrayHost: false,
 });
+const secondLauncher = createGtkAppLauncher({
+  appPath: process.execPath,
+  args: ['-e', childScript(${JSON.stringify(secondAppEnvPath)})],
+  xvfbScreen: '800x600x24',
+  xvfbTrayHost: false,
+});
 (async () => {
-  const app = await launcher.launch();
+  const [firstApp, secondApp] = await Promise.all([
+    firstLauncher.launch(),
+    secondLauncher.launch(),
+  ]);
   try {
-    const capture = await app.capture();
-    const appEnv = await waitForAppEnv();
-    await launcher.release();
+    const [firstCapture, secondCapture, firstAppEnv, secondAppEnv] =
+      await Promise.all([
+        firstApp.capture(),
+        secondApp.capture(),
+        waitForAppEnv(${JSON.stringify(firstAppEnvPath)}),
+        waitForAppEnv(${JSON.stringify(secondAppEnvPath)}),
+      ]);
+    const invalidIndexCode = await firstApp.windowAt(-1).then(
+      () => null,
+      (error) => error && error.code ? error.code : null
+    );
+    await Promise.all([firstLauncher.release(), secondLauncher.release()]);
     const hostFallbackLauncher = createGtkAppLauncher({
       appPath: process.execPath,
-      args: ['-e', childScript],
+      args: ['-e', childScript(${JSON.stringify(hostFallbackAppEnvPath)})],
       display: 'host',
-      xvfbScreen: '640x480x24',
+      xvfbScreen: '320x240x24',
       xvfbTrayHost: false,
     });
     try {
       const hostFallbackApp = await hostFallbackLauncher.launch();
       const hostFallbackCapture = await hostFallbackApp.capture();
+      const hostFallbackAppEnv = await waitForAppEnv(${JSON.stringify(
+        hostFallbackAppEnvPath
+      )});
       console.log(JSON.stringify({
-        appEnv,
-        bounds: capture.bounds,
-        dbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,
-        display: process.env.DISPLAY ?? null,
+        firstAppEnv,
+        firstBounds: firstCapture.bounds,
+        hostFallbackAppEnv,
         hostFallbackBounds: hostFallbackCapture.bounds,
+        invalidIndexCode,
+        parentDbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,
+        parentDisplay: process.env.DISPLAY ?? null,
+        secondAppEnv,
+        secondBounds: secondCapture.bounds,
+        sessionsAreDifferent:
+          firstAppEnv.display !== secondAppEnv.display &&
+          firstAppEnv.dbusSessionBusAddress !== secondAppEnv.dbusSessionBusAddress,
       }));
     } finally {
       await hostFallbackLauncher.release();
     }
   } finally {
-    await launcher.release();
+    await Promise.all([firstLauncher.release(), secondLauncher.release()]);
   }
 })().catch((error) => {
   console.error(error && error.stack ? error.stack : error);
@@ -190,38 +224,67 @@ const launcher = createGtkAppLauncher({
       const outputLine = result.stdout.trim().split('\n').at(-1);
       expect(outputLine).toBeDefined();
       const output = JSON.parse(outputLine as string) as {
-        readonly appEnv: {
+        readonly firstAppEnv: {
+          readonly dbusSessionBusAddress: string | null;
+          readonly display: string | null;
           readonly gdkBackend: string | null;
           readonly gsettingsBackend: string | null;
           readonly gtkTheme: string | null;
         };
-        readonly bounds: {
+        readonly firstBounds: {
           readonly height: number;
           readonly width: number;
         };
-        readonly dbusSessionBusAddress: string | null;
-        readonly display: string | null;
+        readonly hostFallbackAppEnv: {
+          readonly dbusSessionBusAddress: string | null;
+          readonly display: string | null;
+        };
         readonly hostFallbackBounds: {
           readonly height: number;
           readonly width: number;
         };
+        readonly invalidIndexCode: string | null;
+        readonly parentDbusSessionBusAddress: string | null;
+        readonly parentDisplay: string | null;
+        readonly secondAppEnv: {
+          readonly dbusSessionBusAddress: string | null;
+          readonly display: string | null;
+        };
+        readonly secondBounds: {
+          readonly height: number;
+          readonly width: number;
+        };
+        readonly sessionsAreDifferent: boolean;
       };
 
-      expect(output.appEnv).toEqual({
+      expect(output.firstAppEnv).toMatchObject({
         gdkBackend: 'x11',
         gsettingsBackend: null,
         gtkTheme: null,
       });
-      expect(output.bounds).toMatchObject({
+      expect(output.firstBounds).toMatchObject({
         height: 480,
         width: 640,
+      });
+      expect(output.secondBounds).toMatchObject({
+        height: 600,
+        width: 800,
       });
       expect(output.hostFallbackBounds).toMatchObject({
-        height: 480,
-        width: 640,
+        height: 240,
+        width: 320,
       });
-      expect(output.dbusSessionBusAddress).not.toBeNull();
-      expect(output.display).toMatch(/^:[0-9]+(?:\\.[0-9]+)?$/u);
+      expect(output.invalidIndexCode).toBe('INVALID_ARGUMENT');
+      expect(output.parentDbusSessionBusAddress).toBeNull();
+      expect(output.parentDisplay).toBeNull();
+      expect(output.firstAppEnv.display).toMatch(/^:[0-9]+(?:\\.[0-9]+)?$/u);
+      expect(output.secondAppEnv.display).toMatch(/^:[0-9]+(?:\\.[0-9]+)?$/u);
+      expect(output.hostFallbackAppEnv.display).toMatch(
+        /^:[0-9]+(?:\\.[0-9]+)?$/u
+      );
+      expect(output.firstAppEnv.dbusSessionBusAddress).not.toBeNull();
+      expect(output.secondAppEnv.dbusSessionBusAddress).not.toBeNull();
+      expect(output.sessionsAreDifferent).toBe(true);
     } finally {
       rmSync(tempDirectory, { force: true, recursive: true });
     }
