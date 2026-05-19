@@ -42,7 +42,6 @@ import type {
   GtkAppDisplay,
   GtkAppLauncher,
   GtkAppLauncherOptions,
-  GtkAppXvfbPool,
   GtkCapture,
   GtkElementInfo,
   GtkImageInfo,
@@ -51,6 +50,7 @@ import type {
   GtkTrayItemSelector,
   GtkValueInfo,
   GtkWidgetElement,
+  GtkXvfbPool,
 } from './types';
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -58,7 +58,7 @@ import type {
 interface XvfbSessionOptions {
   readonly screen: string;
   readonly trayHost: boolean;
-  readonly pool: GtkAppXvfbPool;
+  readonly pool: ResolvedXvfbPool | undefined;
 }
 
 interface EffectiveDisplay {
@@ -100,6 +100,15 @@ interface PooledAllSession {
   lastUsedAt: number;
 }
 
+interface XvfbPoolLimits {
+  readonly maxIdlePerKey: number;
+  readonly maxIdleTotal: number;
+}
+
+interface ResolvedXvfbPool extends XvfbPoolLimits {
+  readonly type: 'xvfb' | 'all';
+}
+
 interface XvfbProbeResult {
   readonly bounds: {
     readonly height: number;
@@ -119,6 +128,7 @@ interface DriverResetResult {
 
 interface DriverSessionPoolOptions {
   readonly allKey: string | undefined;
+  readonly limits: XvfbPoolLimits;
   readonly mode: 'none' | 'xvfb' | 'all';
   readonly xvfb: PooledXvfb | undefined;
   readonly allowedMappedWindowCount: number;
@@ -146,20 +156,20 @@ const defaultGSettings = 'memory';
 const defaultTheme = 'Adwaita';
 const defaultXvfbScreen = '1280x720x24';
 const defaultXvfbTrayHost = true;
-const defaultXvfbPool: GtkAppXvfbPool = 'none';
+const defaultXvfbPoolMaxIdlePerKey = 1;
+const defaultXvfbPoolMaxIdleTotal = 4;
 const screenPattern = /^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$/;
 const sessionStartupTimeoutMs = 30_000;
 const sessionReleaseTimeoutMs = 5_000;
 const xvfbStartupTimeoutMs = 10_000;
 const xvfbPoolProbeTimeoutMs = 5_000;
-const maxIdlePoolSize = 4;
 const firstPooledDisplayNumber = 90;
 const lastPooledDisplayNumber = 590;
 
 let socketCounter = 0;
 const leasedDisplayNumbers = new Set<number>();
-const idleXvfbByKey = new Map<string, PooledXvfb>();
-const idleAllByKey = new Map<string, PooledAllSession>();
+const idleXvfbByKey = new Map<string, PooledXvfb[]>();
+const idleAllByKey = new Map<string, PooledAllSession[]>();
 const directXvfbs = new Set<PooledXvfb>();
 let poolCleanupInstalled = false;
 
@@ -226,17 +236,249 @@ const resolveDisplay = (display: GtkAppDisplay | undefined): GtkAppDisplay => {
   );
 };
 
-const resolveXvfbPool = (pool: GtkAppXvfbPool | undefined): GtkAppXvfbPool => {
-  if (pool === undefined) {
-    return defaultXvfbPool;
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const resolvePoolLimit = (
+  name: string,
+  value: number | undefined,
+  defaultValue: number
+): number => {
+  if (value === undefined) {
+    return defaultValue;
   }
-  if (pool === 'none' || pool === 'xvfb' || pool === 'all') {
-    return pool;
+  if (!Number.isInteger(value) || value < 0) {
+    throw createGtkInvalidArgumentError(`${name} must be an integer >= 0.`);
   }
-  throw createGtkInvalidArgumentError(
-    `xvfbPool must be "none", "xvfb", or "all": ${String(pool)}`
-  );
+  return value;
 };
+
+const resolveXvfbPool = (
+  pool: GtkXvfbPool | undefined
+): ResolvedXvfbPool | undefined => {
+  if (pool === undefined) {
+    return undefined;
+  }
+  if (!isRecord(pool)) {
+    throw createGtkInvalidArgumentError(
+      'xvfbPool must be an object with type "xvfb" or "all".'
+    );
+  }
+
+  const { type } = pool;
+  if (type !== 'xvfb' && type !== 'all') {
+    throw createGtkInvalidArgumentError(
+      `xvfbPool.type must be "xvfb" or "all": ${String(type)}`
+    );
+  }
+
+  return {
+    maxIdlePerKey: resolvePoolLimit(
+      'xvfbPool.maxIdlePerKey',
+      pool.maxIdlePerKey,
+      defaultXvfbPoolMaxIdlePerKey
+    ),
+    maxIdleTotal: resolvePoolLimit(
+      'xvfbPool.maxIdleTotal',
+      pool.maxIdleTotal,
+      defaultXvfbPoolMaxIdleTotal
+    ),
+    type,
+  };
+};
+
+const nonePoolLimits = (): XvfbPoolLimits => ({
+  maxIdlePerKey: 0,
+  maxIdleTotal: 0,
+});
+
+const poolLimits = (pool: ResolvedXvfbPool): XvfbPoolLimits => ({
+  maxIdlePerKey: pool.maxIdlePerKey,
+  maxIdleTotal: pool.maxIdleTotal,
+});
+
+const shouldRetainIdlePool = (limits: XvfbPoolLimits): boolean =>
+  limits.maxIdlePerKey > 0 && limits.maxIdleTotal > 0;
+
+const removeArrayEntry = <Entry>(
+  map: Map<string, Entry[]>,
+  key: string,
+  entry: Entry
+): void => {
+  const entries = map.get(key);
+  if (entries === undefined) {
+    return;
+  }
+
+  const index = entries.indexOf(entry);
+  if (index >= 0) {
+    entries.splice(index, 1);
+  }
+  if (entries.length === 0) {
+    map.delete(key);
+  }
+};
+
+const pushArrayEntry = <Entry>(
+  map: Map<string, Entry[]>,
+  key: string,
+  entry: Entry
+): void => {
+  const entries = map.get(key);
+  if (entries === undefined) {
+    map.set(key, [entry]);
+    return;
+  }
+  entries.push(entry);
+};
+
+const popArrayEntry = <Entry>(
+  map: Map<string, Entry[]>,
+  key: string
+): Entry | undefined => {
+  const entries = map.get(key);
+  if (entries === undefined) {
+    return undefined;
+  }
+
+  const entry = entries.pop();
+  if (entries.length === 0) {
+    map.delete(key);
+  }
+  return entry;
+};
+
+const totalArrayEntryCount = <Entry>(map: Map<string, Entry[]>): number =>
+  [...map.values()].reduce((total, entries) => total + entries.length, 0);
+
+const oldestEntry = <Entry extends { readonly lastUsedAt: number }>(
+  entries: readonly Entry[]
+): Entry | undefined =>
+  [...entries].sort((first, second) => first.lastUsedAt - second.lastUsedAt)[0];
+
+const allIdleXvfbs = (): PooledXvfb[] => [...idleXvfbByKey.values()].flat();
+
+const allIdleAllSessions = (): PooledAllSession[] =>
+  [...idleAllByKey.values()].flat();
+
+const totalIdlePoolSize = (): number =>
+  totalArrayEntryCount(idleXvfbByKey) + totalArrayEntryCount(idleAllByKey);
+
+const candidateOldestIdlePool = ():
+  | { readonly kind: 'all'; readonly session: PooledAllSession }
+  | { readonly kind: 'xvfb'; readonly xvfb: PooledXvfb }
+  | undefined => {
+  const candidates = [
+    ...allIdleXvfbs().map((xvfb) => ({
+      kind: 'xvfb' as const,
+      lastUsedAt: xvfb.lastUsedAt,
+      xvfb,
+    })),
+    ...allIdleAllSessions().map((session) => ({
+      kind: 'all' as const,
+      lastUsedAt: session.lastUsedAt,
+      session,
+    })),
+  ].sort((first, second) => first.lastUsedAt - second.lastUsedAt);
+  const candidate = candidates[0];
+  if (candidate === undefined) {
+    return undefined;
+  }
+  return candidate.kind === 'xvfb'
+    ? { kind: 'xvfb', xvfb: candidate.xvfb }
+    : { kind: 'all', session: candidate.session };
+};
+
+const evictIdleXvfb = async (xvfb: PooledXvfb): Promise<void> => {
+  removeArrayEntry(idleXvfbByKey, xvfb.key, xvfb);
+  await terminateXvfb(xvfb);
+};
+
+const evictIdleAllSession = async (
+  session: PooledAllSession
+): Promise<void> => {
+  removeArrayEntry(idleAllByKey, session.key, session);
+  await session.session.terminate();
+};
+
+const evictIdlePools = async (maxIdleTotal: number): Promise<void> => {
+  while (totalIdlePoolSize() > maxIdleTotal) {
+    const candidate = candidateOldestIdlePool();
+    if (candidate === undefined) {
+      return;
+    }
+    if (candidate.kind === 'xvfb') {
+      await evictIdleXvfb(candidate.xvfb);
+    } else {
+      await evictIdleAllSession(candidate.session);
+    }
+  }
+};
+
+const trimIdleXvfbKey = async (
+  key: string,
+  maxIdlePerKey: number
+): Promise<void> => {
+  while ((idleXvfbByKey.get(key)?.length ?? 0) > maxIdlePerKey) {
+    const entry = oldestEntry(idleXvfbByKey.get(key) ?? []);
+    if (entry === undefined) {
+      return;
+    }
+    await evictIdleXvfb(entry);
+  }
+};
+
+const trimIdleAllKey = async (
+  key: string,
+  maxIdlePerKey: number
+): Promise<void> => {
+  while ((idleAllByKey.get(key)?.length ?? 0) > maxIdlePerKey) {
+    const entry = oldestEntry(idleAllByKey.get(key) ?? []);
+    if (entry === undefined) {
+      return;
+    }
+    await evictIdleAllSession(entry);
+  }
+};
+
+const retainIdleXvfb = async (
+  xvfb: PooledXvfb,
+  limits: XvfbPoolLimits
+): Promise<void> => {
+  if (!shouldRetainIdlePool(limits)) {
+    await terminateXvfb(xvfb);
+    return;
+  }
+
+  xvfb.lastUsedAt = Date.now();
+  pushArrayEntry(idleXvfbByKey, xvfb.key, xvfb);
+  await trimIdleXvfbKey(xvfb.key, limits.maxIdlePerKey);
+  await evictIdlePools(limits.maxIdleTotal);
+};
+
+const retainIdleAllSession = async (
+  session: PooledAllSession,
+  limits: XvfbPoolLimits
+): Promise<void> => {
+  if (!shouldRetainIdlePool(limits)) {
+    await session.session.terminate();
+    return;
+  }
+
+  session.lastUsedAt = Date.now();
+  session.xvfb.lastUsedAt = session.lastUsedAt;
+  pushArrayEntry(idleAllByKey, session.key, session);
+  await trimIdleAllKey(session.key, limits.maxIdlePerKey);
+  await evictIdlePools(limits.maxIdleTotal);
+};
+
+const emptyDriverSessionPoolOptions = (): DriverSessionPoolOptions => ({
+  allKey: undefined,
+  allowedMappedWindowCount: 0,
+  limits: nonePoolLimits(),
+  mode: 'none',
+  xvfb: undefined,
+});
 
 const resolveXvfbOptions = (
   options: GtkAppLauncherOptions
@@ -542,7 +784,7 @@ const spawnDirectXvfb = async (screen: string): Promise<PooledXvfb> => {
 };
 
 const terminateXvfb = async (xvfb: PooledXvfb): Promise<void> => {
-  idleXvfbByKey.delete(xvfb.key);
+  removeArrayEntry(idleXvfbByKey, xvfb.key, xvfb);
   directXvfbs.delete(xvfb);
   if (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
     xvfb.child.kill('SIGTERM');
@@ -559,16 +801,19 @@ const terminateXvfb = async (xvfb: PooledXvfb): Promise<void> => {
 };
 
 const leaseXvfb = async (screen: string): Promise<PooledXvfb> => {
-  const idle = idleXvfbByKey.get(screen);
-  if (idle !== undefined) {
-    idleXvfbByKey.delete(screen);
+  for (;;) {
+    const idle = popArrayEntry(idleXvfbByKey, screen);
+    if (idle === undefined) {
+      return spawnDirectXvfb(screen);
+    }
+
     if (idle.child.exitCode === null && idle.child.signalCode === null) {
       idle.lastUsedAt = Date.now();
       return idle;
     }
+
     await terminateXvfb(idle);
   }
-  return spawnDirectXvfb(screen);
 };
 
 const runXvfbProbe = (xvfb: PooledXvfb): Promise<XvfbProbeResult> =>
@@ -652,55 +897,17 @@ const cleanCheckXvfb = async (
   }
 };
 
-const totalIdlePoolSize = (): number => idleXvfbByKey.size + idleAllByKey.size;
-
-const evictIdlePools = async (): Promise<void> => {
-  while (totalIdlePoolSize() > maxIdlePoolSize) {
-    const candidates = [
-      ...[...idleXvfbByKey.values()].map((xvfb) => ({
-        kind: 'xvfb' as const,
-        key: xvfb.key,
-        lastUsedAt: xvfb.lastUsedAt,
-      })),
-      ...[...idleAllByKey.values()].map((session) => ({
-        kind: 'all' as const,
-        key: session.key,
-        lastUsedAt: session.lastUsedAt,
-      })),
-    ].sort((first, second) => first.lastUsedAt - second.lastUsedAt);
-    const candidate = candidates[0];
-    if (candidate === undefined) {
-      return;
-    }
-    if (candidate.kind === 'xvfb') {
-      const xvfb = idleXvfbByKey.get(candidate.key);
-      if (xvfb !== undefined) {
-        await terminateXvfb(xvfb);
-      }
-    } else {
-      const pooled = idleAllByKey.get(candidate.key);
-      if (pooled !== undefined) {
-        idleAllByKey.delete(candidate.key);
-        await pooled.session.terminate();
-      }
-    }
-  }
-};
-
-const returnXvfbToPool = async (xvfb: PooledXvfb): Promise<void> => {
+const returnXvfbToPool = async (
+  xvfb: PooledXvfb,
+  limits: XvfbPoolLimits
+): Promise<void> => {
   const clean = await cleanCheckXvfb(xvfb, 0);
   if (!clean) {
     await terminateXvfb(xvfb);
     return;
   }
 
-  const existing = idleXvfbByKey.get(xvfb.key);
-  if (existing !== undefined && existing !== xvfb) {
-    await terminateXvfb(existing);
-  }
-  xvfb.lastUsedAt = Date.now();
-  idleXvfbByKey.set(xvfb.key, xvfb);
-  await evictIdlePools();
+  await retainIdleXvfb(xvfb, limits);
 };
 
 const allPoolKey = (xvfb: XvfbSessionOptions): string =>
@@ -1132,7 +1339,7 @@ const createDriverSession = (
         throw error;
       }
       if (poolOptions.xvfb !== undefined) {
-        await returnXvfbToPool(poolOptions.xvfb);
+        await returnXvfbToPool(poolOptions.xvfb, poolOptions.limits);
       }
       return;
     }
@@ -1166,19 +1373,15 @@ const createDriverSession = (
       return;
     }
 
-    const existing = idleAllByKey.get(poolOptions.allKey);
-    if (existing !== undefined && existing.session !== session) {
-      idleAllByKey.delete(poolOptions.allKey);
-      await existing.session.terminate();
-    }
-    poolOptions.xvfb.lastUsedAt = Date.now();
-    idleAllByKey.set(poolOptions.allKey, {
-      key: poolOptions.allKey,
-      lastUsedAt: Date.now(),
-      session,
-      xvfb: poolOptions.xvfb,
-    });
-    await evictIdlePools();
+    await retainIdleAllSession(
+      {
+        key: poolOptions.allKey,
+        lastUsedAt: Date.now(),
+        session,
+        xvfb: poolOptions.xvfb,
+      },
+      poolOptions.limits
+    );
   };
 
   session = { release, request, terminate };
@@ -1246,42 +1449,45 @@ const startDriverSession = async (
   const effective = resolveEffectiveDisplay(display, xvfbOptions);
 
   if (effective.kind !== 'xvfb' || effective.xvfb === undefined) {
-    return startFreshDriverSession(effective, undefined, {
-      allKey: undefined,
-      allowedMappedWindowCount: 0,
-      mode: 'none',
-      xvfb: undefined,
-    });
+    return startFreshDriverSession(
+      effective,
+      undefined,
+      emptyDriverSessionPoolOptions()
+    );
   }
 
-  if (effective.xvfb.pool === 'none') {
-    return startFreshDriverSession(effective, undefined, {
-      allKey: undefined,
-      allowedMappedWindowCount: 0,
-      mode: 'none',
-      xvfb: undefined,
-    });
+  const pool = effective.xvfb.pool;
+  if (pool === undefined) {
+    return startFreshDriverSession(
+      effective,
+      undefined,
+      emptyDriverSessionPoolOptions()
+    );
   }
 
-  if (effective.xvfb.pool === 'xvfb') {
+  if (pool.type === 'xvfb') {
     const xvfb = await leaseXvfb(effective.xvfb.screen);
     return startFreshDriverSession(effective, xvfb, {
       allKey: undefined,
       allowedMappedWindowCount: 0,
+      limits: poolLimits(pool),
       mode: 'xvfb',
       xvfb,
     });
   }
 
   const key = allPoolKey(effective.xvfb);
-  const idle = idleAllByKey.get(key);
-  if (idle !== undefined) {
-    idleAllByKey.delete(key);
+  for (;;) {
+    const idle = popArrayEntry(idleAllByKey, key);
+    if (idle === undefined) {
+      break;
+    }
     if (
       idle.xvfb.child.exitCode === null &&
       idle.xvfb.child.signalCode === null
     ) {
       idle.lastUsedAt = Date.now();
+      idle.xvfb.lastUsedAt = idle.lastUsedAt;
       return idle.session;
     }
     await idle.session.terminate().catch(() => undefined);
@@ -1291,6 +1497,7 @@ const startDriverSession = async (
   return startFreshDriverSession(effective, xvfb, {
     allKey: key,
     allowedMappedWindowCount: 0,
+    limits: poolLimits(pool),
     mode: 'all',
     xvfb,
   });

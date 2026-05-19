@@ -850,23 +850,27 @@ const launcher = createGtkAppLauncher({
 
 ### Xvfbプーリングによる高速化 (Advanced topic)
 
-`xvfbPool` は、`launcher.release()` 後のXvfb関連リソースをプールし、後続のランチャーで再利用するかどうかを制御するモードです。
-デフォルトは `none` で、テスト再現性を重視して再利用しません。
+時に、テストの実行速度は重要となります。gestamentは内部でXvfbを起動して、テスト間のUIセッション独立性を保っていますが、Xvfbやセッションの再起動には時間がかかります。
+もし、これが非常に問題となる場合は、Xvfbプーリングの機能を使用できます。
 
-選択する場合の推奨は以下です:
+`xvfbPool` は、`launcher.release()` 後のXvfb関連リソースをプールし、後続のランチャーで再利用するかどうかを制御します。デフォルトでは、テスト再現性を重視して再利用しません。
 
-- 安定性優先: `xvfbPool: 'none'`
-- Xvfbの起動時間だけ少し削りたい: `xvfbPool: 'xvfb'`
-- 実験的に最大再利用したい: `xvfbPool: 'all'`
+選択する場合の推奨を示します:
 
-| Mode   | 再利用されるリソース                           | Pool key                      |
-| ------ | ---------------------------------------------- | ----------------------------- |
-| `none` | なし。Xvfb/DBus/driverを毎回再生成します     | なし                          |
-| `xvfb` | Xvfb processのみ。DBus/driverは毎回freshです | `xvfbScreen`                  |
-| `all`  | Xvfb、DBus session、driver、tray host        | `xvfbScreen` + `xvfbTrayHost` |
+- テスト再現性優先: `xvfbPool` を省略（デフォルト）
+- Xvfbの起動時間だけ少し削りたい: `xvfbPool: { type: 'xvfb' }`
+- 実験的に最大再利用したい: `xvfbPool: { type: 'all' }`
+
+| `xvfbPool.type` | 再利用されるリソース                         | Pool key                      |
+| :-------------- | :------------------------------------------- | ----------------------------- |
+| (未指定)        | なし。Xvfb/DBus/driverを毎回再生成します     | なし                          |
+| `xvfb`          | Xvfb processのみ。DBus/driverは毎回freshです | `xvfbScreen`                  |
+| `all`           | Xvfb、DBus session、driver、tray host        | `xvfbScreen` + `xvfbTrayHost` |
 
 プールはNode.jsプロセスやテストワーカーをまたいで共有されず、プールが再利用された場合は、同時に1つのランチャーに利用されます。
-内部プールは、再利用可能条件毎に最大1個、全体で最大4個まで保持します。
+
+プールのデフォルトでは、内部プールは再利用可能条件毎に最大1個、全体で最大4個まで保持します。
+`maxIdlePerKey` と `maxIdleTotal` でこの上限を変更できます。どちらも `0` を指定すると、該当するセッションを保持せず破棄します。
 
 `display: 'host'` が既存のホスト表示環境を使用する場合、`xvfbPool` は意味を持ちません。
 `display: 'host'` がXvfbへフォールバックした場合は、指定されたプールモードが適用されます。
@@ -875,7 +879,7 @@ const launcher = createGtkAppLauncher({
 考えられる副作用を以下に示します:
 
 | 副作用                            | 主に発生し得る mode | 影響                                                  | すぐテストに影響するか |
-| --------------------------------- | ------------------- | ----------------------------------------------------- | ---------------------- |
+| :-------------------------------- | :------------------ | :---------------------------------------------------- | :--------------------- |
 | 前回windowの残存                  | `xvfb`, `all`       | capture/click が汚染される                            | 高い                   |
 | orphan X client の残存            | `xvfb`, `all`       | AT-SPIには見えないが画面に映る可能性がある            | 高い                   |
 | accessible ID / window列挙の混入  | `all`               | `findById`, `windowAt`, `getWindowCount` が誤る       | 高い                   |

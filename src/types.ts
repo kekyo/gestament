@@ -996,9 +996,28 @@ export type GtkAppEnvironment = Readonly<Record<string, string | undefined>>;
 export type GtkAppDisplay = 'xvfb' | 'host';
 
 /**
- * Xvfb session pooling mode used by a reusable GTK application launcher.
+ * Xvfb session pooling options used by a reusable GTK application launcher.
  */
-export type GtkAppXvfbPool = 'none' | 'xvfb' | 'all';
+export interface GtkXvfbPool {
+  /**
+   * Resource reuse mode.
+   *
+   * @remarks
+   * 'xvfb' reuses only the Xvfb process. 'all' also reuses the DBus session,
+   * launcher driver, and tray host, and can carry more state between launches.
+   */
+  readonly type: 'xvfb' | 'all';
+  /**
+   * Maximum idle sessions retained for each reusable condition.
+   * Default is 1. 0 disables retaining idle sessions for the key being released.
+   */
+  readonly maxIdlePerKey?: number | undefined;
+  /**
+   * Maximum idle sessions retained across all reusable conditions.
+   * Default is 4. 0 disables retaining idle sessions for the key being released.
+   */
+  readonly maxIdleTotal?: number | undefined;
+}
 
 /**
  * Options used when launching a GTK application.
@@ -1152,14 +1171,10 @@ export interface GtkAppLauncherOptions {
    */
   readonly xvfbTrayHost?: boolean | undefined;
   /**
-   * Xvfb process pooling mode used when the effective display is xvfb.
-   * Default is 'none'.
-   *
-   * @remarks
-   * 'xvfb' reuses only the Xvfb process. 'all' also reuses the DBus session,
-   * launcher driver, and tray host, and can carry more state between launches.
+   * Xvfb process pooling options used when the effective display is xvfb.
+   * Default is undefined, which disables pooling.
    */
-  readonly xvfbPool?: GtkAppXvfbPool | undefined;
+  readonly xvfbPool?: GtkXvfbPool | undefined;
   /**
    * GSettings backend passed to every launched application.
    * Default is 'memory'. null (NOT backend name) leaves GSETTINGS_BACKEND unset.

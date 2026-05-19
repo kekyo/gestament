@@ -364,34 +364,113 @@ const errorCode = async (operation) => operation().then(
   () => null,
   (error) => error && error.code ? error.code : null
 );
-(async () => {
-  const invalidLauncher = createGtkAppLauncher({
+const invalidPoolCode = async (xvfbPool) => {
+  const launcher = createGtkAppLauncher({
     appPath: process.execPath,
-    xvfbPool: 'invalid',
+    xvfbPool,
   });
-  const invalidPoolCode = await errorCode(() => invalidLauncher.launch());
+  return errorCode(() => launcher.launch());
+};
+const displaySet = (launched) =>
+  launched.map((entry) => entry.env.display).sort().join('|');
+(async () => {
+  const invalidPoolCodes = await Promise.all([
+    invalidPoolCode('invalid'),
+    invalidPoolCode('xvfb'),
+    invalidPoolCode({}),
+    invalidPoolCode({ type: 'none' }),
+    invalidPoolCode({ type: 'xvfb', maxIdlePerKey: -1 }),
+    invalidPoolCode({ type: 'xvfb', maxIdleTotal: 1.5 }),
+  ]);
 
   const firstXvfb = await releaseNodeApp({
-    xvfbPool: 'xvfb',
+    xvfbPool: { type: 'xvfb' },
     xvfbScreen: '360x240x24',
   });
   const secondXvfb = await releaseNodeApp({
-    xvfbPool: 'xvfb',
+    xvfbPool: { type: 'xvfb' },
     xvfbScreen: '360x240x24',
   });
   const thirdXvfb = await releaseNodeApp({
-    xvfbPool: 'xvfb',
+    xvfbPool: { type: 'xvfb' },
     xvfbScreen: '390x260x24',
   });
 
+  const firstNoRetain = await releaseNodeApp({
+    xvfbPool: { type: 'all', maxIdleTotal: 0 },
+    xvfbScreen: '370x250x24',
+  });
+  const secondNoRetain = await releaseNodeApp({
+    xvfbPool: { type: 'all', maxIdleTotal: 0 },
+    xvfbScreen: '370x250x24',
+  });
+  const firstNoRetainPerKey = await releaseNodeApp({
+    xvfbPool: { type: 'all', maxIdlePerKey: 0 },
+    xvfbScreen: '380x260x24',
+  });
+  const secondNoRetainPerKey = await releaseNodeApp({
+    xvfbPool: { type: 'all', maxIdlePerKey: 0 },
+    xvfbScreen: '380x260x24',
+  });
+
+  const firstPair = await Promise.all([
+    launchNodeApp({
+      xvfbPool: { type: 'xvfb', maxIdlePerKey: 2, maxIdleTotal: 4 },
+      xvfbScreen: '410x280x24',
+    }),
+    launchNodeApp({
+      xvfbPool: { type: 'xvfb', maxIdlePerKey: 2, maxIdleTotal: 4 },
+      xvfbScreen: '410x280x24',
+    }),
+  ]);
+  const firstPairDisplays = displaySet(firstPair);
+  await Promise.all(firstPair.map((entry) => entry.launcher.release()));
+  const secondPair = await Promise.all([
+    launchNodeApp({
+      xvfbPool: { type: 'xvfb', maxIdlePerKey: 2, maxIdleTotal: 4 },
+      xvfbScreen: '410x280x24',
+    }),
+    launchNodeApp({
+      xvfbPool: { type: 'xvfb', maxIdlePerKey: 2, maxIdleTotal: 4 },
+      xvfbScreen: '410x280x24',
+    }),
+  ]);
+  const secondPairDisplays = displaySet(secondPair);
+  await Promise.all(secondPair.map((entry) => entry.launcher.release()));
+
+  const totalFirst = await releaseNodeApp({
+    xvfbPool: { type: 'xvfb', maxIdleTotal: 1 },
+    xvfbScreen: '520x310x24',
+  });
+  const totalSecond = await releaseNodeApp({
+    xvfbPool: { type: 'xvfb', maxIdleTotal: 1 },
+    xvfbScreen: '530x320x24',
+  });
+  const totalFirstAgain = await launchNodeApp({
+    xvfbPool: { type: 'xvfb', maxIdleTotal: 1 },
+    xvfbScreen: '520x310x24',
+  });
+  const totalSecondAgain = await launchNodeApp({
+    xvfbPool: { type: 'xvfb', maxIdleTotal: 1 },
+    xvfbScreen: '530x320x24',
+  });
+  const totalPoolResults = {
+    firstWasEvicted: totalFirstAgain.env.display !== totalFirst.env.display,
+    secondWasRetained: totalSecondAgain.env.display === totalSecond.env.display,
+  };
+  await Promise.all([
+    totalFirstAgain.launcher.release(),
+    totalSecondAgain.launcher.release(),
+  ]);
+
   const firstAll = await launchNodeApp({
-    xvfbPool: 'all',
+    xvfbPool: { type: 'all' },
     xvfbScreen: '430x310x24',
   });
   await firstAll.launcher.release();
   const oldAllAppCode = await errorCode(() => firstAll.app.capture());
   const secondAll = await releaseNodeApp({
-    xvfbPool: 'all',
+    xvfbPool: { type: 'all' },
     xvfbScreen: '430x310x24',
   });
 
@@ -405,7 +484,7 @@ const errorCode = async (operation) => operation().then(
       appPath: ${JSON.stringify(fixtureAppPath)},
       args: ['--cover-submit-button'],
       timeoutMs: 3000,
-      xvfbPool: 'all',
+      xvfbPool: { type: 'all' },
       xvfbScreen: '500x350x24',
       xvfbTrayHost: false,
     });
@@ -419,7 +498,7 @@ const errorCode = async (operation) => operation().then(
     const nextFixtureLauncher = createGtkAppLauncher({
       appPath: ${JSON.stringify(fixtureAppPath)},
       timeoutMs: 3000,
-      xvfbPool: 'all',
+      xvfbPool: { type: 'all' },
       xvfbScreen: '500x350x24',
       xvfbTrayHost: false,
     });
@@ -435,15 +514,22 @@ const errorCode = async (operation) => operation().then(
     coverWindowIsAbsent,
     firstAll,
     firstFixtureWindowCount,
+    firstNoRetain,
+    firstNoRetainPerKey,
+    firstPairDisplays,
     firstXvfb,
-    invalidPoolCode,
+    invalidPoolCodes,
     oldAllAppCode,
     oldFixtureAppCode,
     secondAll,
     secondFixtureWindowCount,
+    secondNoRetain,
+    secondNoRetainPerKey,
+    secondPairDisplays,
     secondXvfb,
     staleElementCode,
     thirdXvfb,
+    totalPoolResults,
   }));
 })().catch((error) => {
   console.error(error && error.stack ? error.stack : error);
@@ -469,6 +555,19 @@ const errorCode = async (operation) => operation().then(
           };
         };
         readonly firstFixtureWindowCount: number;
+        readonly firstNoRetain: {
+          readonly env: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+        };
+        readonly firstNoRetainPerKey: {
+          readonly env: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+        };
+        readonly firstPairDisplays: string;
         readonly firstXvfb: {
           readonly bounds: { readonly height: number; readonly width: number };
           readonly env: {
@@ -476,7 +575,7 @@ const errorCode = async (operation) => operation().then(
             readonly display: string | null;
           };
         };
-        readonly invalidPoolCode: string | null;
+        readonly invalidPoolCodes: readonly (string | null)[];
         readonly oldAllAppCode: string | null;
         readonly oldFixtureAppCode: string | null;
         readonly secondAll: {
@@ -487,6 +586,19 @@ const errorCode = async (operation) => operation().then(
           };
         };
         readonly secondFixtureWindowCount: number;
+        readonly secondNoRetain: {
+          readonly env: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+        };
+        readonly secondNoRetainPerKey: {
+          readonly env: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+        };
+        readonly secondPairDisplays: string;
         readonly secondXvfb: {
           readonly env: {
             readonly dbusSessionBusAddress: string | null;
@@ -500,9 +612,20 @@ const errorCode = async (operation) => operation().then(
             readonly display: string | null;
           };
         };
+        readonly totalPoolResults: {
+          readonly firstWasEvicted: boolean;
+          readonly secondWasRetained: boolean;
+        };
       };
 
-      expect(output.invalidPoolCode).toBe('INVALID_ARGUMENT');
+      expect(output.invalidPoolCodes).toEqual([
+        'INVALID_ARGUMENT',
+        'INVALID_ARGUMENT',
+        'INVALID_ARGUMENT',
+        'INVALID_ARGUMENT',
+        'INVALID_ARGUMENT',
+        'INVALID_ARGUMENT',
+      ]);
       expect(output.firstXvfb.bounds).toMatchObject({
         height: 240,
         width: 360,
@@ -518,6 +641,17 @@ const errorCode = async (operation) => operation().then(
       expect(output.thirdXvfb.env.display).not.toBe(
         output.firstXvfb.env.display
       );
+      expect(output.firstNoRetain.env.dbusSessionBusAddress).not.toBe(
+        output.secondNoRetain.env.dbusSessionBusAddress
+      );
+      expect(output.firstNoRetainPerKey.env.dbusSessionBusAddress).not.toBe(
+        output.secondNoRetainPerKey.env.dbusSessionBusAddress
+      );
+      expect(output.firstPairDisplays).toBe(output.secondPairDisplays);
+      expect(output.totalPoolResults).toMatchObject({
+        firstWasEvicted: true,
+        secondWasRetained: true,
+      });
 
       expect(output.firstAll.bounds).toMatchObject({
         height: 310,

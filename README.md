@@ -854,23 +854,29 @@ Image comparisons in `gestament/testing` also refer to the following environment
 
 ### Speed Optimization Using Xvfb Pooling (Advanced topic)
 
-`xvfbPool` is a mode that controls whether Xvfb-related resources are pooled after `launcher.release()` and reused by subsequent launchers.
-The default is `none`, and we do not reuse them in order to prioritize test reproducibility.
+Sometimes, test execution speed is critical.
+gestament launches Xvfb internally to maintain UI session independence between tests, but restarting Xvfb and sessions takes time.
+If this is a significant issue, you can use the Xvfb pooling feature.
+
+`xvfbPool` controls whether Xvfb-related resources are pooled after `launcher.release()` and reused by subsequent launchers.
+The default is: we do not reuse them in order to prioritize test reproducibility.
 
 The following are the recommended settings when using this mode:
 
-- Stability first: `xvfbPool: 'none'`
-- Trim only Xvfb startup time: `xvfbPool: 'xvfb'`
-- Experiment with maximum reuse: `xvfbPool: 'all'`
+- Reproducibility first: omit `xvfbPool` (default)
+- Trim only Xvfb startup time: `xvfbPool: { type: 'xvfb' }`
+- Experiment with maximum reuse: `xvfbPool: { type: 'all' }`
 
-| Mode   | Reused resources                          | Pool key                      |
-| ------ | ----------------------------------------- | ----------------------------- |
-| `none` | Nothing. Xvfb/DBus/driver are recreated.  | none                          |
-| `xvfb` | Xvfb process only. DBus/driver are fresh. | `xvfbScreen`                  |
-| `all`  | Xvfb, DBus session, driver, tray host.    | `xvfbScreen` + `xvfbTrayHost` |
+| `xvfbPool.type` | Reused resources                          | Pool key                      |
+| :-------------- | :---------------------------------------- | :---------------------------- |
+| (omitted)       | Nothing. Xvfb/DBus/driver are recreated.  | none                          |
+| `xvfb`          | Xvfb process only. DBus/driver are fresh. | `xvfbScreen`                  |
+| `all`           | Xvfb, DBus session, driver, tray host.    | `xvfbScreen` + `xvfbTrayHost` |
 
 Pools are not shared across Node.js processes or test workers; if a pool is reused, it is used by a single launcher at a time.
-Internal pools maintain a maximum of one per reusable condition, up to a total of four.
+
+By default pooling, internal pools maintain a maximum of one idle session per reusable condition, up to a total of four.
+Use `maxIdlePerKey` and `maxIdleTotal` to change those limits; either value can be `0` to discard sessions instead of retaining them.
 
 If `display: ‘host’` uses an existing host display environment, `xvfbPool` has no effect. If `display: ‘host’` falls back to Xvfb, the specified pool mode is applied.
 If a window is detected during the clean check for reuse, or if the X server probe fails, that session is discarded and not reused.
@@ -878,7 +884,7 @@ If a window is detected during the clean check for reuse, or if the X server pro
 Possible side effects are listed below:
 
 | Side effect                                | Mainly possible mode | Impact                                                       | Immediately affects tests |
-| ------------------------------------------ | -------------------- | ------------------------------------------------------------ | ------------------------- |
+| :----------------------------------------- | :------------------- | :----------------------------------------------------------- | :------------------------ |
 | Previous window remains                    | `xvfb`, `all`        | Pollutes capture/click results                               | High                      |
 | Orphan X client remains                    | `xvfb`, `all`        | May be visible even if AT-SPI does not expose it             | High                      |
 | Accessible ID / window enumeration leakage | `all`                | Can make `findById`, `windowAt`, or `getWindowCount` wrong   | High                      |
