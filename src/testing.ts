@@ -14,6 +14,8 @@ import { ssim } from 'ssim.js';
 import englishLanguageData from '@tesseract.js-data/eng';
 
 import type { GtkCapture, GtkCaptureBounds, Releasable } from './types';
+export type { GtkWaitOptions } from './wait';
+export { toPass, waitForResult } from './wait';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 

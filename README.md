@@ -98,14 +98,12 @@ The following example is for Debian/Ubuntu:
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  at-spi2-core dbus dbus-x11 \
-  libx11-6 libxtst6 \
-  xauth xvfb
+  at-spi2-core dbus dbus-x11 libx11-6 libxtst6 xauth xvfb
 ```
 
 - `at-spi2-core` is the AT-SPI runtime environment that gestament uses to identify and operate widgets.
 - `libx11-6` and `libxtst6` are used for X11 screen capture and input operations.
-- `dbus` / `dbus-x11` and `xvfb` / `xauth` are used when running tests headlessly with `gestament-xvfb`.
+- `dbus` / `dbus-x11` and `xvfb` / `xauth` are used when running tests headlessly with the internal Xvfb session or `gestament-xvfb`.
 
 This completes the native environment setup.
 
@@ -295,6 +293,18 @@ describe('foobar GTK3 app test', () => {
 });
 ```
 
+By default, `createGtkAppLauncher()` uses an X11 virtual desktop by the Xvfb backend to
+run tests in an isolated environment that is unaffected by your current desktop environment.
+
+The Xvfb backend is automatically started when the GTK application launches and is automatically terminated when `launcher.release()` is called.
+Therefore, you do not need to worry about the details when writing tests;
+however, if you want to run tests using your current desktop environment,
+you must specify options such as `display` (described later).
+
+If you want to isolate the display environment for concurrent test execution - such as with `test.concurrent`, please create a launcher within each test.
+If the same launcher is shared among concurrent tests, the display sessions within that launcher will also be shared,
+which may cause interference on the screen.
+
 ---
 
 ## gestament test APIs
@@ -303,13 +313,13 @@ The following are the testing APIs provided by gestament.
 
 ### GTK application launch management
 
-| API function                | Details                                                                                                                                            |
-| :-------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `launchGtkApp()`            | Directly launches a GTK application and returns the target `GtkApp`. You can specify launch arguments, environment variables, and wait timeout.    |
-| `createGtkAppEnvironment()` | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`. |
-| `createGtkAppLauncher()`    | Creates a launcher object that holds the specified application path, common arguments, environment variables, and wait timeout.                    |
-| `GtkAppLauncher.launch()`   | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application.                      |
-| `GtkAppLauncher.release()`  | Terminates all `GtkApp` instances launched from the launcher.                                                                                      |
+| API function                | Details                                                                                                                                              |
+| :-------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `launchGtkApp()`            | Directly launches a GTK application and returns the target `GtkApp`. You can specify launch arguments, environment variables, and wait timeout.      |
+| `createGtkAppEnvironment()` | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`.   |
+| `createGtkAppLauncher()`    | Creates a launcher object that holds the specified application path, common arguments, display environment, environment variables, and wait timeout. |
+| `GtkAppLauncher.launch()`   | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application.                        |
+| `GtkAppLauncher.release()`  | Terminate all `GtkApp` instances launched from the launcher, and if the launcher was running Xvfb, terminate it as well.                             |
 
 The following example manually manages GTK application launches without using `launchGtkApp()` directly:
 
@@ -321,6 +331,11 @@ import { createGtkAppLauncher } from 'gestament';
 const launcher = createGtkAppLauncher({
   appPath: './my-app',
   args: ['--test-mode'],
+  display: 'xvfb',
+  xvfbScreen: '1280x720x24',
+  xvfbTrayHost: true,
+  gsettings: 'memory',
+  theme: 'Adwaita',
   timeoutMs: 15_000,
 });
 
@@ -437,7 +452,31 @@ const capture = await label.capture();
 expect(capture.visibleBounds.width).toBeGreaterThan(0);
 ```
 
-Note: `GtkWidgetKind` is a classification derived from AT-SPI roles and capabilities, not a GTK runtime type name.
+For conditions that become true only after GTK layout, drawing, or an
+application-side update settles, `gestament/testing` also provides retry
+helpers:
+
+```typescript
+import { toPass, waitForResult } from 'gestament/testing';
+
+// Wait until the handler completes
+await toPass(async () => {
+  expect(await label.text()).toBe('ABC');
+});
+
+// Wait until the handler completes, then return the result
+const capture = await waitForResult(async () => {
+  const nextCapture = await label.capture();
+  expect(nextCapture.visibleBounds.width).toBeGreaterThan(0);
+  return nextCapture;
+});
+```
+
+These helpers share a timeout deadline with gestament lookups called inside
+the retry block, so `getById()` and `getByPath()` do not wait longer than the
+outer retry operation.
+
+`GtkWidgetKind` is a classification derived from AT-SPI roles and capabilities, not a GTK runtime type name.
 You can use `switch` to write branches that absorb GTK3/GTK4 differences to some extent:
 
 ```typescript
@@ -800,46 +839,95 @@ If you use shared workers, call `release()` on each `GtkCaptureExpect` after tes
 
 ### Specifying test environment variables (Advanced topic)
 
-gestament specifies common settings required for GTK tests through environment variables, not GTK application launch arguments.
+gestament specifies common settings required for GTK tests through `createGtkAppLauncher()` options, not GTK application launch arguments.
 By default, the following values are specified:
 
 - `GDK_BACKEND=x11` fixes the GDK backend to X11 so GTK applications run on Xvfb.
 - `GSETTINGS_BACKEND=memory` limits GSettings reads and writes to memory so test results are not affected by the user's environment settings.
 - `GTK_THEME=Adwaita` fixes the theme to the standard GTK theme and isolates visual tests from the user's environment theme.
 
-`gestament-xvfb` and `launchGtkApp()` / `createGtkAppLauncher()` specify these environment variables by default.
+`createGtkAppLauncher()` starts an internal Xvfb session by default.
+This session is launcher-scoped: apps launched from the same launcher share one Xvfb/DBus session, while separate launchers get separate sessions.
+`xvfbScreen` defaults to `1280x720x24`, and `xvfbTrayHost` defaults to `true`.
+`gsettings` and `theme` set `GSETTINGS_BACKEND` and `GTK_THEME`; use `null` to leave the corresponding environment variable unset.
 
 `GtkApp.capture()` captures the X11 root window, so `DISPLAY` must point to an X11 display.
-Under `gestament-xvfb`, the target is the entire Xvfb virtual screen.
-The image size is determined by the current width and height of the X11 root window, and `gestament-xvfb` uses the `WIDTH` and `HEIGHT` values specified by `--screen=WIDTHxHEIGHTxDEPTH`.
+Under the internal Xvfb session, the target is the entire Xvfb virtual screen.
+The image size is determined by the current width and height of the X11 root window, and the internal Xvfb session uses the `WIDTH` and `HEIGHT` values specified by `xvfbScreen`.
 The default when unspecified is `1280x720x24`, so the PNG is normally `1280x720`.
 
-Only override these values with `env` when you want to launch on Wayland or test GSettings persistence:
+Specify these launcher options when you want to launch on the host display or test GSettings persistence:
 
 ```typescript
-const app = await launchGtkApp('./my-app', [], {
-  env: {
-    GDK_BACKEND: 'wayland',
-    GSETTINGS_BACKEND: 'dconf',
-  },
+const launcher = createGtkAppLauncher({
+  appPath: './my-app',
+  display: 'host',
+  gsettings: 'dconf',
 });
 ```
+
+`display: 'host'` uses the current host display when `DISPLAY` or `WAYLAND_DISPLAY` exists, so the physical or already-running display itself is not isolated.
+When no host display is available, gestament falls back to a launcher-scoped Xvfb session.
 
 Image comparisons in `gestament/testing` also refer to the following environment variables:
 
 - `GESTAMENT_VISUAL_OUTPUT_RESULT_PATH` specifies where diagnostic files such as actual/diff images are saved. If omitted, diagnostic files are not saved.
 - `GESTAMENT_VISUAL_VARIANT` specifies the variant name used to separate diagnostic files. If omitted, `GESTAMENT_TEST_BACKEND` is used, and if that is also omitted, `default` is used.
 
+### Speed Optimization Using Xvfb Pooling (Advanced topic)
+
+Sometimes, test execution speed is critical.
+gestament launches Xvfb internally to maintain UI session independence between tests, but restarting Xvfb and sessions takes time.
+If this is a significant issue, you can use the Xvfb pooling feature.
+
+`xvfbPool` controls whether Xvfb-related resources are pooled after `launcher.release()` and reused by subsequent launchers.
+The default is: we do not reuse them in order to prioritize test reproducibility.
+
+The following are the recommended settings when using this mode:
+
+- Reproducibility first: omit `xvfbPool` (default)
+- Trim only Xvfb startup time: `xvfbPool: { type: 'xvfb' }`
+- Experiment with maximum reuse: `xvfbPool: { type: 'all' }`
+
+| `xvfbPool.type` | Reused resources                          | Pool key                      |
+| :-------------- | :---------------------------------------- | :---------------------------- |
+| (omitted)       | Nothing. Xvfb/DBus/driver are recreated.  | none                          |
+| `xvfb`          | Xvfb process only. DBus/driver are fresh. | `xvfbScreen`                  |
+| `all`           | Xvfb, DBus session, driver, tray host.    | `xvfbScreen` + `xvfbTrayHost` |
+
+Pools are not shared across Node.js processes or test workers; if a pool is reused, it is used by a single launcher at a time.
+
+By default pooling, internal pools maintain a maximum of one idle session per reusable condition, up to a total of four.
+Use `maxIdlePerKey` and `maxIdleTotal` to change those limits; either value can be `0` to discard sessions instead of retaining them.
+
+If `display: ‘host’` uses an existing host display environment, `xvfbPool` has no effect. If `display: ‘host’` falls back to Xvfb, the specified pool mode is applied.
+If a window is detected during the clean check for reuse, or if the X server probe fails, that session is discarded and not reused.
+
+Possible side effects are listed below:
+
+| Side effect                                | Mainly possible mode | Impact                                                       | Immediately affects tests |
+| :----------------------------------------- | :------------------- | :----------------------------------------------------------- | :------------------------ |
+| Previous window remains                    | `xvfb`, `all`        | Pollutes capture/click results                               | High                      |
+| Orphan X client remains                    | `xvfb`, `all`        | May be visible even if AT-SPI does not expose it             | High                      |
+| Accessible ID / window enumeration leakage | `all`                | Can make `findById`, `windowAt`, or `getWindowCount` wrong   | High                      |
+| Tray item remains                          | `all`                | Can make `findTrayItem` or tray capture wrong                | High                      |
+| Focus / stacking order carries over        | `xvfb`, `all`        | Can destabilize input target or capture                      | Medium to high            |
+| Pointer / keyboard modifier state          | `xvfb`, `all`        | Can destabilize click/key operations                         | Medium                    |
+| Root window property / background          | `xvfb`, `all`        | Can affect full-screen capture or environment checks         | Medium                    |
+| Clipboard / PRIMARY selection              | `all`                | Can affect selection/clipboard tests                         | Medium                    |
+| DBus service / AT-SPI cache state          | `all`                | Old services or cache entries may be observed                | Medium to high            |
+| X server internal state / Atom table       | `xvfb`, `all`        | Usually not directly visible, but not a completely fresh X11 | Low to medium             |
+
 ---
 
-## Self building
+## Self building (Advanced topic)
 
 Install the required packages:
 
 ```bash
 apt-get update
 apt-get install -y \
-  podman binutils build-essential ca-certificates file \
+  binutils build-essential ca-certificates file \
   libatspi2.0-dev libgdk-pixbuf-2.0-dev libglib2.0-dev libxtst-dev \
   libnode-dev libx11-dev at-spi2-core dbus-x11 \
   libgtk-3-dev libgtk-4-dev \
@@ -850,7 +938,7 @@ apt-get install -y \
 
 - It may be better to install Node.js through [nvm](https://github.com/nvm-sh/nvm). Version 20 or later is required.
 
-Build and test:
+### Build and test
 
 ```bash
 npm install
@@ -858,15 +946,27 @@ npm run build
 npm run test
 ```
 
-- Or use `build.sh`.
+- Or use `build.sh` directly.
 
-Build a package:
+### Build all platform packages
 
 ```bash
+# Prerequisities
+sudo apt-get install -y podman
+sudo podman run --rm --privileged docker.io/multiarch/qemu-user-static --reset -p yes
+
+# Verify QEMU is working:
+podman run --rm --platform linux/arm64 docker.io/library/debian:trixie-slim uname -m
+# Should output: aarch64
+```
+
+```bash
+# Build all packages
 ./build_package_all.sh
 ```
 
-- This takes a very long time because it builds and tests native code for all supported architectures.
+- Requires at least 24 core or upper CPU machines.
+- This takes a VERY LONG TIME (maybe half hour or longer) because it builds and tests native code for all supported architectures.
 
 ## License
 

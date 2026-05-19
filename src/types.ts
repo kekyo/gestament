@@ -991,6 +991,35 @@ export interface Releasable extends AsyncDisposable {
 export type GtkAppEnvironment = Readonly<Record<string, string | undefined>>;
 
 /**
+ * Display environment used by a reusable GTK application launcher.
+ */
+export type GtkAppDisplay = 'xvfb' | 'host';
+
+/**
+ * Xvfb session pooling options used by a reusable GTK application launcher.
+ */
+export interface GtkXvfbPool {
+  /**
+   * Resource reuse mode.
+   *
+   * @remarks
+   * 'xvfb' reuses only the Xvfb process. 'all' also reuses the DBus session,
+   * launcher driver, and tray host, and can carry more state between launches.
+   */
+  readonly type: 'xvfb' | 'all';
+  /**
+   * Maximum idle sessions retained for each reusable condition.
+   * Default is 1. 0 disables retaining idle sessions for the key being released.
+   */
+  readonly maxIdlePerKey?: number | undefined;
+  /**
+   * Maximum idle sessions retained across all reusable conditions.
+   * Default is 4. 0 disables retaining idle sessions for the key being released.
+   */
+  readonly maxIdleTotal?: number | undefined;
+}
+
+/**
  * Options used when launching a GTK application.
  */
 export interface LaunchGtkAppOptions {
@@ -1122,6 +1151,41 @@ export interface GtkAppLauncherOptions {
    * Environment overrides passed to every launched application.
    */
   readonly env?: GtkAppEnvironment | undefined;
+  /**
+   * Display environment used for launched GTK applications.
+   * Default is 'xvfb'.
+   *
+   * @remarks
+   * host uses the current DISPLAY or WAYLAND_DISPLAY. When neither exists,
+   * host falls back to 'xvfb'.
+   */
+  readonly display?: GtkAppDisplay | undefined;
+  /**
+   * Xvfb screen geometry used when the effective display is xvfb.
+   * Default is '1280x720x24'.
+   */
+  readonly xvfbScreen?: string | undefined;
+  /**
+   * Whether to run gestament's StatusNotifier tray host with Xvfb.
+   * Default is true.
+   */
+  readonly xvfbTrayHost?: boolean | undefined;
+  /**
+   * Xvfb process pooling options used when the effective display is xvfb.
+   * Default is undefined, which disables pooling.
+   */
+  readonly xvfbPool?: GtkXvfbPool | undefined;
+  /**
+   * GSettings backend passed to every launched application.
+   * Default is 'memory'. null (NOT backend name) leaves GSETTINGS_BACKEND unset.
+   * GSettings backend variations are 'memory', 'dconf', 'keyfile' and etc.
+   */
+  readonly gsettings?: string | null | undefined;
+  /**
+   * GTK theme passed to every launched application.
+   * Default is 'Adwaita'. null leaves GTK_THEME unset.
+   */
+  readonly theme?: string | null | undefined;
   /**
    * Timeout used by operations that wait for the application or elements.
    * Default is 10000msec (10sec).

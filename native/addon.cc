@@ -1560,6 +1560,22 @@ napi_value capture_bounds(napi_env env, napi_callback_info info) {
   return result;
 }
 
+napi_value mapped_x11_window_count(napi_env env, napi_callback_info) {
+  guint count = 0;
+  gestament::NativeError error = {};
+  if (!gestament::count_mapped_x11_windows(&count, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (napi_create_uint32(env, count, &result) != napi_ok) {
+    napi_throw_error(env, nullptr, "Failed to create X11 window count value.");
+    return make_undefined(env);
+  }
+  return result;
+}
+
 napi_value element_info(napi_env env, napi_callback_info info) {
   napi_value args[1] = {};
   if (!read_arguments(env, info, 1, args)) {
@@ -1673,6 +1689,7 @@ napi_value initialize(napi_env env, napi_value exports) {
   set_function(env, exports, "capture", capture);
   set_function(env, exports, "captureScreen", capture_screen);
   set_function(env, exports, "captureBounds", capture_bounds);
+  set_function(env, exports, "mappedX11WindowCount", mapped_x11_window_count);
   set_function(env, exports, "elementInfo", element_info);
   set_function(env, exports, "trayItems", tray_items);
   set_function(env, exports, "runTrayHost", run_tray_host);

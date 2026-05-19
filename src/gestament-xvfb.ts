@@ -8,6 +8,8 @@ import { spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+import { appendPrerequisiteInstallHint } from './prerequisites';
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 interface ParsedArguments {
@@ -93,6 +95,7 @@ const run = (): void => {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     GDK_BACKEND: 'x11',
+    GESTAMENT_XVFB_ACTIVE: '1',
     GSETTINGS_BACKEND: 'memory',
     GTK_THEME: process.env.GTK_THEME ?? 'Adwaita',
   };
@@ -132,7 +135,11 @@ const run = (): void => {
   );
 
   child.on('error', (error) => {
-    process.stderr.write(`gestament-xvfb failed to start: ${error.message}\n`);
+    process.stderr.write(
+      `${appendPrerequisiteInstallHint(
+        `gestament-xvfb failed to start: ${error.message}`
+      )}\n`
+    );
     process.exitCode = 1;
   });
 

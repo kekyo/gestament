@@ -44,4 +44,21 @@ describe('GTK application launch environment', () => {
       PATH: '/usr/bin',
     });
   });
+
+  it('removes environment values explicitly set to undefined', () => {
+    expect(
+      createGtkAppEnvironment(
+        {
+          GSETTINGS_BACKEND: 'dconf',
+          GTK_THEME: 'Yaru',
+        },
+        {
+          GSETTINGS_BACKEND: undefined,
+          GTK_THEME: undefined,
+        }
+      )
+    ).toEqual({
+      GDK_BACKEND: 'x11',
+    });
+  });
 });

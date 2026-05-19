@@ -3046,6 +3046,63 @@ bool capture_screen_bounds(const CaptureBounds &bounds, CaptureResult *result,
                                     error);
 }
 
+bool count_mapped_x11_windows(guint *count, NativeError *error) {
+  if (count == nullptr) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::invalid_argument,
+          "Window count result must not be null.",
+      };
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::operation_failed,
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.",
+      };
+    }
+    return false;
+  }
+
+  Window root_window = DefaultRootWindow(display.get());
+  Window root_return = 0;
+  Window parent_return = 0;
+  Window *children = nullptr;
+  unsigned int child_count = 0;
+  if (XQueryTree(display.get(), root_window, &root_return, &parent_return,
+                 &children, &child_count) == 0) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::operation_failed,
+          "Failed to query X11 root window children.",
+      };
+    }
+    return false;
+  }
+
+  guint mapped_count = 0;
+  for (unsigned int index = 0; index < child_count; index += 1) {
+    XWindowAttributes attributes = {};
+    if (XGetWindowAttributes(display.get(), children[index], &attributes) != 0 &&
+        attributes.map_state == IsViewable) {
+      mapped_count += 1;
+    }
+  }
+
+  if (children != nullptr) {
+    XFree(children);
+  }
+
+  *count = mapped_count;
+  return true;
+}
+
 bool read_accessible_proxy_info(guint process_id, AtspiAccessible *accessible,
                                 AccessibleInfo *info, NativeError *error) {
   if (info == nullptr) {

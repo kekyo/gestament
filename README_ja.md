@@ -96,14 +96,12 @@ GTKアプリケーション開発環境としてGTK本体、GLib、GDK Pixbufな
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  at-spi2-core dbus dbus-x11 \
-  libx11-6 libxtst6 \
-  xauth xvfb
+  at-spi2-core dbus dbus-x11 libx11-6 libxtst6 xauth xvfb
 ```
 
 - `at-spi2-core` は、gestamentがウィジェットを特定・操作するために使用するAT-SPIの実行環境です。
 - `libx11-6` と `libxtst6` は、X11画面キャプチャと入力操作で使用します。
-- `dbus` / `dbus-x11` と `xvfb` / `xauth` は、`gestament-xvfb` でヘッドレス実行する場合に使用します。
+- `dbus` / `dbus-x11` と `xvfb` / `xauth` は、内部Xvfbまたは `gestament-xvfb` でヘッドレス実行する場合に使用します。
 
 以上でネイティブ環境の準備が出来ました。
 
@@ -294,6 +292,15 @@ describe('foobar GTK3 app test', () => {
 });
 ```
 
+`createGtkAppLauncher()` のデフォルトの構成では、XvfbバックエンドによるX11仮想デスクトップを使用して、
+あなたが使用しているデスクトップ環境に影響されない、独立した環境でテストを実行します。
+
+Xvfbバックエンドは、GTKアプリケーション起動時に自動的に起動され、 `launcher.release()` 時に自動的に終了されます。
+従って、テスト記述時に細部を気にする必要はありませんが、もし現在のデスクトップ環境を使ってテストを行いたい場合は、オプション `display` などを指定する必要があります（後述）。
+
+`test.concurrent` のような、テスト並行実行で表示環境を分離したい場合は、それぞれのテスト内でランチャーを作成してください。
+concurrent test間で同じランチャーを共有した場合、そのランチャー内の表示セッションも共有されるため、画面上で干渉する可能性があります。
+
 ---
 
 ## gestamentテストAPI
@@ -306,9 +313,9 @@ gestamentが用意するテスト用のAPIを示します。
 | :-------------------------- | :-------------------------------------------------------------------------------------------------------------------------- |
 | `launchGtkApp()`            | GTKアプリケーションを直接起動し、操作対象の `GtkApp` を返します。起動引数、環境変数、待機タイムアウトを指定できます         |
 | `createGtkAppEnvironment()` | GTKアプリケーション起動時に渡す環境変数を生成します。通常は `launchGtkApp()` や `createGtkAppLauncher()` が内部で使用します |
-| `createGtkAppLauncher()`    | 指定されたアプリケーションパス、共通引数、環境変数、待機タイムアウトを保持するランチャーオブジェクトを生成します            |
+| `createGtkAppLauncher()`    | 指定されたアプリケーションパス、共通引数、表示環境、環境変数、待機タイムアウトを保持するランチャーオブジェクトを生成します  |
 | `GtkAppLauncher.launch()`   | ランチャーオブジェクトが示すGTKアプリケーションを起動し、起動したアプリケーションを表す `GtkApp` を返します                 |
-| `GtkAppLauncher.release()`  | ランチャーから起動した全ての `GtkApp` を終了させます                                                                        |
+| `GtkAppLauncher.release()`  | ランチャーから起動した全ての `GtkApp` を終了し、ランチャーがXvfbを起動していた場合は終了させます                            |
 
 以下は、`launchGtkApp()` を使用せず、GTKアプリケーション起動管理を手動で行う例です:
 
@@ -320,6 +327,11 @@ import { createGtkAppLauncher } from 'gestament';
 const launcher = createGtkAppLauncher({
   appPath: './my-app',
   args: ['--test-mode'],
+  display: 'xvfb',
+  xvfbScreen: '1280x720x24',
+  xvfbTrayHost: true,
+  gsettings: 'memory',
+  theme: 'Adwaita',
   timeoutMs: 15_000,
 });
 
@@ -436,7 +448,30 @@ const capture = await label.capture();
 expect(capture.visibleBounds.width).toBeGreaterThan(0);
 ```
 
-注意: `GtkWidgetKind` は、GTKの実型名ではなくAT-SPIのroleやcapabilityから導出した分類です。
+GTKのレイアウト、描画、アプリケーション側の更新が落ち着いてから成立する条件には、
+`gestament/testing` の再試行ヘルパーも使用できます:
+
+```typescript
+import { toPass, waitForResult } from 'gestament/testing';
+
+// ハンドラが成立するまで待機
+await toPass(async () => {
+  expect(await label.text()).toBe('ABC');
+});
+
+// ハンドラが成立するまで待機して結果を返却
+const capture = await waitForResult(async () => {
+  const nextCapture = await label.capture();
+  expect(nextCapture.visibleBounds.width).toBeGreaterThan(0);
+  return nextCapture;
+});
+```
+
+これらのヘルパーは、再試行ブロック内で呼び出したgestamentの要素待機APIと
+タイムアウトdeadlineを共有するため、`getById()` や `getByPath()` が外側の
+再試行処理より長く待機することを避けられます。
+
+`GtkWidgetKind` は、GTKの実型名ではなくAT-SPIのroleやcapabilityから導出した分類です。
 `switch` を使用してGTK3/GTK4差分をある程度吸収した分岐を書けます:
 
 ```typescript
@@ -799,46 +834,94 @@ const gtkExpect = createGtkCaptureExpect({
 
 ### テスト用環境変数の指定 (Advanced topic)
 
-gestamentでは、GTKのテスト実行に必要な共通設定は、GTKアプリケーションの起動引数ではなく環境変数で指定します。
+gestamentでは、GTKのテスト実行に必要な共通設定は、GTKアプリケーションの起動引数ではなく `createGtkAppLauncher()` のオプションで指定します。
 デフォルトは以下のように指定されます:
 
 - `GDK_BACKEND=x11` は、Xvfb上でGTKアプリケーションを動かすためにGDKバックエンドをX11へ固定します。
 - `GSETTINGS_BACKEND=memory` は、GSettingsの読み書きをメモリ上に限定し、ユーザー環境の設定にテスト結果が左右されないようにします。
 - `GTK_THEME=Adwaita` は、標準GTKテーマに固定してビジュアルテストをユーザー環境のテーマから分離します。
 
-`gestament-xvfb` と `launchGtkApp()` / `createGtkAppLauncher()` は、これらの環境変数をデフォルトとして指定します。
+`createGtkAppLauncher()` は、デフォルトで内部Xvfbを起動します。
+このセッションはランチャー単位です。同じランチャーから起動したアプリケーションは1つのXvfb/DBusセッションを共有し、別々のランチャーは別々のセッションを持ちます。
+`xvfbScreen` のデフォルトは `1280x720x24`、`xvfbTrayHost` のデフォルトは `true` です。
+`gsettings` と `theme` はそれぞれ `GSETTINGS_BACKEND` と `GTK_THEME` を指定し、`null` を指定した場合は該当する環境変数を設定しません。
 
 `GtkApp.capture()` はX11 root windowをキャプチャするため、`DISPLAY` がX11ディスプレイを指している必要があります。
-`gestament-xvfb` の下ではXvfbの仮想スクリーン全体が対象になります。
-画像サイズはX11 root windowの現在の幅と高さで決まり、`gestament-xvfb` では `--screen=WIDTHxHEIGHTxDEPTH` で指定した `WIDTH` と `HEIGHT` が使われます。
+内部Xvfbの下ではXvfbの仮想スクリーン全体が対象になります。
+画像サイズはX11 root windowの現在の幅と高さで決まり、内部Xvfbでは `xvfbScreen` で指定した `WIDTH` と `HEIGHT` が使われます。
 未指定時のデフォルトは `1280x720x24` なので、PNGは通常 `1280x720` になります。
 
-Waylandで起動したい場合や、GSettingsの永続化をテストしたい場合だけ、以下のように `env` で上書きします:
+ホストの表示環境で起動したい場合や、GSettingsの永続化をテストしたい場合は、以下のように指定します:
 
 ```typescript
-const app = await launchGtkApp('./my-app', [], {
-  env: {
-    GDK_BACKEND: 'wayland',
-    GSETTINGS_BACKEND: 'dconf',
-  },
+const launcher = createGtkAppLauncher({
+  appPath: './my-app',
+  display: 'host',
+  gsettings: 'dconf',
 });
 ```
+
+`display: 'host'` は、`DISPLAY` または `WAYLAND_DISPLAY` が存在する場合に現在のホスト表示環境を使用します。そのため、物理ディスプレイや既存display自体は分離されません。
+ホスト表示環境が無い場合、gestamentはランチャー単位のXvfbセッションへfallbackします。
 
 `gestament/testing` のキャプチャ画像比較では、以下の環境変数も参照します:
 
 - `GESTAMENT_VISUAL_OUTPUT_RESULT_PATH` は、actual/diffなどの診断ファイルの保存先を指定します。未指定の場合、診断ファイルは保存されません。
 - `GESTAMENT_VISUAL_VARIANT` は、診断ファイルを分けるvariant名を指定します。未指定の場合は `GESTAMENT_TEST_BACKEND`、それも未指定の場合は `default` が使用されます。
 
+### Xvfbプーリングによる高速化 (Advanced topic)
+
+時に、テストの実行速度は重要となります。gestamentは内部でXvfbを起動して、テスト間のUIセッション独立性を保っていますが、Xvfbやセッションの再起動には時間がかかります。
+もし、これが非常に問題となる場合は、Xvfbプーリングの機能を使用できます。
+
+`xvfbPool` は、`launcher.release()` 後のXvfb関連リソースをプールし、後続のランチャーで再利用するかどうかを制御します。デフォルトでは、テスト再現性を重視して再利用しません。
+
+選択する場合の推奨を示します:
+
+- テスト再現性優先: `xvfbPool` を省略（デフォルト）
+- Xvfbの起動時間だけ少し削りたい: `xvfbPool: { type: 'xvfb' }`
+- 実験的に最大再利用したい: `xvfbPool: { type: 'all' }`
+
+| `xvfbPool.type` | 再利用されるリソース                         | Pool key                      |
+| :-------------- | :------------------------------------------- | ----------------------------- |
+| (未指定)        | なし。Xvfb/DBus/driverを毎回再生成します     | なし                          |
+| `xvfb`          | Xvfb processのみ。DBus/driverは毎回freshです | `xvfbScreen`                  |
+| `all`           | Xvfb、DBus session、driver、tray host        | `xvfbScreen` + `xvfbTrayHost` |
+
+プールはNode.jsプロセスやテストワーカーをまたいで共有されず、プールが再利用された場合は、同時に1つのランチャーに利用されます。
+
+プールのデフォルトでは、内部プールは再利用可能条件毎に最大1個、全体で最大4個まで保持します。
+`maxIdlePerKey` と `maxIdleTotal` でこの上限を変更できます。どちらも `0` を指定すると、該当するセッションを保持せず破棄します。
+
+`display: 'host'` が既存のホスト表示環境を使用する場合、`xvfbPool` は意味を持ちません。
+`display: 'host'` がXvfbへフォールバックした場合は、指定されたプールモードが適用されます。
+再利用する際のクリーンチェックでウインドウが検出された場合や、X serverのプローブに失敗した場合、そのセッションは再利用せず破棄されます。
+
+考えられる副作用を以下に示します:
+
+| 副作用                            | 主に発生し得る mode | 影響                                                  | すぐテストに影響するか |
+| :-------------------------------- | :------------------ | :---------------------------------------------------- | :--------------------- |
+| 前回windowの残存                  | `xvfb`, `all`       | capture/click が汚染される                            | 高い                   |
+| orphan X client の残存            | `xvfb`, `all`       | AT-SPIには見えないが画面に映る可能性がある            | 高い                   |
+| accessible ID / window列挙の混入  | `all`               | `findById`, `windowAt`, `getWindowCount` が誤る       | 高い                   |
+| tray item の残存                  | `all`               | `findTrayItem`, tray capture が誤る                   | 高い                   |
+| focus / stacking order の持ち越し | `xvfb`, `all`       | 入力先やcaptureが不安定になる                         | 中〜高                 |
+| pointer / keyboard modifier 状態  | `xvfb`, `all`       | click/key操作が不安定になる                           | 中                     |
+| root window property / background | `xvfb`, `all`       | full-screen captureや環境判定に影響                   | 中                     |
+| clipboard / PRIMARY selection     | `all`               | selection/clipboard系テストに影響                     | 中                     |
+| DBus service / AT-SPI cache 状態  | `all`               | 古いserviceやcacheが観測される可能性がある            | 中〜高                 |
+| X server内部状態 / Atom table     | `xvfb`, `all`       | 通常は直接影響しにくいが、完全なfresh X11状態ではない | 低〜中                 |
+
 ---
 
-## セルフビルド
+## セルフビルド (Advanced topic)
 
 必要なパッケージのインストール:
 
 ```bash
 apt-get update
 apt-get install -y \
-  podman binutils build-essential ca-certificates file \
+  binutils build-essential ca-certificates file \
   libatspi2.0-dev libgdk-pixbuf-2.0-dev libglib2.0-dev libxtst-dev \
   libnode-dev libx11-dev at-spi2-core dbus-x11 \
   libgtk-3-dev libgtk-4-dev \
@@ -849,7 +932,7 @@ apt-get install -y \
 
 - Node.jsのインストールは[nvm](https://github.com/nvm-sh/nvm)経由の方が良いかも知れません。バージョンは20以降です。
 
-ビルドとテスト:
+### ビルドとテスト
 
 ```bash
 npm install
@@ -857,15 +940,27 @@ npm run build
 npm run test
 ```
 
-- 又は `build.sh` を使用して下さい。
+- 又は `build.sh` を直接使用して下さい。
 
-パッケージ生成:
+### パッケージ生成
 
 ```bash
+# Prerequisities
+sudo apt-get install -y podman
+sudo podman run --rm --privileged docker.io/multiarch/qemu-user-static --reset -p yes
+
+# Verify QEMU is working:
+podman run --rm --platform linux/arm64 docker.io/library/debian:trixie-slim uname -m
+# Should output: aarch64
+```
+
+```bash
+# Build all packages
 ./build_package_all.sh
 ```
 
-- 全てのアーキテクチャに対応したネイティブコードのビルドとテストを実行するため、非常に長い時間がかかります。
+- 少なくとも24コア以上のCPUを搭載したマシンが必要です。
+- サポートされているすべてのアーキテクチャ向けにネイティブコードをビルドおよびテストするため、非常に長い時間がかかります（30分以上かかる可能性があります）。
 
 ## ライセンス
 
