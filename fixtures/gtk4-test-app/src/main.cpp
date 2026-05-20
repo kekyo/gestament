@@ -9,6 +9,7 @@
 #include <gtk/gtk.h>
 
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 
 #include <cmath>
 #include <filesystem>
@@ -280,6 +281,31 @@ Window x11_window_for_surface(GdkSurface *surface) {
   return gdk_x11_surface_get_xid(surface);
 }
 #pragma GCC diagnostic pop
+
+void set_x11_main_window_geometry_hints(GtkWidget *window) {
+  GtkNative *native = gtk_widget_get_native(window);
+  if (native == nullptr) {
+    return;
+  }
+
+  GdkSurface *surface = gtk_native_get_surface(native);
+  if (surface == nullptr || !GDK_IS_X11_SURFACE(surface)) {
+    return;
+  }
+
+  Display *display = x11_display_for_surface(surface);
+  Window xid = x11_window_for_surface(surface);
+  XSizeHints hints = {};
+  hints.flags = PBaseSize | PMinSize | PResizeInc;
+  hints.base_width = 80;
+  hints.base_height = 40;
+  hints.min_width = 120;
+  hints.min_height = 90;
+  hints.width_inc = 7;
+  hints.height_inc = 11;
+  XSetWMNormalHints(display, xid, &hints);
+  XFlush(display);
+}
 
 bool widget_root_origin(GtkWidget *widget, int *x, int *y) {
   GtkNative *native = gtk_widget_get_native(widget);
@@ -621,6 +647,8 @@ int main(int argc, char **argv) {
                                  : nullptr;
 
   gtk_window_present(GTK_WINDOW(window));
+  drain_events();
+  set_x11_main_window_geometry_hints(window);
   if (options.widget_controls) {
     gtk_window_present(GTK_WINDOW(controls_window));
   }

@@ -44,6 +44,14 @@ const spMonImageSize = {
   height: 225,
   width: 300,
 } as const;
+const mainWindowResizeHints = {
+  baseHeight: 40,
+  baseWidth: 80,
+  heightIncrement: 11,
+  minHeight: 90,
+  minWidth: 120,
+  widthIncrement: 7,
+} as const;
 
 const launcher = createGtkAppLauncher({
   appPath,
@@ -331,8 +339,21 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     expect(png.width).toBe(capture.bounds.width);
     expect(png.height).toBe(capture.bounds.height);
 
-    const mainWindow = expectElement(await app.windowAt(0));
-    expectCaptureBoundsWithin(await mainWindow.capture(), capture);
+    const mainWindow = expectElementKind(await app.windowAt(0), 'window');
+    const mainWindowCapture = await mainWindow.capture();
+    expectCaptureBoundsWithin(mainWindowCapture, capture);
+    await expect(mainWindow.bounds()).resolves.toEqual(
+      mainWindowCapture.bounds
+    );
+    await expect(mainWindow.resizeHints()).resolves.toEqual(
+      mainWindowResizeHints
+    );
+    const x11Info = await mainWindow.x11Info();
+    expect(x11Info).toMatchObject({
+      normalHints: mainWindowResizeHints,
+      title: 'Gestament GTK3 Fixture',
+    });
+    expect(x11Info.windowId).toMatch(/^0x[0-9a-f]+$/u);
     const submitButton = await app.getById('submit_button');
     const submitButtonCapture = await submitButton.capture();
     expectCaptureBoundsWithin(submitButtonCapture, capture);

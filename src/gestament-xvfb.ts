@@ -98,9 +98,14 @@ const run = (): void => {
     GESTAMENT_XVFB_ACTIVE: '1',
     GSETTINGS_BACKEND: 'memory',
     GTK_THEME: process.env.GTK_THEME ?? 'Adwaita',
+    XDG_SESSION_TYPE: 'x11',
   };
-  delete env.NO_AT_BRIDGE;
   delete env.AT_SPI_BUS_ADDRESS;
+  delete env.DBUS_SESSION_BUS_ADDRESS;
+  delete env.DISPLAY;
+  delete env.NO_AT_BRIDGE;
+  delete env.WAYLAND_DISPLAY;
+  delete env.XAUTHORITY;
 
   const executablePath = process.argv[1];
   if (executablePath === undefined) {

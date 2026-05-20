@@ -4,8 +4,12 @@
 // https://github.com/kekyo/gestament
 
 #include <gio/gio.h>
+#include <gdk/gdkx.h>
 #include <gestament/gtk.h>
 #include <gtk/gtk.h>
+
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
 
 #include <filesystem>
 #include <iostream>
@@ -114,6 +118,41 @@ void assign_widget_name(GtkWidget *widget, const char *name) {
   if (accessible != nullptr) {
     atk_object_set_name(accessible, name);
   }
+}
+
+void set_main_window_geometry_hints(GtkWidget *window) {
+  GdkGeometry geometry = {};
+  geometry.base_width = 80;
+  geometry.base_height = 40;
+  geometry.min_width = 120;
+  geometry.min_height = 90;
+  geometry.width_inc = 7;
+  geometry.height_inc = 11;
+  gtk_window_set_geometry_hints(
+      GTK_WINDOW(window), window, &geometry,
+      static_cast<GdkWindowHints>(GDK_HINT_BASE_SIZE | GDK_HINT_MIN_SIZE |
+                                  GDK_HINT_RESIZE_INC));
+}
+
+void set_x11_main_window_geometry_hints(GtkWidget *window) {
+  GdkWindow *gdk_window = gtk_widget_get_window(window);
+  if (gdk_window == nullptr || !GDK_IS_X11_WINDOW(gdk_window)) {
+    return;
+  }
+
+  Display *display = gdk_x11_display_get_xdisplay(
+      gdk_window_get_display(gdk_window));
+  Window xid = gdk_x11_window_get_xid(gdk_window);
+  XSizeHints hints = {};
+  hints.flags = PBaseSize | PMinSize | PResizeInc;
+  hints.base_width = 80;
+  hints.base_height = 40;
+  hints.min_width = 120;
+  hints.min_height = 90;
+  hints.width_inc = 7;
+  hints.height_inc = 11;
+  XSetWMNormalHints(display, xid, &hints);
+  XFlush(display);
 }
 
 GtkWidget *labelled_list_row(const char *id, const char *label_text) {
@@ -497,6 +536,7 @@ int main(int argc, char **argv) {
       options.widget_enumerables ? create_enumerables_window(&widgets)
                                  : nullptr;
 
+  set_main_window_geometry_hints(window);
   gtk_widget_show_all(window);
   if (options.widget_controls) {
     gtk_widget_show_all(controls_window);
@@ -507,6 +547,7 @@ int main(int argc, char **argv) {
   while (gtk_events_pending()) {
     gtk_main_iteration();
   }
+  set_x11_main_window_geometry_hints(window);
   if (options.cover_submit_button) {
     show_cover_window(window, submit_button);
     while (gtk_events_pending()) {

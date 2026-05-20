@@ -26,6 +26,7 @@ import { appendPrerequisiteInstallHint } from './prerequisites';
 import type {
   DriverAppRef,
   DriverCommand,
+  DriverEnvironmentPayload,
   DriverElementRef,
   DriverErrorResponse,
   DriverLaunchPayload,
@@ -42,9 +43,11 @@ import type {
 import type {
   GtkApp,
   GtkAppDisplay,
+  GtkAppEnvironment,
   GtkAppLauncher,
   GtkAppLauncherOptions,
   GtkCapture,
+  GtkCaptureBounds,
   GtkElementInfo,
   GtkImageInfo,
   GtkTrayItem,
@@ -52,6 +55,8 @@ import type {
   GtkTrayItemSelector,
   GtkValueInfo,
   GtkWidgetElement,
+  GtkWindowResizeHints,
+  GtkX11WindowInfo,
   GtkXvfbPool,
 } from './types';
 
@@ -167,6 +172,17 @@ const xvfbStartupTimeoutMs = 10_000;
 const xvfbPoolProbeTimeoutMs = 5_000;
 const firstPooledDisplayNumber = 90;
 const lastPooledDisplayNumber = 590;
+const sessionOwnedEnvironmentKeys = [
+  'DISPLAY',
+  'WAYLAND_DISPLAY',
+  'GDK_BACKEND',
+  'DBUS_SESSION_BUS_ADDRESS',
+  'AT_SPI_BUS_ADDRESS',
+  'NO_AT_BRIDGE',
+  'XAUTHORITY',
+  'GESTAMENT_XVFB_ACTIVE',
+  'XDG_SESSION_TYPE',
+] as const;
 
 let socketCounter = 0;
 const leasedDisplayNumbers = new Set<number>();
@@ -556,11 +572,39 @@ const toWireEnvironment = (
   return wireEnv;
 };
 
+const wireEnvironmentToGtkAppEnvironment = (
+  env: WireGtkAppEnvironment
+): GtkAppEnvironment => {
+  const appEnv: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    appEnv[key] = value === null ? undefined : value;
+  }
+  return appEnv;
+};
+
+const assertNoSessionOwnedEnvironmentOverrides = (
+  options: GtkAppLauncherOptions,
+  effective: EffectiveDisplay
+): void => {
+  if (effective.kind !== 'xvfb' || options.env === undefined) {
+    return;
+  }
+
+  for (const key of sessionOwnedEnvironmentKeys) {
+    if (Object.hasOwn(options.env, key)) {
+      throw createGtkInvalidArgumentError(
+        `options.env must not override ${key} when using internal Xvfb.`
+      );
+    }
+  }
+};
+
 const resolveLauncherEnvironment = (
   options: GtkAppLauncherOptions,
   effective: EffectiveDisplay
-): WireGtkAppEnvironment =>
-  toWireEnvironment({
+): WireGtkAppEnvironment => {
+  assertNoSessionOwnedEnvironmentOverrides(options, effective);
+  return toWireEnvironment({
     GDK_BACKEND: resolveGdkBackend(effective),
     GSETTINGS_BACKEND:
       options.gsettings === null
@@ -570,6 +614,7 @@ const resolveLauncherEnvironment = (
       options.theme === null ? undefined : (options.theme ?? defaultTheme),
     ...options.env,
   });
+};
 
 const resolveDriverPath = (): string => {
   const driverPath = resolve(
@@ -610,11 +655,17 @@ const createDriverEnvironment = (
   delete env.NO_AT_BRIDGE;
 
   if (effective.kind === 'xvfb') {
+    delete env.DBUS_SESSION_BUS_ADDRESS;
+    delete env.DISPLAY;
+    delete env.WAYLAND_DISPLAY;
+    delete env.AT_SPI_BUS_ADDRESS;
+    delete env.NO_AT_BRIDGE;
+    delete env.XAUTHORITY;
     env.GDK_BACKEND = 'x11';
     env.GESTAMENT_XVFB_ACTIVE = '1';
+    env.XDG_SESSION_TYPE = 'x11';
     if (xvfb !== undefined) {
       env.DISPLAY = xvfb.display;
-      delete env.XAUTHORITY;
     }
   }
 
@@ -825,12 +876,20 @@ const runXvfbProbe = (xvfb: PooledXvfb): Promise<XvfbProbeResult> =>
     const probePath = resolveXvfbPoolProbePath();
     const stdout: string[] = [];
     const stderr: string[] = [];
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      DISPLAY: xvfb.display,
+      GDK_BACKEND: 'x11',
+      GESTAMENT_XVFB_ACTIVE: '1',
+      XDG_SESSION_TYPE: 'x11',
+    };
+    delete env.AT_SPI_BUS_ADDRESS;
+    delete env.DBUS_SESSION_BUS_ADDRESS;
+    delete env.NO_AT_BRIDGE;
+    delete env.WAYLAND_DISPLAY;
+    delete env.XAUTHORITY;
     const child = spawn(process.execPath, [probePath], {
-      env: {
-        ...process.env,
-        DISPLAY: xvfb.display,
-        GDK_BACKEND: 'x11',
-      },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -1531,6 +1590,18 @@ const createLaunchPayload = (
   };
 };
 
+const createEnvironmentPayload = (
+  options: GtkAppLauncherOptions
+): DriverEnvironmentPayload => {
+  const display = resolveDisplay(options.display);
+  const xvfb = resolveXvfbOptions(options);
+  const effective = resolveEffectiveDisplay(display, xvfb);
+
+  return {
+    env: resolveLauncherEnvironment(options, effective),
+  };
+};
+
 const elementRefToProxy = (
   session: DriverSession,
   ref: DriverElementRef | null
@@ -1577,6 +1648,10 @@ const createProxyGtkApp = (
   const app: GtkApp = {
     capture: async (): Promise<GtkCapture> =>
       decodeCapture(await appRequest<WireCapture>('app.capture')),
+    environment: async (): Promise<GtkAppEnvironment> =>
+      wireEnvironmentToGtkAppEnvironment(
+        await appRequest<WireGtkAppEnvironment>('app.environment')
+      ),
     findById: async (id: string): Promise<GtkWidgetElement | undefined> =>
       elementRefToProxy(
         session,
@@ -1776,6 +1851,16 @@ const createProxyGtkElement = (
 
   switch (ref.kind) {
     case 'window':
+      target.bounds = (): Promise<GtkCaptureBounds> =>
+        session.request<GtkCaptureBounds>('element.bounds', { elementId });
+      target.resizeHints = (): Promise<GtkWindowResizeHints> =>
+        session.request<GtkWindowResizeHints>('window.resizeHints', {
+          elementId,
+        });
+      target.x11Info = (): Promise<GtkX11WindowInfo> =>
+        session.request<GtkX11WindowInfo>('window.x11Info', { elementId });
+      addChildContainerProxyOperations(session, elementId, target);
+      break;
     case 'container':
     case 'menu':
       addChildContainerProxyOperations(session, elementId, target);
@@ -1946,12 +2031,24 @@ export const createDriverBackedGtkAppLauncher = (
   };
 
   const launch = async (args?: readonly string[]): Promise<GtkApp> => {
+    const payload = createLaunchPayload(options, args ?? []);
     const session = await ensureSession();
     const appRef = await session.request<DriverAppRef>(
       'launcher.launch',
-      createLaunchPayload(options, args ?? [])
+      payload
     );
     return createProxyGtkApp(session, appRef);
+  };
+
+  const environment = async (): Promise<GtkAppEnvironment> => {
+    const payload = createEnvironmentPayload(options);
+    const session = await ensureSession();
+    return wireEnvironmentToGtkAppEnvironment(
+      await session.request<WireGtkAppEnvironment>(
+        'launcher.environment',
+        payload
+      )
+    );
   };
 
   const release = async (): Promise<void> => {
@@ -1965,6 +2062,7 @@ export const createDriverBackedGtkAppLauncher = (
   };
 
   return {
+    environment,
     launch,
     release,
     [Symbol.asyncDispose]: release,

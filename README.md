@@ -75,8 +75,10 @@ For example, run Vitest with `npm test`:
 - Provides APIs for identifying GTK application windows and widgets within those windows.
 - These APIs can be used to check and manipulate widget states.
 - Captures the rendering output of GTK applications to verify the display area and clip state.
+- Exposes top-level window bounds, resize hints, and X11 metadata without requiring helper tools.
 - Detects StatusNotifierItem-based tray icons and allows you to click them, retrieve metadata, and capture screenshots.
 - Runs GTK applications on `xvfb` to enable stable testing in headless environments.
+- Exposes the final GTK session environment so helper processes can join the same Xvfb and DBus session.
 
 ### Environment
 
@@ -319,6 +321,7 @@ The following are the testing APIs provided by gestament.
 | `createGtkAppEnvironment()` | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`.   |
 | `createGtkAppLauncher()`    | Creates a launcher object that holds the specified application path, common arguments, display environment, environment variables, and wait timeout. |
 | `GtkAppLauncher.launch()`   | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application.                        |
+| `GtkAppLauncher.environment()` | Returns the final environment that launched apps and helper processes should use for this launcher.                                               |
 | `GtkAppLauncher.release()`  | Terminate all `GtkApp` instances launched from the launcher, and if the launcher was running Xvfb, terminate it as well.                             |
 
 The following example manually manages GTK application launches without using `launchGtkApp()` directly:
@@ -356,6 +359,7 @@ it('launches the app', async () => {
 | :-------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `GtkApp.release()`          | Terminates the running GTK application process.                                                                                                   |
 | `GtkApp.capture()`          | Captures the entire X11 root window pointed to by `DISPLAY` as a PNG and returns a `GtkCapture` containing the image and display bounds.          |
+| `GtkApp.environment()`      | Returns the final environment used for the launched app. Pass it to helper processes that must observe the same display and DBus session.          |
 | `GtkApp.findById()`         | Waits for an element matching the accessible ID and returns a `GtkWidgetElement` if found. Returns `undefined` if not found.                      |
 | `GtkApp.getById()`          | Waits for an element matching the accessible ID and returns a `GtkWidgetElement`. Throws an exception if not found.                               |
 | `GtkApp.findByPath()`       | Waits for an accessible ID plus child indexes separated by `.`, `:`, `;`, or `,`. Returns `undefined` if not found.                               |
@@ -417,7 +421,8 @@ expect(secondWindow).toBeUndefined();
 | `GtkSliderElement`                                                                    | `value()` / `valueInfo()` / `setValue()`                                                                                                                       |
 | `GtkProgressBarElement`                                                               | `value()` / `valueInfo()`                                                                                                                                      |
 | `GtkImageElement`                                                                     | `imageInfo()` / `GtkImageInfo.capture()`                                                                                                                       |
-| `GtkWindowElement`, `GtkContainerElement`                                             | `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`.                                                                            |
+| `GtkWindowElement`                                                                    | `bounds()` / `resizeHints()` / `x11Info()` / `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`.                               |
+| `GtkContainerElement`                                                                 | `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`.                                                                            |
 | `GtkComboBoxElement`                                                                  | `click()` / `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `clearSelection()`   |
 | `GtkListElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `deselectChildAt()`, and others  |
 | `GtkMenuElement`                                                                      | `childAt()` / `getChildCount()`. Child elements are returned as `GtkMenuItemElement`.                                                                          |
@@ -452,9 +457,37 @@ const capture = await label.capture();
 expect(capture.visibleBounds.width).toBeGreaterThan(0);
 ```
 
+Top-level windows expose a few additional APIs:
+
+```typescript
+// Get the top-level window
+const mainWindow = await app.getById('main_window');
+if (mainWindow.kind !== 'window') {
+  throw new Error(`Unexpected widget kind: ${mainWindow.kind}`);
+}
+
+// Position and Size
+const bounds = await mainWindow.bounds();
+expect(bounds.width).toBeGreaterThan(0);
+
+// Size constraints
+const resizeHints = await mainWindow.resizeHints();
+expect(resizeHints.minWidth).toBeGreaterThanOrEqual(0);
+
+// X11-specific metadata
+const x11Info = await mainWindow.x11Info();
+expect(x11Info.normalHints.widthIncrement).toBeGreaterThanOrEqual(0);
+```
+
+- Taking a PNG screenshot will give you the window size, but if you only need the window geometry, use `bounds()`.
+- Use `resizeHints()` for GTK/X11 size constraints such as base size, minimum size, and resize increments.
+- `x11Info()` exposes X11-specific metadata and `WM_NORMAL_HINTS`; prefer the high-level APIs above unless you need an X11 escape hatch.
+- On non-X11 backends or when the X11 window cannot be resolved, `x11Info()` rejects with `UNSUPPORTED_INTERFACE`.
+
 For conditions that become true only after GTK layout, drawing, or an
 application-side update settles, `gestament/testing` also provides retry
-helpers:
+helpers.
+These helper functions wait by polling until the specified handler succeeds:
 
 ```typescript
 import { toPass, waitForResult } from 'gestament/testing';
@@ -475,6 +508,8 @@ const capture = await waitForResult(async () => {
 These helpers share a timeout deadline with gestament lookups called inside
 the retry block, so `getById()` and `getByPath()` do not wait longer than the
 outer retry operation.
+
+If you want to fine-tune the timeout parameters, specify them in the `GtkWaitOptions` argument.
 
 `GtkWidgetKind` is a classification derived from AT-SPI roles and capabilities, not a GTK runtime type name.
 You can use `switch` to write branches that absorb GTK3/GTK4 differences to some extent:
@@ -851,9 +886,40 @@ This session is launcher-scoped: apps launched from the same launcher share one 
 `xvfbScreen` defaults to `1280x720x24`, and `xvfbTrayHost` defaults to `true`.
 `gsettings` and `theme` set `GSETTINGS_BACKEND` and `GTK_THEME`; use `null` to leave the corresponding environment variable unset.
 
+When the effective display is an internal Xvfb session, gestament owns the session-critical environment variables:
+It sets `DISPLAY`, `GDK_BACKEND=x11`, `DBUS_SESSION_BUS_ADDRESS`, `GESTAMENT_XVFB_ACTIVE=1`, and `XDG_SESSION_TYPE=x11`.
+And, it also clears host values for `WAYLAND_DISPLAY`, `AT_SPI_BUS_ADDRESS`, and `NO_AT_BRIDGE`.
+`XAUTHORITY` is cleared for the unauthenticated Xvfb server that gestament starts directly, and is retained only when it is required by an `xvfb-run`-provided server.
+
+For that reason, `options.env` cannot override the following variables while using an internal Xvfb session:
+`DISPLAY`, `WAYLAND_DISPLAY`, `GDK_BACKEND`, `DBUS_SESSION_BUS_ADDRESS`, `AT_SPI_BUS_ADDRESS`, `NO_AT_BRIDGE`, `XAUTHORITY`, `GESTAMENT_XVFB_ACTIVE`, and `XDG_SESSION_TYPE`.
+Trying to override one of these values is treated as `INVALID_ARGUMENT`.
+
+Use `GtkAppLauncher.environment()` before launching helper processes for a launcher, or `GtkApp.environment()` after launching an app.
+The returned object is the final environment that should be passed to helpers that must observe the same Xvfb and DBus session as the tested app.
+
+```typescript
+import { spawnSync } from 'node:child_process';
+
+// Reference the DISPLAY environment variable
+// from the environment variables used during testing.
+// This provides a starting point for manually controlling Xvfb.
+const env = await app.environment();
+const result = spawnSync(
+  process.execPath,
+  ['-e', 'console.log(process.env.DISPLAY)'],
+  {
+    env,
+    encoding: 'utf8',
+  },
+);
+
+expect(result.stdout.trim()).toBe(env.DISPLAY);
+```
+
 `GtkApp.capture()` captures the X11 root window, so `DISPLAY` must point to an X11 display.
 Under the internal Xvfb session, the target is the entire Xvfb virtual screen.
-The image size is determined by the current width and height of the X11 root window, and the internal Xvfb session uses the `WIDTH` and `HEIGHT` values specified by `xvfbScreen`.
+The image size is determined by the current width and height of the X11 root window, and the internal Xvfb session uses the width and height values specified by `xvfbScreen`.
 The default when unspecified is `1280x720x24`, so the PNG is normally `1280x720`.
 
 Specify these launcher options when you want to launch on the host display or test GSettings persistence:

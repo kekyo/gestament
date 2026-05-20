@@ -15,9 +15,11 @@ import type {
 /////////////////////////////////////////////////////////////////////////////////////////
 
 export type DriverCommand =
+  | 'launcher.environment'
   | 'launcher.launch'
   | 'launcher.release'
   | 'launcher.reset'
+  | 'app.environment'
   | 'app.release'
   | 'app.capture'
   | 'app.findById'
@@ -32,6 +34,7 @@ export type DriverCommand =
   | 'app.getTrayItemCount'
   | 'element.info'
   | 'element.capture'
+  | 'element.bounds'
   | 'element.childAt'
   | 'element.getChildCount'
   | 'element.click'
@@ -64,6 +67,8 @@ export type DriverCommand =
   | 'element.selectColumn'
   | 'element.deselectColumn'
   | 'element.imageInfo'
+  | 'window.resizeHints'
+  | 'window.x11Info'
   | 'imageInfo.capture'
   | 'tray.metadata'
   | 'tray.element'
@@ -78,6 +83,10 @@ export interface DriverLaunchPayload {
   readonly args: readonly string[];
   readonly env: WireGtkAppEnvironment;
   readonly timeoutMs: number | null;
+}
+
+export interface DriverEnvironmentPayload {
+  readonly env: WireGtkAppEnvironment;
 }
 
 export interface DriverAppPayload {

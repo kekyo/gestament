@@ -33,6 +33,25 @@ struct CaptureResult {
   bool clipped;
 };
 
+/** X11 normal-size hints exposed through WM_NORMAL_HINTS. */
+struct WindowResizeHints {
+  gint base_width;
+  gint base_height;
+  gint min_width;
+  gint min_height;
+  gint width_increment;
+  gint height_increment;
+};
+
+/** X11 metadata for a top-level window. */
+struct X11WindowInfo {
+  std::string window_id;
+  std::string title;
+  std::string class_name;
+  std::string instance_name;
+  WindowResizeHints normal_hints;
+};
+
 /** AT-SPI metadata exposed for an accessible element. */
 struct AccessibleInfo {
   std::string role_name;
@@ -250,6 +269,21 @@ bool capture_accessible(guint process_id, const std::string &id,
 /** Captures real screen pixels for an element within a process. */
 bool capture_accessible_proxy(guint process_id, AtspiAccessible *accessible,
                               CaptureResult *result, NativeError *error);
+
+/** Reads screen-relative bounds for an element within a process. */
+bool read_accessible_proxy_bounds(guint process_id, AtspiAccessible *accessible,
+                                  CaptureBounds *bounds, NativeError *error);
+
+/** Reads X11 normal-size hints for a window element within a process. */
+bool read_accessible_proxy_resize_hints(guint process_id,
+                                        AtspiAccessible *accessible,
+                                        WindowResizeHints *hints,
+                                        NativeError *error);
+
+/** Reads X11 metadata for a window element within a process. */
+bool read_accessible_proxy_x11_info(guint process_id,
+                                    AtspiAccessible *accessible,
+                                    X11WindowInfo *info, NativeError *error);
 
 /** Captures the full X11 root window currently addressed by DISPLAY. */
 bool capture_screen(CaptureResult *result, NativeError *error);

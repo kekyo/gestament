@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -415,7 +416,6 @@ int destroy_ximage(XImage *image) {
   return XDestroyImage(image);
 }
 
-#if GESTAMENT_GTK_BACKEND_GTK4
 enum class X11ProcessMatch {
   unknown,
   matches,
@@ -602,10 +602,115 @@ bool find_x11_window_bounds_by_origin(Display *display, Window root,
   return true;
 }
 
-bool resolve_x11_toplevel_window_bounds(guint process_id,
-                                        AtspiAccessible *accessible,
-                                        const CaptureBounds &component_bounds,
-                                        CaptureBounds *bounds) {
+bool find_x11_window_by_title(Display *display, Window root, Window window,
+                              guint process_id, const std::string &title,
+                              Window *result) {
+  Window root_return = 0;
+  Window parent_return = 0;
+  Window *children = nullptr;
+  unsigned int child_count = 0;
+  if (XQueryTree(display, window, &root_return, &parent_return, &children,
+                 &child_count) != 0) {
+    for (int index = static_cast<int>(child_count) - 1; index >= 0;
+         index -= 1) {
+      if (find_x11_window_by_title(display, root, children[index], process_id,
+                                   title, result)) {
+        XFree(children);
+        return true;
+      }
+    }
+    if (children != nullptr) {
+      XFree(children);
+    }
+  }
+
+  if (x11_window_process_match(display, window, process_id) ==
+          X11ProcessMatch::mismatches ||
+      read_x11_window_title(display, window) != title) {
+    return false;
+  }
+
+  CaptureBounds ignored_bounds = {};
+  if (!read_x11_window_bounds(display, root, window, &ignored_bounds)) {
+    return false;
+  }
+
+  *result = window;
+  return true;
+}
+
+bool find_x11_window_by_origin(Display *display, Window root, Window window,
+                               guint process_id,
+                               const CaptureBounds &component_bounds,
+                               Window *result) {
+  Window root_return = 0;
+  Window parent_return = 0;
+  Window *children = nullptr;
+  unsigned int child_count = 0;
+  if (XQueryTree(display, window, &root_return, &parent_return, &children,
+                 &child_count) != 0) {
+    for (int index = static_cast<int>(child_count) - 1; index >= 0;
+         index -= 1) {
+      if (find_x11_window_by_origin(display, root, children[index], process_id,
+                                    component_bounds, result)) {
+        XFree(children);
+        return true;
+      }
+    }
+    if (children != nullptr) {
+      XFree(children);
+    }
+  }
+
+  if (window == root ||
+      x11_window_process_match(display, window, process_id) ==
+          X11ProcessMatch::mismatches) {
+    return false;
+  }
+
+  CaptureBounds candidate_bounds = {};
+  if (!read_x11_window_bounds(display, root, window, &candidate_bounds)) {
+    return false;
+  }
+  if (candidate_bounds.x != component_bounds.x ||
+      candidate_bounds.y != component_bounds.y ||
+      candidate_bounds.width < component_bounds.width ||
+      candidate_bounds.height < component_bounds.height ||
+      candidate_bounds.width - component_bounds.width > 256 ||
+      candidate_bounds.height - component_bounds.height > 256) {
+    return false;
+  }
+
+  *result = window;
+  return true;
+}
+
+bool resolve_x11_toplevel_window(guint process_id, AtspiAccessible *accessible,
+                                 const CaptureBounds &component_bounds,
+                                 Display *display, Window *window) {
+  GError *gerror = nullptr;
+  gchar *name = atspi_accessible_get_name(accessible, &gerror);
+  if (gerror != nullptr) {
+    g_clear_error(&gerror);
+    return false;
+  }
+  const std::string title = name == nullptr ? "" : name;
+  g_free(name);
+
+  Window root = DefaultRootWindow(display);
+  if (!title.empty() &&
+      find_x11_window_by_title(display, root, root, process_id, title,
+                               window)) {
+    return true;
+  }
+
+  return find_x11_window_by_origin(display, root, root, process_id,
+                                   component_bounds, window);
+}
+
+[[maybe_unused]] bool resolve_x11_toplevel_window_bounds(
+    guint process_id, AtspiAccessible *accessible,
+    const CaptureBounds &component_bounds, CaptureBounds *bounds) {
   GError *gerror = nullptr;
   gchar *name = atspi_accessible_get_name(accessible, &gerror);
   if (gerror != nullptr) {
@@ -624,16 +729,52 @@ bool resolve_x11_toplevel_window_bounds(guint process_id,
     return false;
   }
 
-  Window root = DefaultRootWindow(display.get());
-  if (find_x11_window_bounds_by_title(display.get(), root, root, process_id,
-                                      title, bounds)) {
-    return true;
+  Window window = 0;
+  if (!resolve_x11_toplevel_window(process_id, accessible, component_bounds,
+                                   display.get(), &window)) {
+    return false;
   }
 
-  return find_x11_window_bounds_by_origin(display.get(), root, root, process_id,
-                                          component_bounds, bounds);
+  return read_x11_window_bounds(display.get(), DefaultRootWindow(display.get()),
+                                window, bounds);
 }
-#endif
+
+bool read_x11_resize_hints(Display *display, Window window,
+                           WindowResizeHints *hints) {
+  XSizeHints size_hints = {};
+  long supplied = 0;
+  if (XGetWMNormalHints(display, window, &size_hints, &supplied) == 0) {
+    return false;
+  }
+
+  *hints = {
+      size_hints.base_width,
+      size_hints.base_height,
+      size_hints.min_width,
+      size_hints.min_height,
+      size_hints.width_inc,
+      size_hints.height_inc,
+  };
+  return true;
+}
+
+void read_x11_class_hint(Display *display, Window window,
+                         std::string *class_name,
+                         std::string *instance_name) {
+  XClassHint class_hint = {};
+  if (XGetClassHint(display, window, &class_hint) == 0) {
+    return;
+  }
+
+  if (class_hint.res_class != nullptr) {
+    *class_name = class_hint.res_class;
+    XFree(class_hint.res_class);
+  }
+  if (class_hint.res_name != nullptr) {
+    *instance_name = class_hint.res_name;
+    XFree(class_hint.res_name);
+  }
+}
 
 bool resolve_capture_screen_bounds(guint process_id,
                                    AtspiAccessible *accessible,
@@ -2980,6 +3121,181 @@ bool capture_accessible_proxy(guint process_id, AtspiAccessible *accessible,
 
   return capture_root_window_pixels(bounds, ".", NativeErrorCode::stale_element,
                                     result, error);
+}
+
+bool read_accessible_proxy_bounds(guint process_id, AtspiAccessible *accessible,
+                                  CaptureBounds *bounds, NativeError *error) {
+  if (bounds == nullptr) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::invalid_argument,
+          "Capture bounds result must not be null.",
+      };
+    }
+    return false;
+  }
+
+  if (!validate_accessible(process_id, accessible, error)) {
+    return false;
+  }
+
+  return resolve_capture_screen_bounds(process_id, accessible, ".",
+                                       NativeErrorCode::stale_element, bounds,
+                                       error);
+}
+
+bool read_accessible_proxy_resize_hints(guint process_id,
+                                        AtspiAccessible *accessible,
+                                        WindowResizeHints *hints,
+                                        NativeError *error) {
+  if (hints == nullptr) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::invalid_argument,
+          "Window resize hints result must not be null.",
+      };
+    }
+    return false;
+  }
+
+  if (!validate_accessible(process_id, accessible, error)) {
+    return false;
+  }
+  if (!is_window_role(accessible)) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::unsupported_interface,
+          "Accessible element is not a window.",
+      };
+    }
+    return false;
+  }
+
+  CaptureBounds component_bounds = {};
+  if (!resolve_component_screen_bounds(accessible, ".",
+                                       NativeErrorCode::stale_element,
+                                       &component_bounds, error)) {
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::unsupported_interface,
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.",
+      };
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!resolve_x11_toplevel_window(process_id, accessible, component_bounds,
+                                   display.get(), &window)) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::unsupported_interface,
+          "Failed to resolve the X11 window for the accessible element.",
+      };
+    }
+    return false;
+  }
+
+  if (!read_x11_resize_hints(display.get(), window, hints)) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::unsupported_interface,
+          "Failed to read X11 WM_NORMAL_HINTS for the window.",
+      };
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool read_accessible_proxy_x11_info(guint process_id,
+                                    AtspiAccessible *accessible,
+                                    X11WindowInfo *info, NativeError *error) {
+  if (info == nullptr) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::invalid_argument,
+          "X11 window info result must not be null.",
+      };
+    }
+    return false;
+  }
+
+  if (!validate_accessible(process_id, accessible, error)) {
+    return false;
+  }
+  if (!is_window_role(accessible)) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::unsupported_interface,
+          "Accessible element is not a window.",
+      };
+    }
+    return false;
+  }
+
+  CaptureBounds component_bounds = {};
+  if (!resolve_component_screen_bounds(accessible, ".",
+                                       NativeErrorCode::stale_element,
+                                       &component_bounds, error)) {
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::unsupported_interface,
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.",
+      };
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!resolve_x11_toplevel_window(process_id, accessible, component_bounds,
+                                   display.get(), &window)) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::unsupported_interface,
+          "Failed to resolve the X11 window for the accessible element.",
+      };
+    }
+    return false;
+  }
+
+  WindowResizeHints normal_hints = {};
+  if (!read_x11_resize_hints(display.get(), window, &normal_hints)) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::unsupported_interface,
+          "Failed to read X11 WM_NORMAL_HINTS for the window.",
+      };
+    }
+    return false;
+  }
+
+  std::ostringstream window_id;
+  window_id << "0x" << std::hex << window;
+
+  X11WindowInfo next = {};
+  next.window_id = window_id.str();
+  next.title = read_x11_window_title(display.get(), window);
+  read_x11_class_hint(display.get(), window, &next.class_name,
+                      &next.instance_name);
+  next.normal_hints = normal_hints;
+  *info = next;
+  return true;
 }
 
 bool capture_screen(CaptureResult *result, NativeError *error) {

@@ -65,8 +65,10 @@ describe('sample GTK app', () => {
 - Provides APIs for identifying GTK application windows and widgets within those windows.
 - These APIs can be used to check and manipulate widget states.
 - Captures the rendering output of GTK applications to verify the display area and clip state.
+- Exposes top-level window bounds, resize hints, and X11 metadata without requiring helper tools.
 - Detects StatusNotifierItem-based tray icons and allows you to click them, retrieve metadata, and capture screenshots.
 - Runs GTK applications on launcher-scoped `xvfb` sessions to enable stable testing in headless and concurrent environments.
+- Exposes the final GTK session environment so helper processes can join the same Xvfb and DBus session.
 
 ### Environment
 
