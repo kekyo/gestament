@@ -523,6 +523,45 @@ bool create_capture_object(napi_env env, const gestament::CaptureResult &capture
          set_bool_property(env, *result, "clipped", capture.clipped);
 }
 
+bool create_resize_hints_object(napi_env env,
+                                const gestament::WindowResizeHints &hints,
+                                napi_value *result) {
+  if (napi_create_object(env, result) != napi_ok) {
+    napi_throw_error(env, nullptr,
+                     "Failed to create window resize hints object.");
+    return false;
+  }
+
+  return set_int32_property(env, *result, "baseWidth", hints.base_width) &&
+         set_int32_property(env, *result, "baseHeight", hints.base_height) &&
+         set_int32_property(env, *result, "minWidth", hints.min_width) &&
+         set_int32_property(env, *result, "minHeight", hints.min_height) &&
+         set_int32_property(env, *result, "widthIncrement",
+                            hints.width_increment) &&
+         set_int32_property(env, *result, "heightIncrement",
+                            hints.height_increment);
+}
+
+bool create_x11_window_info_object(napi_env env,
+                                   const gestament::X11WindowInfo &info,
+                                   napi_value *result) {
+  if (napi_create_object(env, result) != napi_ok) {
+    napi_throw_error(env, nullptr, "Failed to create X11 window info object.");
+    return false;
+  }
+
+  napi_value normal_hints = nullptr;
+  return create_resize_hints_object(env, info.normal_hints, &normal_hints) &&
+         set_string_property(env, *result, "windowId",
+                             info.window_id.c_str()) &&
+         set_string_property(env, *result, "title", info.title.c_str()) &&
+         set_string_property(env, *result, "className",
+                             info.class_name.c_str()) &&
+         set_string_property(env, *result, "instanceName",
+                             info.instance_name.c_str()) &&
+         set_value_property(env, *result, "normalHints", normal_hints);
+}
+
 bool create_string_array(napi_env env, const std::vector<std::string> &values,
                          napi_value *result) {
   if (napi_create_array_with_length(env, values.size(), result) != napi_ok) {
@@ -1560,6 +1599,84 @@ napi_value capture_bounds(napi_env env, napi_callback_info info) {
   return result;
 }
 
+napi_value bounds(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  NativeElement *element = nullptr;
+  if (!read_native_element(env, args[0], "element", &element)) {
+    return make_undefined(env);
+  }
+
+  gestament::CaptureBounds capture_bounds = {};
+  gestament::NativeError error = {};
+  if (!gestament::read_accessible_proxy_bounds(
+          element->process_id, element->accessible, &capture_bounds, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_bounds_object(env, capture_bounds, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value resize_hints(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  NativeElement *element = nullptr;
+  if (!read_native_element(env, args[0], "element", &element)) {
+    return make_undefined(env);
+  }
+
+  gestament::WindowResizeHints hints = {};
+  gestament::NativeError error = {};
+  if (!gestament::read_accessible_proxy_resize_hints(
+          element->process_id, element->accessible, &hints, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_resize_hints_object(env, hints, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value x11_info(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  NativeElement *element = nullptr;
+  if (!read_native_element(env, args[0], "element", &element)) {
+    return make_undefined(env);
+  }
+
+  gestament::X11WindowInfo window_info = {};
+  gestament::NativeError error = {};
+  if (!gestament::read_accessible_proxy_x11_info(
+          element->process_id, element->accessible, &window_info, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_x11_window_info_object(env, window_info, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
 napi_value mapped_x11_window_count(napi_env env, napi_callback_info) {
   guint count = 0;
   gestament::NativeError error = {};
@@ -1687,6 +1804,9 @@ napi_value initialize(napi_env env, napi_value exports) {
   set_function(env, exports, "imageInfo", image_info);
   set_function(env, exports, "setValue", set_value);
   set_function(env, exports, "capture", capture);
+  set_function(env, exports, "bounds", bounds);
+  set_function(env, exports, "resizeHints", resize_hints);
+  set_function(env, exports, "x11Info", x11_info);
   set_function(env, exports, "captureScreen", capture_screen);
   set_function(env, exports, "captureBounds", capture_bounds);
   set_function(env, exports, "mappedX11WindowCount", mapped_x11_window_count);

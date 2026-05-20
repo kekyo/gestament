@@ -74,6 +74,71 @@ export interface GtkCapture {
   readonly clipped: boolean;
 }
 
+/**
+ * X11 normal-size hints exposed for a GTK top-level window.
+ */
+export interface GtkWindowResizeHints {
+  /**
+   * Base window width in pixels.
+   */
+  readonly baseWidth: number;
+
+  /**
+   * Base window height in pixels.
+   */
+  readonly baseHeight: number;
+
+  /**
+   * Minimum window width in pixels.
+   */
+  readonly minWidth: number;
+
+  /**
+   * Minimum window height in pixels.
+   */
+  readonly minHeight: number;
+
+  /**
+   * Width step used when the window manager resizes the window.
+   */
+  readonly widthIncrement: number;
+
+  /**
+   * Height step used when the window manager resizes the window.
+   */
+  readonly heightIncrement: number;
+}
+
+/**
+ * X11-specific metadata for a GTK top-level window.
+ */
+export interface GtkX11WindowInfo {
+  /**
+   * X11 window id formatted as a hexadecimal string.
+   */
+  readonly windowId: string;
+
+  /**
+   * Window title read from _NET_WM_NAME or WM_NAME.
+   */
+  readonly title: string;
+
+  /**
+   * WM_CLASS class name.
+   */
+  readonly className: string;
+
+  /**
+   * WM_CLASS instance name.
+   */
+  readonly instanceName: string;
+
+  /**
+   * Normal-size hints exposed through WM_NORMAL_HINTS.
+   */
+  readonly normalHints: GtkWindowResizeHints;
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 /**
@@ -281,6 +346,30 @@ export interface GtkWindowElement
    * Discriminator for window elements.
    */
   readonly kind: 'window';
+
+  /**
+   * Reads current screen-relative bounds without capturing image pixels.
+   *
+   * @returns A promise that resolves to the current window bounds.
+   */
+  readonly bounds: () => Promise<GtkCaptureBounds>;
+
+  /**
+   * Reads X11 normal-size hints for this window.
+   *
+   * @returns A promise that resolves to the current resize hints.
+   */
+  readonly resizeHints: () => Promise<GtkWindowResizeHints>;
+
+  /**
+   * Reads X11-specific window metadata for this window.
+   *
+   * @returns A promise that resolves to X11 window metadata.
+   * @remarks
+   * Rejects with UNSUPPORTED_INTERFACE when the current display is not X11 or
+   * the native X11 window cannot be resolved.
+   */
+  readonly x11Info: () => Promise<GtkX11WindowInfo>;
 }
 
 /**
@@ -1049,6 +1138,17 @@ export interface GtkApp extends Releasable, GtkCapturable {
   readonly capture: () => Promise<GtkCapture>;
 
   /**
+   * Reads the final environment used by the launched application.
+   *
+   * @returns A promise that resolves to a spawn-compatible environment object.
+   * @remarks
+   * When the app runs under gestament's internal Xvfb session, this includes
+   * the actual DISPLAY and DBUS_SESSION_BUS_ADDRESS values for helper
+   * processes that need to join the same session.
+   */
+  readonly environment: () => Promise<GtkAppEnvironment>;
+
+  /**
    * Waits for an accessible id and returns an element when it exists.
    *
    * @param id - Accessible id to resolve.
@@ -1197,6 +1297,16 @@ export interface GtkAppLauncherOptions {
  * Reusable launcher that tracks and releases launched GTK applications.
  */
 export interface GtkAppLauncher extends Releasable {
+  /**
+   * Reads the final environment that will be used for applications launched by this launcher.
+   *
+   * @returns A promise that resolves to a spawn-compatible environment object.
+   * @remarks
+   * Calling this may start the launcher's reusable display session so the
+   * returned DISPLAY and DBUS_SESSION_BUS_ADDRESS values are concrete.
+   */
+  readonly environment: () => Promise<GtkAppEnvironment>;
+
   /**
    * Launches the configured GTK application and tracks it for release().
    *

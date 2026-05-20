@@ -8,13 +8,14 @@ project(
 )
 
 gtk_dep = dependency('gtk+-3.0')
+x11_dep = dependency('x11')
 gestament_include = include_directories('../../include')
 
 executable(
   'gtk3-test-app',
   'src/main.cpp',
   include_directories: gestament_include,
-  dependencies: gtk_dep,
+  dependencies: [gtk_dep, x11_dep],
 )
 
 configure_file(

@@ -9,6 +9,7 @@
 #include <gtk/gtk.h>
 
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 
 #include <cmath>
 #include <filesystem>
@@ -23,6 +24,31 @@ struct AppWidgets {
   GtkWidget *window;
   GtkWidget *name_entry;
   GtkLabel *result_label;
+};
+
+struct MainWindowGeometryHints {
+  int base_width;
+  int base_height;
+  int min_width;
+  int min_height;
+  int width_increment;
+  int height_increment;
+};
+
+constexpr MainWindowGeometryHints kMainWindowGeometryHints = {
+    80,
+    40,
+    120,
+    90,
+    7,
+    11,
+};
+constexpr guint kDeferredGeometryHintIntervalMs = 50;
+constexpr unsigned int kDeferredGeometryHintAttempts = 5;
+
+struct DeferredGeometryHintState {
+  GtkWidget *window;
+  unsigned int remaining_attempts;
 };
 
 std::filesystem::path executable_directory() {
@@ -280,6 +306,56 @@ Window x11_window_for_surface(GdkSurface *surface) {
   return gdk_x11_surface_get_xid(surface);
 }
 #pragma GCC diagnostic pop
+
+void set_x11_main_window_geometry_hints(GtkWidget *window) {
+  GtkNative *native = gtk_widget_get_native(window);
+  if (native == nullptr) {
+    return;
+  }
+
+  GdkSurface *surface = gtk_native_get_surface(native);
+  if (surface == nullptr || !GDK_IS_X11_SURFACE(surface)) {
+    return;
+  }
+
+  Display *display = x11_display_for_surface(surface);
+  Window xid = x11_window_for_surface(surface);
+  XSizeHints hints = {};
+  hints.flags = PBaseSize | PMinSize | PResizeInc;
+  hints.base_width = kMainWindowGeometryHints.base_width;
+  hints.base_height = kMainWindowGeometryHints.base_height;
+  hints.min_width = kMainWindowGeometryHints.min_width;
+  hints.min_height = kMainWindowGeometryHints.min_height;
+  hints.width_inc = kMainWindowGeometryHints.width_increment;
+  hints.height_inc = kMainWindowGeometryHints.height_increment;
+  XSetWMNormalHints(display, xid, &hints);
+  XFlush(display);
+}
+
+gboolean reapply_x11_main_window_geometry_hints(gpointer user_data) {
+  auto *state = static_cast<DeferredGeometryHintState *>(user_data);
+  set_x11_main_window_geometry_hints(state->window);
+  state->remaining_attempts -= 1;
+  return state->remaining_attempts == 0 ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
+}
+
+void destroy_deferred_geometry_hint_state(gpointer user_data) {
+  auto *state = static_cast<DeferredGeometryHintState *>(user_data);
+  g_object_unref(state->window);
+  delete state;
+}
+
+void schedule_x11_main_window_geometry_hints(GtkWidget *window) {
+  auto *state = new DeferredGeometryHintState{
+      GTK_WIDGET(g_object_ref(window)),
+      kDeferredGeometryHintAttempts,
+  };
+
+  // GTK may rewrite WM_NORMAL_HINTS after map/configure on fast X11 backends.
+  g_timeout_add_full(G_PRIORITY_DEFAULT, kDeferredGeometryHintIntervalMs,
+                     reapply_x11_main_window_geometry_hints, state,
+                     destroy_deferred_geometry_hint_state);
+}
 
 bool widget_root_origin(GtkWidget *widget, int *x, int *y) {
   GtkNative *native = gtk_widget_get_native(widget);
@@ -621,6 +697,9 @@ int main(int argc, char **argv) {
                                  : nullptr;
 
   gtk_window_present(GTK_WINDOW(window));
+  drain_events();
+  set_x11_main_window_geometry_hints(window);
+  schedule_x11_main_window_geometry_hints(window);
   if (options.widget_controls) {
     gtk_window_present(GTK_WINDOW(controls_window));
   }

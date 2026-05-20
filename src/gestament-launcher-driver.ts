@@ -15,9 +15,10 @@ import {
   createGtkStaleElementError,
   createGtkUnsupportedInterfaceError,
 } from './errors';
-import { launchGtkApp } from './launchGtkApp';
+import { createGtkAppEnvironment, launchGtkApp } from './launchGtkApp';
 import { runWithWaitDeadline } from './wait';
 import type {
+  DriverEnvironmentPayload,
   DriverAppPayload,
   DriverAppRef,
   DriverCommand,
@@ -236,6 +237,16 @@ const wireEnvironmentToGtkAppEnvironment = (
     appEnv[key] = value === null ? undefined : value;
   }
   return appEnv;
+};
+
+const gtkAppEnvironmentToWireEnvironment = (
+  env: GtkAppEnvironment
+): WireGtkAppEnvironment => {
+  const wireEnv: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(env)) {
+    wireEnv[key] = value ?? null;
+  }
+  return wireEnv;
 };
 
 const toWireCapture = (capture: GtkCapture): WireCapture => ({
@@ -473,6 +484,15 @@ const handleLauncherCommand = async (
   payload: unknown
 ): Promise<unknown> => {
   switch (command) {
+    case 'launcher.environment': {
+      const environmentPayload = payload as DriverEnvironmentPayload;
+      return gtkAppEnvironmentToWireEnvironment(
+        createGtkAppEnvironment(
+          process.env,
+          wireEnvironmentToGtkAppEnvironment(environmentPayload.env)
+        )
+      );
+    }
     case 'launcher.launch': {
       const launchPayload = payload as DriverLaunchPayload;
       const launchOptions = {
@@ -512,6 +532,8 @@ const handleAppCommand = async (
   const app = resolveApp(appId);
 
   switch (command) {
+    case 'app.environment':
+      return gtkAppEnvironmentToWireEnvironment(await app.environment());
     case 'app.release':
       await releaseApp(appId);
       return null;
@@ -574,6 +596,12 @@ const handleElementCommand = async (
       return entry.element.info();
     case 'element.capture':
       return toWireCapture(await entry.element.capture());
+    case 'element.bounds':
+      return callElementMethod(entry, 'bounds');
+    case 'window.resizeHints':
+      return callElementMethod(entry, 'resizeHints');
+    case 'window.x11Info':
+      return callElementMethod(entry, 'x11Info');
     case 'element.childAt': {
       const { index } = payload as DriverElementPayload & DriverIndexPayload;
       return optionalElementRef(
@@ -773,6 +801,9 @@ const handleRequest = async (request: DriverRequest): Promise<unknown> => {
     return handleAppCommand(request.command, request.payload);
   }
   if (request.command.startsWith('element.')) {
+    return handleElementCommand(request.command, request.payload);
+  }
+  if (request.command.startsWith('window.')) {
     return handleElementCommand(request.command, request.payload);
   }
   if (request.command.startsWith('imageInfo.')) {

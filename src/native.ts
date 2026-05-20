@@ -36,6 +36,23 @@ export interface NativeCapture {
   readonly clipped: boolean;
 }
 
+export interface NativeWindowResizeHints {
+  readonly baseWidth: number;
+  readonly baseHeight: number;
+  readonly minWidth: number;
+  readonly minHeight: number;
+  readonly widthIncrement: number;
+  readonly heightIncrement: number;
+}
+
+export interface NativeX11WindowInfo {
+  readonly windowId: string;
+  readonly title: string;
+  readonly className: string;
+  readonly instanceName: string;
+  readonly normalHints: NativeWindowResizeHints;
+}
+
 export interface NativeElementInfo {
   readonly roleName: string;
   readonly localizedRoleName: string;
@@ -200,6 +217,11 @@ interface NativeAddon {
   readonly imageInfo: (element: NativeElementHandle) => NativeImageInfo;
   readonly setValue: (element: NativeElementHandle, value: number) => void;
   readonly capture: (element: NativeElementHandle) => NativeCapture;
+  readonly bounds: (element: NativeElementHandle) => NativeCaptureBounds;
+  readonly resizeHints: (
+    element: NativeElementHandle
+  ) => NativeWindowResizeHints;
+  readonly x11Info: (element: NativeElementHandle) => NativeX11WindowInfo;
   readonly captureScreen: () => NativeCapture;
   readonly captureBounds: (
     x: number,
@@ -578,6 +600,22 @@ export const nativeSetValue = (
 /** Captures real screen pixels for the accessible resolved by an element handle. */
 export const nativeCapture = (element: NativeElementHandle): NativeCapture =>
   callNative(() => loadNativeAddon().capture(element));
+
+/** Reads screen-relative bounds for the accessible resolved by an element handle. */
+export const nativeBounds = (
+  element: NativeElementHandle
+): NativeCaptureBounds => callNative(() => loadNativeAddon().bounds(element));
+
+/** Reads X11 WM_NORMAL_HINTS for the accessible resolved by an element handle. */
+export const nativeResizeHints = (
+  element: NativeElementHandle
+): NativeWindowResizeHints =>
+  callNative(() => loadNativeAddon().resizeHints(element));
+
+/** Reads X11 window metadata for the accessible resolved by an element handle. */
+export const nativeX11Info = (
+  element: NativeElementHandle
+): NativeX11WindowInfo => callNative(() => loadNativeAddon().x11Info(element));
 
 /** Captures the full X11 root window currently addressed by DISPLAY. */
 export const nativeCaptureScreen = (): NativeCapture =>

@@ -217,9 +217,10 @@ export const launchGtkApp = (
 ): Promise<GtkApp> => {
   const _args = args ?? [];
   const _timeoutMs = options?.timeoutMs ?? 10_000;
+  const appEnvironment = createGtkAppEnvironment(process.env, options?.env);
 
   const child = spawn(appPath, [..._args], {
-    env: createGtkAppEnvironment(process.env, options?.env),
+    env: appEnvironment,
     stdio: 'pipe',
   });
 
@@ -411,6 +412,10 @@ export const launchGtkApp = (
       } catch (error) {
         throw normalizeNativeError(error);
       }
+    },
+    environment: async (): Promise<GtkAppEnvironment> => {
+      assertProcessRunning(state, appPath);
+      return { ...appEnvironment };
     },
     findById,
     findByPath,

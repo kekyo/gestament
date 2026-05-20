@@ -4,6 +4,7 @@
 // https://github.com/kekyo/gestament
 
 import {
+  nativeBounds,
   nativeCapture,
   nativeCaptureBounds,
   nativeChildAt,
@@ -20,6 +21,7 @@ import {
   nativeSelectedChildCount,
   nativeSetText,
   nativeSetValue,
+  nativeResizeHints,
   nativeTableCellAt,
   nativeTableColumnCount,
   nativeTableDeselectColumn,
@@ -34,6 +36,7 @@ import {
   nativeTableSelectedRows,
   nativeText,
   nativeValueInfo,
+  nativeX11Info,
   type NativeElementInfo,
   type NativeElementHandle,
   type NativeImageInfo,
@@ -45,6 +48,7 @@ import {
 } from './errors';
 import type {
   GtkCapture,
+  GtkCaptureBounds,
   GtkComboBoxItemElement,
   GtkElement,
   GtkElementInfo,
@@ -55,6 +59,8 @@ import type {
   GtkValueInfo,
   GtkWidgetElement,
   GtkWidgetKind,
+  GtkWindowResizeHints,
+  GtkX11WindowInfo,
 } from './types';
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -681,6 +687,21 @@ const createImageInfoOperation =
     };
   };
 
+const createBoundsOperation =
+  (handle: NativeElementHandle): (() => Promise<GtkCaptureBounds>) =>
+  async (): Promise<GtkCaptureBounds> =>
+    nativeBounds(handle);
+
+const createResizeHintsOperation =
+  (handle: NativeElementHandle): (() => Promise<GtkWindowResizeHints>) =>
+  async (): Promise<GtkWindowResizeHints> =>
+    nativeResizeHints(handle);
+
+const createX11InfoOperation =
+  (handle: NativeElementHandle): (() => Promise<GtkX11WindowInfo>) =>
+  async (): Promise<GtkX11WindowInfo> =>
+    nativeX11Info(handle);
+
 const createValueOperation =
   (handle: NativeElementHandle): (() => Promise<number>) =>
   async (): Promise<number> =>
@@ -937,7 +958,10 @@ export const createGtkElement = (
       return {
         ...common,
         kind: 'window',
+        bounds: createBoundsOperation(handle),
         ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
+        resizeHints: createResizeHintsOperation(handle),
+        x11Info: createX11InfoOperation(handle),
       };
     case 'button':
       return { ...common, kind: 'button', click: createClickOperation(handle) };

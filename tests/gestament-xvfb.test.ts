@@ -54,10 +54,17 @@ const result = spawnSync(
 );
 console.log(JSON.stringify({
   atSpiBusAddress: process.env.AT_SPI_BUS_ADDRESS ?? null,
+  dbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,
   display: process.env.DISPLAY ?? null,
+  gdkBackend: process.env.GDK_BACKEND ?? null,
+  gestamentXvfbActive: process.env.GESTAMENT_XVFB_ACTIVE ?? null,
+  noAtBridge: process.env.NO_AT_BRIDGE ?? null,
   status: result.status,
   stderr: result.stderr.trim(),
   stdout: result.stdout.trim(),
+  waylandDisplay: process.env.WAYLAND_DISPLAY ?? null,
+  xauthority: process.env.XAUTHORITY ?? null,
+  xdgSessionType: process.env.XDG_SESSION_TYPE ?? null,
 }));
 process.exit(result.status ?? 1);
 `;
@@ -121,6 +128,14 @@ describe('gestament-xvfb', () => {
         env: {
           ...process.env,
           AT_SPI_BUS_ADDRESS: 'unix:path=/tmp/gestament-host-at-spi',
+          DBUS_SESSION_BUS_ADDRESS: 'unix:path=/tmp/gestament-host-dbus',
+          DISPLAY: ':77',
+          GDK_BACKEND: 'wayland',
+          GESTAMENT_XVFB_ACTIVE: 'host',
+          NO_AT_BRIDGE: '1',
+          WAYLAND_DISPLAY: 'wayland-host',
+          XAUTHORITY: '/tmp/gestament-host-xauthority',
+          XDG_SESSION_TYPE: 'wayland',
         },
         timeout: 30_000,
       }
@@ -132,13 +147,30 @@ describe('gestament-xvfb', () => {
     expect(probeOutputLine).toBeDefined();
     const probe = JSON.parse(probeOutputLine as string) as {
       readonly atSpiBusAddress: string | null;
+      readonly dbusSessionBusAddress: string | null;
       readonly display: string | null;
+      readonly gdkBackend: string | null;
+      readonly gestamentXvfbActive: string | null;
+      readonly noAtBridge: string | null;
       readonly stderr: string;
       readonly stdout: string;
+      readonly waylandDisplay: string | null;
+      readonly xauthority: string | null;
+      readonly xdgSessionType: string | null;
     };
 
     expect(probe.atSpiBusAddress).toBeNull();
+    expect(probe.dbusSessionBusAddress).not.toBe(
+      'unix:path=/tmp/gestament-host-dbus'
+    );
     expect(probe.display).not.toBeNull();
+    expect(probe.display).not.toBe(':77');
+    expect(probe.gdkBackend).toBe('x11');
+    expect(probe.gestamentXvfbActive).toBe('1');
+    expect(probe.noAtBridge).toBeNull();
+    expect(probe.waylandDisplay).toBeNull();
+    expect(probe.xauthority).not.toBe('/tmp/gestament-host-xauthority');
+    expect(probe.xdgSessionType).toBe('x11');
     expect(probe.stdout, probe.stderr).toContain('/at-spi/bus_');
     expect(atSpiBusNumber(probe.stdout)).toBe(
       displayNumber(probe.display as string)
@@ -162,21 +194,34 @@ describe('gestament-xvfb', () => {
       delete env.GESTAMENT_XVFB_ACTIVE;
       delete env.GSETTINGS_BACKEND;
       delete env.GTK_THEME;
+      delete env.NO_AT_BRIDGE;
       delete env.WAYLAND_DISPLAY;
+      delete env.XAUTHORITY;
+      delete env.XDG_SESSION_TYPE;
 
       try {
         const script = `
-const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const { existsSync, readFileSync } = require('node:fs');
 const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
 const childScript = (appEnvPath) => [
-  "const { writeFileSync } = require('node:fs');",
-  "writeFileSync(" + JSON.stringify(appEnvPath) + ", JSON.stringify({",
+  "const { renameSync, writeFileSync } = require('node:fs');",
+  "const appEnvPath = " + JSON.stringify(appEnvPath) + ";",
+  "const appEnvTempPath = appEnvPath + '.tmp-' + process.pid;",
+  "writeFileSync(appEnvTempPath, JSON.stringify({",
+  "  atSpiBusAddress: process.env.AT_SPI_BUS_ADDRESS ?? null,",
   "  dbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,",
   "  display: process.env.DISPLAY ?? null,",
   "  gdkBackend: process.env.GDK_BACKEND ?? null,",
+  "  gestamentXvfbActive: process.env.GESTAMENT_XVFB_ACTIVE ?? null,",
   "  gsettingsBackend: process.env.GSETTINGS_BACKEND ?? null,",
   "  gtkTheme: process.env.GTK_THEME ?? null,",
+  "  noAtBridge: process.env.NO_AT_BRIDGE ?? null,",
+  "  waylandDisplay: process.env.WAYLAND_DISPLAY ?? null,",
+  "  xauthority: process.env.XAUTHORITY ?? null,",
+  "  xdgSessionType: process.env.XDG_SESSION_TYPE ?? null,",
   "}));",
+  "renameSync(appEnvTempPath, appEnvPath);",
   "setInterval(() => {}, 2147483647);",
 ].join("\\n");
 const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
@@ -191,6 +236,41 @@ const waitForAppEnv = async (appEnvPath) => {
   }
   throw new Error('Timed out waiting for child environment output.');
 };
+const pickSessionEnv = (env) => ({
+  atSpiBusAddress: env.AT_SPI_BUS_ADDRESS ?? null,
+  dbusSessionBusAddress: env.DBUS_SESSION_BUS_ADDRESS ?? null,
+  display: env.DISPLAY ?? null,
+  gdkBackend: env.GDK_BACKEND ?? null,
+  gestamentXvfbActive: env.GESTAMENT_XVFB_ACTIVE ?? null,
+  gsettingsBackend: env.GSETTINGS_BACKEND ?? null,
+  gtkTheme: env.GTK_THEME ?? null,
+  noAtBridge: env.NO_AT_BRIDGE ?? null,
+  waylandDisplay: env.WAYLAND_DISPLAY ?? null,
+  xauthority: env.XAUTHORITY ?? null,
+  xdgSessionType: env.XDG_SESSION_TYPE ?? null,
+});
+const probeEnvironment = (env) => {
+  const result = spawnSync(process.execPath, ['-e', [
+    "console.log(JSON.stringify({",
+    "  dbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,",
+    "  display: process.env.DISPLAY ?? null,",
+    "}));",
+  ].join("\\n")], { encoding: 'utf8', env });
+  if (result.status !== 0) {
+    throw new Error(result.stderr);
+  }
+  return JSON.parse(result.stdout.trim());
+};
+Object.assign(process.env, {
+  AT_SPI_BUS_ADDRESS: 'unix:path=/tmp/gestament-host-at-spi',
+  DBUS_SESSION_BUS_ADDRESS: 'unix:path=/tmp/gestament-host-dbus',
+  DISPLAY: ':77',
+  GESTAMENT_XVFB_ACTIVE: 'host',
+  NO_AT_BRIDGE: '1',
+  WAYLAND_DISPLAY: 'wayland-host',
+  XAUTHORITY: '/tmp/gestament-host-xauthority',
+  XDG_SESSION_TYPE: 'wayland',
+});
 const firstLauncher = createGtkAppLauncher({
   appPath: process.execPath,
   args: ['-e', childScript(${JSON.stringify(firstAppEnvPath)})],
@@ -218,11 +298,54 @@ const secondLauncher = createGtkAppLauncher({
         waitForAppEnv(${JSON.stringify(firstAppEnvPath)}),
         waitForAppEnv(${JSON.stringify(secondAppEnvPath)}),
       ]);
+    const [firstLauncherApiEnv, firstAppApiEnv] = await Promise.all([
+      firstLauncher.environment(),
+      firstApp.environment(),
+    ]);
+    const firstLauncherEnv = pickSessionEnv(firstLauncherApiEnv);
+    const firstAppReportedEnv = pickSessionEnv(firstAppApiEnv);
+    const firstLauncherProbeEnv = probeEnvironment(firstLauncherApiEnv);
+    const firstAppProbeEnv = probeEnvironment(firstAppApiEnv);
+    const invalidSessionEnvCodes = await Promise.all(
+      [
+        'DISPLAY',
+        'WAYLAND_DISPLAY',
+        'GDK_BACKEND',
+        'DBUS_SESSION_BUS_ADDRESS',
+        'AT_SPI_BUS_ADDRESS',
+        'NO_AT_BRIDGE',
+        'XAUTHORITY',
+        'GESTAMENT_XVFB_ACTIVE',
+        'XDG_SESSION_TYPE',
+      ].map(async (key) => {
+        const launcher = createGtkAppLauncher({
+          appPath: process.execPath,
+          env: { [key]: 'invalid' },
+          xvfbTrayHost: false,
+        });
+        try {
+          await launcher.environment();
+          return null;
+        } catch (error) {
+          return error && error.code ? error.code : null;
+        } finally {
+          await launcher.release();
+        }
+      })
+    );
     const invalidIndexCode = await firstApp.windowAt(-1).then(
       () => null,
       (error) => error && error.code ? error.code : null
     );
     await Promise.all([firstLauncher.release(), secondLauncher.release()]);
+    delete process.env.AT_SPI_BUS_ADDRESS;
+    delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    delete process.env.DISPLAY;
+    delete process.env.GESTAMENT_XVFB_ACTIVE;
+    delete process.env.NO_AT_BRIDGE;
+    delete process.env.WAYLAND_DISPLAY;
+    delete process.env.XAUTHORITY;
+    delete process.env.XDG_SESSION_TYPE;
     const hostFallbackLauncher = createGtkAppLauncher({
       appPath: process.execPath,
       args: ['-e', childScript(${JSON.stringify(hostFallbackAppEnvPath)})],
@@ -238,9 +361,14 @@ const secondLauncher = createGtkAppLauncher({
       )});
       console.log(JSON.stringify({
         firstAppEnv,
+        firstAppProbeEnv,
+        firstAppReportedEnv,
         firstBounds: firstCapture.bounds,
+        firstLauncherEnv,
+        firstLauncherProbeEnv,
         hostFallbackAppEnv,
         hostFallbackBounds: hostFallbackCapture.bounds,
+        invalidSessionEnvCodes,
         invalidIndexCode,
         parentDbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,
         parentDisplay: process.env.DISPLAY ?? null,
@@ -271,15 +399,51 @@ const secondLauncher = createGtkAppLauncher({
         expect(outputLine).toBeDefined();
         const output = JSON.parse(outputLine as string) as {
           readonly firstAppEnv: {
+            readonly atSpiBusAddress: string | null;
             readonly dbusSessionBusAddress: string | null;
             readonly display: string | null;
             readonly gdkBackend: string | null;
+            readonly gestamentXvfbActive: string | null;
             readonly gsettingsBackend: string | null;
             readonly gtkTheme: string | null;
+            readonly noAtBridge: string | null;
+            readonly waylandDisplay: string | null;
+            readonly xauthority: string | null;
+            readonly xdgSessionType: string | null;
+          };
+          readonly firstAppProbeEnv: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+          };
+          readonly firstAppReportedEnv: {
+            readonly atSpiBusAddress: string | null;
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+            readonly gdkBackend: string | null;
+            readonly gestamentXvfbActive: string | null;
+            readonly noAtBridge: string | null;
+            readonly waylandDisplay: string | null;
+            readonly xauthority: string | null;
+            readonly xdgSessionType: string | null;
           };
           readonly firstBounds: {
             readonly height: number;
             readonly width: number;
+          };
+          readonly firstLauncherEnv: {
+            readonly atSpiBusAddress: string | null;
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
+            readonly gdkBackend: string | null;
+            readonly gestamentXvfbActive: string | null;
+            readonly noAtBridge: string | null;
+            readonly waylandDisplay: string | null;
+            readonly xauthority: string | null;
+            readonly xdgSessionType: string | null;
+          };
+          readonly firstLauncherProbeEnv: {
+            readonly dbusSessionBusAddress: string | null;
+            readonly display: string | null;
           };
           readonly hostFallbackAppEnv: {
             readonly dbusSessionBusAddress: string | null;
@@ -289,6 +453,7 @@ const secondLauncher = createGtkAppLauncher({
             readonly height: number;
             readonly width: number;
           };
+          readonly invalidSessionEnvCodes: readonly (string | null)[];
           readonly invalidIndexCode: string | null;
           readonly parentDbusSessionBusAddress: string | null;
           readonly parentDisplay: string | null;
@@ -304,10 +469,42 @@ const secondLauncher = createGtkAppLauncher({
         };
 
         expect(output.firstAppEnv).toMatchObject({
+          atSpiBusAddress: null,
           gdkBackend: 'x11',
+          gestamentXvfbActive: '1',
           gsettingsBackend: null,
           gtkTheme: null,
+          noAtBridge: null,
+          waylandDisplay: null,
+          xdgSessionType: 'x11',
         });
+        expect(output.firstLauncherEnv).toMatchObject({
+          atSpiBusAddress: null,
+          display: output.firstAppEnv.display,
+          gdkBackend: 'x11',
+          gestamentXvfbActive: '1',
+          noAtBridge: null,
+          waylandDisplay: null,
+          xdgSessionType: 'x11',
+        });
+        expect(output.firstAppReportedEnv).toMatchObject({
+          atSpiBusAddress: null,
+          display: output.firstAppEnv.display,
+          gdkBackend: 'x11',
+          gestamentXvfbActive: '1',
+          noAtBridge: null,
+          waylandDisplay: null,
+          xdgSessionType: 'x11',
+        });
+        expect(output.firstAppEnv.xauthority).not.toBe(
+          '/tmp/gestament-host-xauthority'
+        );
+        expect(output.firstLauncherEnv.xauthority).not.toBe(
+          '/tmp/gestament-host-xauthority'
+        );
+        expect(output.firstAppReportedEnv.xauthority).not.toBe(
+          '/tmp/gestament-host-xauthority'
+        );
         expect(output.firstBounds).toMatchObject({
           height: 480,
           width: 640,
@@ -324,12 +521,37 @@ const secondLauncher = createGtkAppLauncher({
         expect(output.parentDbusSessionBusAddress).toBeNull();
         expect(output.parentDisplay).toBeNull();
         expect(output.firstAppEnv.display).toMatch(/^:[0-9]+(?:\\.[0-9]+)?$/u);
+        expect(output.firstAppReportedEnv.dbusSessionBusAddress).toBe(
+          output.firstAppEnv.dbusSessionBusAddress
+        );
+        expect(output.firstLauncherEnv.dbusSessionBusAddress).toBe(
+          output.firstAppEnv.dbusSessionBusAddress
+        );
+        expect(output.firstAppProbeEnv).toEqual({
+          dbusSessionBusAddress: output.firstAppEnv.dbusSessionBusAddress,
+          display: output.firstAppEnv.display,
+        });
+        expect(output.firstLauncherProbeEnv).toEqual({
+          dbusSessionBusAddress: output.firstAppEnv.dbusSessionBusAddress,
+          display: output.firstAppEnv.display,
+        });
         expect(output.secondAppEnv.display).toMatch(/^:[0-9]+(?:\\.[0-9]+)?$/u);
         expect(output.hostFallbackAppEnv.display).toMatch(
           /^:[0-9]+(?:\\.[0-9]+)?$/u
         );
         expect(output.firstAppEnv.dbusSessionBusAddress).not.toBeNull();
         expect(output.secondAppEnv.dbusSessionBusAddress).not.toBeNull();
+        expect(output.invalidSessionEnvCodes).toEqual([
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+          'INVALID_ARGUMENT',
+        ]);
         expect(output.sessionsAreDifferent).toBe(true);
       } finally {
         rmSync(tempDirectory, { force: true, recursive: true });
@@ -349,21 +571,27 @@ const secondLauncher = createGtkAppLauncher({
       delete env.GESTAMENT_XVFB_ACTIVE;
       delete env.GSETTINGS_BACKEND;
       delete env.GTK_THEME;
+      delete env.NO_AT_BRIDGE;
       delete env.WAYLAND_DISPLAY;
+      delete env.XAUTHORITY;
+      delete env.XDG_SESSION_TYPE;
 
       try {
         const script = `
-const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+const { existsSync, readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
 const tempDirectory = ${JSON.stringify(tempDirectory)};
 let appEnvIndex = 0;
 const childScript = (appEnvPath) => [
-  "const { writeFileSync } = require('node:fs');",
-  "writeFileSync(" + JSON.stringify(appEnvPath) + ", JSON.stringify({",
+  "const { renameSync, writeFileSync } = require('node:fs');",
+  "const appEnvPath = " + JSON.stringify(appEnvPath) + ";",
+  "const appEnvTempPath = appEnvPath + '.tmp-' + process.pid;",
+  "writeFileSync(appEnvTempPath, JSON.stringify({",
   "  dbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,",
   "  display: process.env.DISPLAY ?? null,",
   "}));",
+  "renameSync(appEnvTempPath, appEnvPath);",
   "setInterval(() => {}, 2147483647);",
 ].join("\\n");
 const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
@@ -377,6 +605,18 @@ const waitForAppEnv = async (appEnvPath) => {
     await delay(25);
   }
   throw new Error('Timed out waiting for child environment output.');
+};
+const pickSessionEnv = (env) => ({
+  dbusSessionBusAddress: env.DBUS_SESSION_BUS_ADDRESS ?? null,
+  display: env.DISPLAY ?? null,
+});
+const assertSameSessionEnv = (label, actual, expected) => {
+  if (
+    actual.dbusSessionBusAddress !== expected.dbusSessionBusAddress ||
+    actual.display !== expected.display
+  ) {
+    throw new Error(label + ' did not match the launched application environment.');
+  }
 };
 const nodeAppOptions = (options) => {
   const appEnvPath = join(tempDirectory, "app-env-" + appEnvIndex + ".json");
@@ -394,8 +634,12 @@ const nodeAppOptions = (options) => {
 const launchNodeApp = async (options) => {
   const resolvedOptions = nodeAppOptions(options);
   const launcher = createGtkAppLauncher(resolvedOptions.launcherOptions);
+  const launcherEnv = pickSessionEnv(await launcher.environment());
   const app = await launcher.launch();
   const env = await waitForAppEnv(resolvedOptions.appEnvPath);
+  const appEnv = pickSessionEnv(await app.environment());
+  assertSameSessionEnv('launcher.environment()', launcherEnv, env);
+  assertSameSessionEnv('app.environment()', appEnv, env);
   const capture = await app.capture();
   return { app, bounds: capture.bounds, env, launcher };
 };
