@@ -153,6 +153,11 @@ interface XvfbProbeResult {
   readonly mappedWindowCount: number;
 }
 
+interface XvfbProbeErrorPayload {
+  readonly code: string | undefined;
+  readonly message: string | undefined;
+}
+
 interface DriverResetResult {
   readonly appCount: number;
   readonly elementCount: number;
@@ -198,6 +203,10 @@ interface SystemOutputSink {
   ) => void;
 }
 
+interface XvfbProbeError extends Error {
+  readonly retryable: boolean;
+}
+
 const defaultDisplay: GtkAppDisplay = 'xvfb';
 const defaultGSettings = 'memory';
 const defaultTheme = 'Adwaita';
@@ -210,6 +219,10 @@ const sessionStartupTimeoutMs = 30_000;
 const sessionReleaseTimeoutMs = 5_000;
 const xvfbStartupTimeoutMs = 10_000;
 const xvfbPoolProbeTimeoutMs = 5_000;
+const xvfbPoolProbeRetryIntervalMs = 50;
+const xvfbPoolProbePrefix = 'gestament-xvfb-pool-probe: ';
+const x11DisplayOpenFailureMessage =
+  'Failed to open the X11 display. Ensure DISPLAY points to an X11 display.';
 const firstPooledDisplayNumber = 90;
 const lastPooledDisplayNumber = 590;
 const sessionOwnedEnvironmentKeys = [
@@ -282,6 +295,57 @@ const formatOutputTail = (
   }
   return `\nstdout:\n${stdoutText}\nstderr:\n${stderrText}`;
 };
+
+const createXvfbProbeError = (
+  message: string,
+  retryable: boolean
+): XvfbProbeError => {
+  const error = createGtkOperationFailedError(message) as unknown as Error & {
+    retryable?: boolean;
+  };
+  Object.defineProperty(error, 'retryable', {
+    value: retryable,
+  });
+  return error as XvfbProbeError;
+};
+
+const parseXvfbProbeErrorPayload = (
+  stderrText: string
+): XvfbProbeErrorPayload | undefined => {
+  const lines = stderrText.trim().split('\n').reverse();
+  for (const line of lines) {
+    if (!line.startsWith(xvfbPoolProbePrefix)) {
+      continue;
+    }
+
+    try {
+      const value = JSON.parse(
+        line.slice(xvfbPoolProbePrefix.length)
+      ) as unknown;
+      if (!isRecord(value)) {
+        return undefined;
+      }
+      return {
+        code: typeof value.code === 'string' ? value.code : undefined,
+        message: typeof value.message === 'string' ? value.message : undefined,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+};
+
+const isRetryableXvfbProbeExit = (stderrText: string): boolean => {
+  const payload = parseXvfbProbeErrorPayload(stderrText);
+  return (
+    payload?.code === 'OPERATION_FAILED' &&
+    payload.message === x11DisplayOpenFailureMessage
+  );
+};
+
+const isRetryableXvfbProbeError = (error: unknown): error is XvfbProbeError =>
+  isRecord(error) && typeof error.retryable === 'boolean' && error.retryable;
 
 const getHostDisplayState = (): HostDisplayState => ({
   display: process.env.DISPLAY,
@@ -1036,7 +1100,10 @@ const leaseXvfb = async (
   }
 };
 
-const runXvfbProbe = (xvfb: PooledXvfb): Promise<XvfbProbeResult> =>
+const runXvfbProbeOnce = (
+  xvfb: PooledXvfb,
+  timeoutMs: number
+): Promise<XvfbProbeResult> =>
   new Promise<XvfbProbeResult>((resolveProbe, rejectProbe) => {
     const probePath = resolveXvfbPoolProbePath();
     const stdout: string[] = [];
@@ -1057,13 +1124,35 @@ const runXvfbProbe = (xvfb: PooledXvfb): Promise<XvfbProbeResult> =>
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
 
-    const timeout = setTimeout(() => {
+    const rejectOnce = (error: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+      rejectProbe(error);
+    };
+
+    const resolveOnce = (result: XvfbProbeResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+      resolveProbe(result);
+    };
+
+    timeout = setTimeout(() => {
       child.kill('SIGKILL');
-      rejectProbe(
-        createGtkOperationFailedError('Timed out probing Xvfb pool.')
-      );
-    }, xvfbPoolProbeTimeoutMs);
+      rejectOnce(createXvfbProbeError('Timed out probing Xvfb pool.', false));
+    }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
       appendOutput(stdout, chunk);
@@ -1072,17 +1161,17 @@ const runXvfbProbe = (xvfb: PooledXvfb): Promise<XvfbProbeResult> =>
       appendOutput(stderr, chunk);
     });
     child.once('error', (error) => {
-      clearTimeout(timeout);
-      rejectProbe(error);
+      rejectOnce(error);
     });
     child.once('exit', (code, signal) => {
-      clearTimeout(timeout);
       if (code !== 0) {
-        rejectProbe(
-          createGtkOperationFailedError(
+        const stderrText = stderr.join('');
+        rejectOnce(
+          createXvfbProbeError(
             `Xvfb pool probe failed: code=${String(code)}, signal=${String(
               signal
-            )}` + formatOutputTail(stdout, stderr)
+            )}` + formatOutputTail(stdout, stderr),
+            isRetryableXvfbProbeExit(stderrText)
           )
         );
         return;
@@ -1090,28 +1179,61 @@ const runXvfbProbe = (xvfb: PooledXvfb): Promise<XvfbProbeResult> =>
 
       const output = stdout.join('').trim().split('\n').at(-1);
       if (output === undefined || output.length === 0) {
-        rejectProbe(
-          createGtkOperationFailedError(
+        rejectOnce(
+          createXvfbProbeError(
             'Xvfb pool probe did not return a result.' +
-              formatOutputTail(stdout, stderr)
+              formatOutputTail(stdout, stderr),
+            false
           )
         );
         return;
       }
 
       try {
-        resolveProbe(JSON.parse(output) as XvfbProbeResult);
+        resolveOnce(JSON.parse(output) as XvfbProbeResult);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        rejectProbe(
-          createGtkOperationFailedError(
+        rejectOnce(
+          createXvfbProbeError(
             `Xvfb pool probe returned invalid JSON: ${message}` +
-              formatOutputTail(stdout, stderr)
+              formatOutputTail(stdout, stderr),
+            false
           )
         );
       }
     });
   });
+
+const runXvfbProbe = async (xvfb: PooledXvfb): Promise<XvfbProbeResult> => {
+  const startedAt = Date.now();
+  let lastError: unknown;
+
+  while (Date.now() - startedAt < xvfbPoolProbeTimeoutMs) {
+    const remainingTimeoutMs = Math.max(
+      1,
+      xvfbPoolProbeTimeoutMs - (Date.now() - startedAt)
+    );
+    try {
+      return await runXvfbProbeOnce(xvfb, remainingTimeoutMs);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableXvfbProbeError(error)) {
+        throw error;
+      }
+    }
+
+    const remainingDelayMs = xvfbPoolProbeTimeoutMs - (Date.now() - startedAt);
+    if (remainingDelayMs <= 0) {
+      break;
+    }
+    await delay(Math.min(xvfbPoolProbeRetryIntervalMs, remainingDelayMs));
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+  throw createGtkOperationFailedError('Timed out probing Xvfb pool.');
+};
 
 const cleanCheckXvfb = async (
   xvfb: PooledXvfb,

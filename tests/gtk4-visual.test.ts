@@ -448,15 +448,25 @@ const launcher = createGtkAppLauncher({
       await expect(mainWindow.bounds()).resolves.toEqual(
         mainWindowCapture.bounds
       );
-      await expect(mainWindow.resizeHints()).resolves.toEqual(
-        mainWindowResizeHints
+      let x11Info: Awaited<ReturnType<typeof mainWindow.x11Info>> | undefined;
+      await toPass(
+        async () => {
+          await expect(mainWindow.resizeHints()).resolves.toEqual(
+            mainWindowResizeHints
+          );
+          const nextX11Info = await mainWindow.x11Info();
+          expect(nextX11Info).toMatchObject({
+            normalHints: mainWindowResizeHints,
+            title: 'Gestament GTK4 Fixture',
+          });
+          x11Info = nextX11Info;
+        },
+        {
+          message: 'Timed out waiting for stable GTK4 X11 resize hints.',
+          timeoutMs: fixtureTimeoutMs,
+        }
       );
-      const x11Info = await mainWindow.x11Info();
-      expect(x11Info).toMatchObject({
-        normalHints: mainWindowResizeHints,
-        title: 'Gestament GTK4 Fixture',
-      });
-      expect(x11Info.windowId).toMatch(/^0x[0-9a-f]+$/u);
+      expect(x11Info?.windowId).toMatch(/^0x[0-9a-f]+$/u);
       const submitButton = await app.getById('submit_button');
       const submitButtonCapture = await submitButton.capture();
       expectCaptureBoundsWithin(submitButtonCapture, capture);

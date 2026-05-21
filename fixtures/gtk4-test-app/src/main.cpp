@@ -44,7 +44,7 @@ constexpr MainWindowGeometryHints kMainWindowGeometryHints = {
     11,
 };
 constexpr guint kDeferredGeometryHintIntervalMs = 50;
-constexpr unsigned int kDeferredGeometryHintAttempts = 5;
+constexpr unsigned int kDeferredGeometryHintAttempts = 120;
 
 struct DeferredGeometryHintState {
   GtkWidget *window;
@@ -352,6 +352,7 @@ void schedule_x11_main_window_geometry_hints(GtkWidget *window) {
   };
 
   // GTK may rewrite WM_NORMAL_HINTS after map/configure on fast X11 backends.
+  // Keep reapplying while later GTK4 configure cycles settle.
   g_timeout_add_full(G_PRIORITY_DEFAULT, kDeferredGeometryHintIntervalMs,
                      reapply_x11_main_window_geometry_hints, state,
                      destroy_deferred_geometry_hint_state);
