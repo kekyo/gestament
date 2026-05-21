@@ -15,6 +15,11 @@ import {
 } from './errors';
 import { createDriverBackedGtkAppLauncher } from './displaySession';
 import { createGtkElement } from './element';
+import {
+  createGtkAppOutputRecorder,
+  notifyGtkAppOutput,
+  normalizeOutputBufferBytes,
+} from './output';
 import { appendPrerequisiteInstallHint } from './prerequisites';
 import { effectiveWaitTimeoutMs } from './wait';
 import {
@@ -33,6 +38,7 @@ import type {
   GtkAppLauncher,
   GtkAppLauncherOptions,
   GtkCapture,
+  GtkAppOutput,
   GtkTrayItem,
   GtkTrayItemSelector,
   GtkWidgetElement,
@@ -50,12 +56,15 @@ const appendOutput = (lines: string[], chunk: Buffer): void => {
 
 interface ProcessState {
   readonly process: ChildProcessWithoutNullStreams;
+  readonly closedPromise: Promise<void>;
   readonly stderr: string[];
   readonly stdout: string[];
   atspiReadiness: NativeAtspiReadiness;
   atspiReady: boolean;
+  closed: boolean;
   exitCode: number | null;
   exitSignal: NodeJS.Signals | null;
+  released: boolean;
 }
 
 interface ParsedElementPath {
@@ -217,35 +226,76 @@ export const launchGtkApp = (
 ): Promise<GtkApp> => {
   const _args = args ?? [];
   const _timeoutMs = options?.timeoutMs ?? 10_000;
+  const outputBufferBytes = normalizeOutputBufferBytes(
+    options?.outputBufferBytes
+  );
+  const outputRecorder = createGtkAppOutputRecorder(outputBufferBytes);
   const appEnvironment = createGtkAppEnvironment(process.env, options?.env);
 
   const child = spawn(appPath, [..._args], {
     env: appEnvironment,
     stdio: 'pipe',
   });
+  let resolveClosed: (() => void) | undefined;
+  const closedPromise = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
 
   const state: ProcessState = {
     atspiReadiness: 'missing-bus-name',
     atspiReady: false,
+    closed: false,
+    closedPromise,
     exitCode: null,
     exitSignal: null,
     process: child,
+    released: false,
     stderr: [],
     stdout: [],
   };
 
+  const notifyOutput = (stream: 'stdout' | 'stderr', chunk: Buffer): void => {
+    notifyGtkAppOutput(options?.onOutput, outputRecorder.append(stream, chunk));
+  };
+  const flushOutput = (stream: 'stdout' | 'stderr'): void => {
+    notifyGtkAppOutput(options?.onOutput, outputRecorder.flush(stream));
+  };
+
   child.stdout.on('data', (chunk: Buffer) => {
     appendOutput(state.stdout, chunk);
+    notifyOutput('stdout', chunk);
   });
   child.stderr.on('data', (chunk: Buffer) => {
     appendOutput(state.stderr, chunk);
+    notifyOutput('stderr', chunk);
+  });
+  child.stdout.on('end', () => {
+    flushOutput('stdout');
+  });
+  child.stderr.on('end', () => {
+    flushOutput('stderr');
   });
   child.on('exit', (code, signal) => {
     state.exitCode = code;
     state.exitSignal = signal;
   });
+  child.on('close', (code, signal) => {
+    if (state.exitCode === null && state.exitSignal === null) {
+      state.exitCode = code;
+      state.exitSignal = signal;
+    }
+    flushOutput('stdout');
+    flushOutput('stderr');
+    state.closed = true;
+    resolveClosed?.();
+  });
 
   const release = async (): Promise<void> => {
+    if (state.released) {
+      return;
+    }
+    state.released = true;
+
     if (state.exitCode !== null || state.exitSignal !== null) {
       return;
     }
@@ -259,6 +309,12 @@ export const launchGtkApp = (
         break;
       }
       await delay(25);
+    }
+  };
+
+  const assertNotReleased = (): void => {
+    if (state.released) {
+      throw createGtkAppExitedError('GTK application has been released.');
     }
   };
 
@@ -405,6 +461,7 @@ export const launchGtkApp = (
 
   const app: GtkApp = {
     capture: async (): Promise<GtkCapture> => {
+      assertNotReleased();
       assertProcessRunning(state, appPath);
 
       try {
@@ -414,8 +471,22 @@ export const launchGtkApp = (
       }
     },
     environment: async (): Promise<GtkAppEnvironment> => {
+      assertNotReleased();
       assertProcessRunning(state, appPath);
       return { ...appEnvironment };
+    },
+    output: async (): Promise<GtkAppOutput> => {
+      assertNotReleased();
+      if (
+        (state.exitCode !== null || state.exitSignal !== null) &&
+        !state.closed
+      ) {
+        await state.closedPromise;
+      }
+      return outputRecorder.snapshot(
+        state.exitCode,
+        state.exitSignal === null ? null : state.exitSignal
+      );
     },
     findById,
     findByPath,

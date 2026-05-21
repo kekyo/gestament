@@ -1084,6 +1084,142 @@ export type GtkAppEnvironment = Readonly<Record<string, string | undefined>>;
  */
 export type GtkAppDisplay = 'xvfb' | 'host';
 
+/** Standard output stream captured from a launched GTK application. */
+export type GtkAppOutputStream = 'stdout' | 'stderr';
+
+/** Infrastructure process that produced system output for a GTK launcher. */
+export type GtkSystemOutputSource = 'xvfb' | 'launcher-driver' | 'tray-host';
+
+/**
+ * Output chunk emitted by a launched GTK application.
+ */
+export interface GtkAppOutputEvent {
+  /**
+   * Output stream that produced this chunk.
+   */
+  readonly stream: GtkAppOutputStream;
+
+  /**
+   * UTF-8 decoded output text for this chunk.
+   */
+  readonly text: string;
+
+  /**
+   * Monotonic sequence number across stdout and stderr for this application.
+   */
+  readonly sequence: number;
+
+  /**
+   * Time when gestament received this chunk.
+   */
+  readonly timestampMs: number;
+}
+
+/**
+ * Output snapshot captured from a launched GTK application.
+ */
+export interface GtkAppOutput {
+  /**
+   * Captured stdout text.
+   */
+  readonly stdout: string;
+
+  /**
+   * Captured stderr text.
+   */
+  readonly stderr: string;
+
+  /**
+   * Process exit code, or null while the process is running or exited by signal.
+   */
+  readonly exitCode: number | null;
+
+  /**
+   * Process exit signal, or null while the process is running or exited by code.
+   */
+  readonly exitSignal: string | null;
+
+  /**
+   * Whether stdout was truncated by outputBufferBytes.
+   */
+  readonly stdoutTruncated: boolean;
+
+  /**
+   * Whether stderr was truncated by outputBufferBytes.
+   */
+  readonly stderrTruncated: boolean;
+}
+
+/**
+ * Output chunk emitted by infrastructure processes used by a GTK launcher.
+ */
+export interface GtkSystemOutputEvent {
+  /**
+   * Infrastructure process category that produced this chunk.
+   */
+  readonly source: GtkSystemOutputSource;
+
+  /**
+   * Output stream that produced this chunk.
+   */
+  readonly stream: GtkAppOutputStream;
+
+  /**
+   * UTF-8 decoded output text for this chunk.
+   */
+  readonly text: string;
+
+  /**
+   * Monotonic sequence number across sources and streams for this launcher lease.
+   */
+  readonly sequence: number;
+
+  /**
+   * Time when gestament received this chunk.
+   */
+  readonly timestampMs: number;
+}
+
+/**
+ * Output snapshot for one infrastructure process category.
+ */
+export interface GtkSystemOutputSourceSnapshot {
+  /**
+   * Infrastructure process category for this snapshot.
+   */
+  readonly source: GtkSystemOutputSource;
+
+  /**
+   * Captured stdout text.
+   */
+  readonly stdout: string;
+
+  /**
+   * Captured stderr text.
+   */
+  readonly stderr: string;
+
+  /**
+   * Whether stdout was truncated by systemOutputBufferBytes.
+   */
+  readonly stdoutTruncated: boolean;
+
+  /**
+   * Whether stderr was truncated by systemOutputBufferBytes.
+   */
+  readonly stderrTruncated: boolean;
+}
+
+/**
+ * Output snapshot captured from infrastructure processes used by a GTK launcher.
+ */
+export interface GtkSystemOutput {
+  /**
+   * Captured output grouped by infrastructure process category.
+   */
+  readonly sources: readonly GtkSystemOutputSourceSnapshot[];
+}
+
 /**
  * Xvfb session pooling options used by a reusable GTK application launcher.
  */
@@ -1117,6 +1253,18 @@ export interface LaunchGtkAppOptions {
    */
   readonly env?: GtkAppEnvironment | undefined;
   /**
+   * Callback invoked for each stdout/stderr chunk produced by the application.
+   */
+  readonly onOutput?: ((event: GtkAppOutputEvent) => void) | undefined;
+  /**
+   * Maximum captured bytes retained per output stream.
+   *
+   * @remarks
+   * Omit to retain complete stdout/stderr. 0 disables retained output text
+   * while preserving truncation flags and onOutput notifications.
+   */
+  readonly outputBufferBytes?: number | undefined;
+  /**
    * Timeout used by operations that wait for the application or elements.
    * Default is 10000msec (10sec).
    */
@@ -1147,6 +1295,16 @@ export interface GtkApp extends Releasable, GtkCapturable {
    * processes that need to join the same session.
    */
   readonly environment: () => Promise<GtkAppEnvironment>;
+
+  /**
+   * Reads the retained stdout/stderr output for the launched application.
+   *
+   * @returns A promise that resolves to the current output snapshot.
+   * @remarks
+   * This is guaranteed only before release(). Use onOutput when output must be
+   * retained after releasing the application or launcher.
+   */
+  readonly output: () => Promise<GtkAppOutput>;
 
   /**
    * Waits for an accessible id and returns an element when it exists.
@@ -1252,6 +1410,27 @@ export interface GtkAppLauncherOptions {
    */
   readonly env?: GtkAppEnvironment | undefined;
   /**
+   * Default maximum captured bytes retained per output stream for launched apps.
+   *
+   * @remarks
+   * Omit to retain complete stdout/stderr. launch() options can override this
+   * value for an individual application.
+   */
+  readonly outputBufferBytes?: number | undefined;
+  /**
+   * Callback invoked for each stdout/stderr chunk produced by launcher infrastructure.
+   */
+  readonly onSystemOutput?: ((event: GtkSystemOutputEvent) => void) | undefined;
+  /**
+   * Default maximum captured bytes retained per system output source stream.
+   *
+   * @remarks
+   * Omit to retain complete infrastructure stdout/stderr for the launcher
+   * lease. 0 disables retained output text while preserving truncation flags
+   * and onSystemOutput notifications.
+   */
+  readonly systemOutputBufferBytes?: number | undefined;
+  /**
    * Display environment used for launched GTK applications.
    * Default is 'xvfb'.
    *
@@ -1294,6 +1473,24 @@ export interface GtkAppLauncherOptions {
 }
 
 /**
+ * Per-launch options used by a reusable GTK application launcher.
+ */
+export interface GtkAppLauncherLaunchOptions {
+  /**
+   * Callback invoked for each stdout/stderr chunk produced by this launch.
+   */
+  readonly onOutput?: ((event: GtkAppOutputEvent) => void) | undefined;
+
+  /**
+   * Maximum captured bytes retained per output stream for this launch.
+   *
+   * @remarks
+   * Omit to use GtkAppLauncherOptions.outputBufferBytes.
+   */
+  readonly outputBufferBytes?: number | undefined;
+}
+
+/**
  * Reusable launcher that tracks and releases launched GTK applications.
  */
 export interface GtkAppLauncher extends Releasable {
@@ -1308,10 +1505,23 @@ export interface GtkAppLauncher extends Releasable {
   readonly environment: () => Promise<GtkAppEnvironment>;
 
   /**
+   * Reads the retained infrastructure stdout/stderr output for the current or previous launcher lease.
+   *
+   * @returns A promise that resolves to the current system output snapshot.
+   * @remarks
+   * The snapshot remains available after release() until the next launcher
+   * session starts, so output produced during release() can be inspected.
+   */
+  readonly systemOutput: () => Promise<GtkSystemOutput>;
+
+  /**
    * Launches the configured GTK application and tracks it for release().
    *
    * @param args - Additional arguments appended to the configured base arguments.
    * @returns A promise that resolves to the launched application controller.
    */
-  readonly launch: (args?: readonly string[]) => Promise<GtkApp>;
+  readonly launch: (
+    args?: readonly string[],
+    options?: GtkAppLauncherLaunchOptions
+  ) => Promise<GtkApp>;
 }

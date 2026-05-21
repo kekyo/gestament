@@ -35,6 +35,7 @@
     }
   },
   "bin": {
+    "gestament": "./dist/gestament.cjs",
     "gestament-config": "./dist/gestament-config.cjs",
     "gestament-xvfb": "./dist/gestament-xvfb.cjs"
   },

@@ -110,18 +110,37 @@ sudo apt-get install -y \
 This completes the native environment setup.
 
 NPM projects can choose from many test frameworks.
-gestament does not depend on a specific test framework, but the following example uses Vite and Vitest:
+gestament does not depend on a specific test framework, but it provides a minimal initializer for Vitest-based GTK test projects.
+The initializer creates only the Node/Vitest test harness files.
+It does not generate Vite web pages, static web assets, or GTK/C/C++ build files.
+
+For example, if your GTK application project already exists in the current directory,
+you can generate the gestament scaffold inside that directory as follows:
 
 ```bash
-# Generate a Vite project with the scaffolder.
-npm create vite@latest gestament-tests -- --template vanilla-ts
+# GTK application project.
+cd my-gtk-app
 
-cd gestament-tests
+# Generate a minimal gestament test project.
+npx gestament init
 
-# Install the Vitest test driver and gestament.
+# Install the generated project dependencies.
 npm install
-npm install -D vitest @types/node gestament
 ```
+
+This creates the following files:
+
+```text
+my-gtk-app/
+├── .gitignore.gestament-example
+├── package.json
+├── tsconfig.json
+├── vitest.config.ts
+└── tests/
+```
+
+The initializer does not modify an existing `.gitignore`.
+If needed, merge the entries from `.gitignore.gestament-example` into the GTK application project's `.gitignore`.
 
 ## Configuration
 
@@ -315,14 +334,15 @@ The following are the testing APIs provided by gestament.
 
 ### GTK application launch management
 
-| API function                   | Details                                                                                                                                              |
-| :----------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `launchGtkApp()`               | Directly launches a GTK application and returns the target `GtkApp`. You can specify launch arguments, environment variables, and wait timeout.      |
-| `createGtkAppEnvironment()`    | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`.   |
-| `createGtkAppLauncher()`       | Creates a launcher object that holds the specified application path, common arguments, display environment, environment variables, and wait timeout. |
-| `GtkAppLauncher.launch()`      | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application.                        |
-| `GtkAppLauncher.environment()` | Returns the final environment that launched apps and helper processes should use for this launcher.                                                  |
-| `GtkAppLauncher.release()`     | Terminate all `GtkApp` instances launched from the launcher, and if the launcher was running Xvfb, terminate it as well.                             |
+| API function                    | Details                                                                                                                                                                     |
+| :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `launchGtkApp()`                | Directly launches a GTK application and returns the target `GtkApp`. You can specify launch arguments, environment variables, and wait timeout.                             |
+| `createGtkAppEnvironment()`     | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`.                          |
+| `createGtkAppLauncher()`        | Creates a launcher object that holds the specified application path, common arguments, display environment, environment variables, output settings, and wait timeout.       |
+| `GtkAppLauncher.launch()`       | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application. Per-launch output callbacks can be specified. |
+| `GtkAppLauncher.environment()`  | Returns the final environment that launched apps and helper processes should use for this launcher.                                                                         |
+| `GtkAppLauncher.systemOutput()` | Returns the retained stdout/stderr snapshot for Xvfb, the launcher driver, and the tray host from the current or previous launcher lease.                                   |
+| `GtkAppLauncher.release()`      | Terminate all `GtkApp` instances launched from the launcher, and if the launcher was running Xvfb, terminate it as well.                                                    |
 
 The following example manually manages GTK application launches without using `launchGtkApp()` directly:
 
@@ -353,6 +373,67 @@ it('launches the app', async () => {
 });
 ```
 
+| Option                    | Details                                                                                                                                                        |
+| :------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appPath`                 | Path to the GTK application binary. This file is launched.                                                                                                     |
+| `args`                    | Base arguments passed to every launch. Arguments passed to `GtkAppLauncher.launch()` are appended after these values.                                          |
+| `env`                     | Environment variable overrides passed to every launch.                                                                                                         |
+| `outputBufferBytes`       | Maximum retained bytes per stdout/stderr stream for `GtkApp.output()`. Omit it to retain all output, or set `0` to keep only the truncated flags without text. |
+| `onSystemOutput`          | Callback invoked for stdout/stderr chunks from launcher infrastructure processes such as Xvfb, the launcher driver, and the tray host.                         |
+| `systemOutputBufferBytes` | Maximum retained bytes per source/stream for `GtkAppLauncher.systemOutput()`. Omit it to retain the whole launcher lease, or set `0` to retain no text.        |
+| `display`                 | Selects how to display the GTK application. `xvfb` or `host`; the default is `xvfb`.                                                                           |
+| `xvfbScreen`              | Xvfb screen geometry used when `display` is `xvfb`. The default is `1280x720x24`.                                                                              |
+| `xvfbTrayHost`            | Whether to start the StatusNotifier tray host when `display` is `xvfb`. The default is `true`.                                                                 |
+| `xvfbPool`                | Xvfb session pooling settings. `type: 'xvfb'` reuses only Xvfb; `type: 'all'` also reuses the DBus session, launcher driver, and tray host.                    |
+| `gsettings`               | `GSETTINGS_BACKEND` passed to the GTK application. The default is `memory`; set `null` to leave it unset.                                                      |
+| `theme`                   | `GTK_THEME` passed to the GTK application. The default is `Adwaita`; set `null` to leave it unset.                                                             |
+| `timeoutMs`               | Timeout used by operations that wait for the application or elements. The default is `10000` msec.                                                             |
+
+Application stdout and stderr can be observed per launch. `outputBufferBytes` limits the retained
+snapshot per stream; omit it to retain complete stdout/stderr until `release()`.
+
+An `outputBufferBytes` value passed as the second argument to `GtkAppLauncher.launch()` overrides the
+launcher-wide default for that launch.
+
+```typescript
+// Collect the application's standard output and error logs
+const outputEvents: string[] = [];
+const app = await launcher.launch(['--scenario=basic'], {
+  onOutput: (event) => {
+    outputEvents.push(`[${event.stream}] ${event.text}`);
+  },
+});
+
+// Collect all states of the application process
+const output = await app.output();
+expect(output.stderr).not.toContain('critical warning');
+```
+
+Infrastructure output other than the application process can be observed per launcher.
+`systemOutputBufferBytes` limits the retained snapshot per source and stream; omit it to retain the
+current or previous launcher lease. Even when `xvfbPool` reuses Xvfb or the launcher driver,
+`systemOutput()` and `onSystemOutput` stay separated by launcher lease.
+
+```typescript
+const systemEvents: string[] = [];
+const launcher = createGtkAppLauncher({
+  appPath: './my-app',
+  onSystemOutput: (event) => {
+    systemEvents.push(`[${event.source}:${event.stream}] ${event.text}`);
+  },
+});
+
+await launcher.environment();
+await launcher.release();
+
+const systemOutput = await launcher.systemOutput();
+expect(systemOutput.sources).toEqual(
+  expect.arrayContaining([
+    expect.objectContaining({ source: 'launcher-driver' }),
+  ])
+);
+```
+
 ### Operating GTK applications
 
 | API function                | Details                                                                                                                                           |
@@ -360,6 +441,7 @@ it('launches the app', async () => {
 | `GtkApp.release()`          | Terminates the running GTK application process.                                                                                                   |
 | `GtkApp.capture()`          | Captures the entire X11 root window pointed to by `DISPLAY` as a PNG and returns a `GtkCapture` containing the image and display bounds.          |
 | `GtkApp.environment()`      | Returns the final environment used for the launched app. Pass it to helper processes that must observe the same display and DBus session.         |
+| `GtkApp.output()`           | Returns the retained stdout/stderr snapshot and current process exit status before `release()`.                                                   |
 | `GtkApp.findById()`         | Waits for an element matching the accessible ID and returns a `GtkWidgetElement` if found. Returns `undefined` if not found.                      |
 | `GtkApp.getById()`          | Waits for an element matching the accessible ID and returns a `GtkWidgetElement`. Throws an exception if not found.                               |
 | `GtkApp.findByPath()`       | Waits for an accessible ID plus child indexes separated by `.`, `:`, `;`, or `,`. Returns `undefined` if not found.                               |

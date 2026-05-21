@@ -5,9 +5,12 @@
 
 import type {
   GtkAutomationErrorCode,
+  GtkAppOutput,
+  GtkAppOutputEvent,
   GtkCaptureBounds,
   GtkImagePoint,
   GtkImageSize,
+  GtkSystemOutputSource,
   GtkTrayItemSelector,
   GtkWidgetKind,
 } from './types';
@@ -20,6 +23,7 @@ export type DriverCommand =
   | 'launcher.release'
   | 'launcher.reset'
   | 'app.environment'
+  | 'app.output'
   | 'app.release'
   | 'app.capture'
   | 'app.findById'
@@ -78,10 +82,14 @@ export type DriverCommand =
 
 export type WireGtkAppEnvironment = Readonly<Record<string, string | null>>;
 
+export type DriverEventChannel = 'app.output' | 'system.output';
+
 export interface DriverLaunchPayload {
   readonly appPath: string;
   readonly args: readonly string[];
   readonly env: WireGtkAppEnvironment;
+  readonly outputBufferBytes: number | null;
+  readonly outputScopeId: string | null;
   readonly timeoutMs: number | null;
 }
 
@@ -163,6 +171,15 @@ export interface DriverErrorResponse {
 
 export type DriverResponse = DriverSuccessResponse | DriverErrorResponse;
 
+export interface DriverEventMessage {
+  readonly channel: DriverEventChannel;
+  readonly scopeId: string;
+  readonly type: 'event';
+  readonly value: unknown;
+}
+
+export type DriverMessage = DriverEventMessage | DriverResponse;
+
 export interface SerializedDriverError {
   readonly code?: GtkAutomationErrorCode | string;
   readonly message: string;
@@ -189,6 +206,23 @@ export interface WireCapture {
   readonly imageBase64: string;
   readonly visibleBounds: GtkCaptureBounds;
 }
+
+export type WireGtkAppOutputEvent = GtkAppOutputEvent;
+
+export type WireGtkAppOutput = GtkAppOutput;
+
+export type WireGtkSystemOutput =
+  | {
+      readonly chunkBase64: string;
+      readonly source: GtkSystemOutputSource;
+      readonly stream: 'stdout' | 'stderr';
+      readonly type: 'chunk';
+    }
+  | {
+      readonly source: GtkSystemOutputSource;
+      readonly stream: 'stdout' | 'stderr';
+      readonly type: 'flush';
+    };
 
 export interface WireImageInfo {
   readonly bounds: GtkCaptureBounds;
