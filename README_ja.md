@@ -108,18 +108,37 @@ sudo apt-get install -y \
 以上でネイティブ環境の準備が出来ました。
 
 NPMプロジェクトでは、様々なテストフレームワークの選択肢があります。
-gestamentは特定のテストフレームワークに依存しませんが、以下では ViteとVitestを使用する例を示します:
+gestamentは特定のテストフレームワークに依存しませんが、VitestベースのGTKテストプロジェクト向けに最小構成の初期化機能を提供しています。
+この初期化機能は、Node/Vitestのテストハーネスに必要なファイルのみを生成します。
+ViteのWebページや静的Webアセット、GTK/C/C++のビルドファイルは生成しません。
+
+例えば、あなたのGTKアプリケーションプロジェクトが、現在のディレクトリに存在する場合は、
+そのディレクトリ内で、以下のようにしてgestamentの雛形を生成できます:
 
 ```bash
-# スキャフォールダーでViteプロジェクトを生成
-npm create vite@latest gestament-tests -- --template vanilla-ts
+# GTKアプリケーションプロジェクト
+cd my-gtk-app
 
-cd gestament-tests
+# gestament用の最小テストプロジェクトを生成
+npx gestament init
 
-# Vitestテストドライバとgestamentをインストール
+# 生成されたプロジェクトの依存関係をインストール
 npm install
-npm install -D vitest @types/node gestament
 ```
+
+これにより、以下のようなファイル群が追加されます:
+
+```
+my-gtk-app/
+├── .gitignore.gestament-example
+├── package.json
+├── tsconfig.json
+├── vitest.config.ts
+└── tests/
+```
+
+初期化機能は既存の `.gitignore` を変更しません。
+必要に応じて、 `.gitignore.gestament-example` の内容をGTKアプリケーションプロジェクト側の `.gitignore` に統合してください。
 
 ## 構成方法
 

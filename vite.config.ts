@@ -23,6 +23,7 @@ export default defineConfig({
   build: {
     lib: {
       entry: {
+        gestament: 'src/gestament.ts',
         index: 'src/index.ts',
         'gestament-config': 'src/gestament-config.ts',
         'gestament-launcher-driver': 'src/gestament-launcher-driver.ts',

@@ -110,18 +110,37 @@ sudo apt-get install -y \
 This completes the native environment setup.
 
 NPM projects can choose from many test frameworks.
-gestament does not depend on a specific test framework, but the following example uses Vite and Vitest:
+gestament does not depend on a specific test framework, but it provides a minimal initializer for Vitest-based GTK test projects.
+The initializer creates only the Node/Vitest test harness files.
+It does not generate Vite web pages, static web assets, or GTK/C/C++ build files.
+
+For example, if your GTK application project already exists in the current directory,
+you can generate the gestament scaffold inside that directory as follows:
 
 ```bash
-# Generate a Vite project with the scaffolder.
-npm create vite@latest gestament-tests -- --template vanilla-ts
+# GTK application project.
+cd my-gtk-app
 
-cd gestament-tests
+# Generate a minimal gestament test project.
+npx gestament init
 
-# Install the Vitest test driver and gestament.
+# Install the generated project dependencies.
 npm install
-npm install -D vitest @types/node gestament
 ```
+
+This creates the following files:
+
+```text
+my-gtk-app/
+├── .gitignore.gestament-example
+├── package.json
+├── tsconfig.json
+├── vitest.config.ts
+└── tests/
+```
+
+The initializer does not modify an existing `.gitignore`.
+If needed, merge the entries from `.gitignore.gestament-example` into the GTK application project's `.gitignore`.
 
 ## Configuration
 
