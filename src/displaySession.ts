@@ -22,6 +22,12 @@ import {
   createGtkOperationFailedError,
 } from './errors';
 import { currentWaitDeadlineMs } from './wait';
+import {
+  createGtkSystemOutputRecorder,
+  notifyGtkSystemOutput,
+  normalizeOutputBufferBytes,
+  type GtkSystemOutputRecorder,
+} from './output';
 import { appendPrerequisiteInstallHint } from './prerequisites';
 import type {
   DriverAppRef,
@@ -42,6 +48,7 @@ import type {
   WireCapture,
   WireGtkAppEnvironment,
   WireGtkAppOutput,
+  WireGtkSystemOutput,
   WireImageInfo,
 } from './launcherDriverProtocol';
 import type {
@@ -56,6 +63,9 @@ import type {
   GtkCaptureBounds,
   GtkElementInfo,
   GtkImageInfo,
+  GtkSystemOutput,
+  GtkSystemOutputEvent,
+  GtkSystemOutputSource,
   GtkTrayItem,
   GtkTrayItemMetadata,
   GtkTrayItemSelector,
@@ -92,6 +102,7 @@ interface DriverSession {
     payload: unknown
   ) => Promise<Result>;
   readonly release: () => Promise<void>;
+  readonly setSystemOutputSink: (sink: SystemOutputSink | undefined) => void;
   readonly subscribe: (
     channel: DriverEventChannel,
     scopeId: string,
@@ -113,6 +124,7 @@ interface PooledXvfb {
   readonly stderr: string[];
   readonly stdout: string[];
   lastUsedAt: number;
+  systemOutputSink: SystemOutputSink | undefined;
 }
 
 interface PooledAllSession {
@@ -171,6 +183,19 @@ interface DriverProcess {
   readonly commandLine: string;
   readonly stderr: string[];
   readonly stdout: string[];
+  systemOutputSink: SystemOutputSink | undefined;
+}
+
+interface SystemOutputSink {
+  readonly append: (
+    source: GtkSystemOutputSource,
+    stream: 'stdout' | 'stderr',
+    chunk: Buffer
+  ) => void;
+  readonly flush: (
+    source: GtkSystemOutputSource,
+    stream: 'stdout' | 'stderr'
+  ) => void;
 }
 
 const defaultDisplay: GtkAppDisplay = 'xvfb';
@@ -220,6 +245,23 @@ const appendOutput = (lines: string[], chunk: Buffer): void => {
   if (lines.length > 40) {
     lines.splice(0, lines.length - 40);
   }
+};
+
+const appendSystemOutput = (
+  sink: SystemOutputSink | undefined,
+  source: GtkSystemOutputSource,
+  stream: 'stdout' | 'stderr',
+  chunk: Buffer
+): void => {
+  sink?.append(source, stream, chunk);
+};
+
+const flushSystemOutput = (
+  sink: SystemOutputSink | undefined,
+  source: GtkSystemOutputSource,
+  stream: 'stdout' | 'stderr'
+): void => {
+  sink?.flush(source, stream);
 };
 
 const unrefHandle = (handle: unknown): void => {
@@ -306,6 +348,67 @@ const resolveOutputBufferBytes = (
     );
   }
   return value;
+};
+
+const createSystemOutputSink = (
+  recorder: GtkSystemOutputRecorder,
+  callback: ((event: GtkSystemOutputEvent) => void) | undefined
+): SystemOutputSink => ({
+  append: (
+    source: GtkSystemOutputSource,
+    stream: 'stdout' | 'stderr',
+    chunk: Buffer
+  ): void => {
+    notifyGtkSystemOutput(callback, recorder.append(source, stream, chunk));
+  },
+  flush: (source: GtkSystemOutputSource, stream: 'stdout' | 'stderr'): void => {
+    notifyGtkSystemOutput(callback, recorder.flush(source, stream));
+  },
+});
+
+const isGtkSystemOutputSource = (
+  value: unknown
+): value is GtkSystemOutputSource =>
+  value === 'xvfb' || value === 'launcher-driver' || value === 'tray-host';
+
+const isGtkAppOutputStream = (value: unknown): value is 'stdout' | 'stderr' =>
+  value === 'stdout' || value === 'stderr';
+
+const isWireGtkSystemOutput = (
+  value: unknown
+): value is WireGtkSystemOutput => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (
+    !isGtkSystemOutputSource(value.source) ||
+    !isGtkAppOutputStream(value.stream)
+  ) {
+    return false;
+  }
+  if (value.type === 'flush') {
+    return true;
+  }
+  return value.type === 'chunk' && typeof value.chunkBase64 === 'string';
+};
+
+const routeWireSystemOutput = (
+  sink: SystemOutputSink | undefined,
+  value: unknown
+): void => {
+  if (!isWireGtkSystemOutput(value)) {
+    return;
+  }
+  if (value.type === 'flush') {
+    flushSystemOutput(sink, value.source, value.stream);
+    return;
+  }
+  appendSystemOutput(
+    sink,
+    value.source,
+    value.stream,
+    Buffer.from(value.chunkBase64, 'base64')
+  );
 };
 
 const resolvePoolLimit = (
@@ -519,6 +622,7 @@ const retainIdleXvfb = async (
     return;
   }
 
+  xvfb.systemOutputSink = undefined;
   xvfb.lastUsedAt = Date.now();
   pushArrayEntry(idleXvfbByKey, xvfb.key, xvfb);
   await trimIdleXvfbKey(xvfb.key, limits.maxIdlePerKey);
@@ -534,6 +638,8 @@ const retainIdleAllSession = async (
     return;
   }
 
+  session.session.setSystemOutputSink(undefined);
+  session.xvfb.systemOutputSink = undefined;
   session.lastUsedAt = Date.now();
   session.xvfb.lastUsedAt = session.lastUsedAt;
   pushArrayEntry(idleAllByKey, session.key, session);
@@ -801,7 +907,10 @@ const installPoolCleanup = (): void => {
   });
 };
 
-const spawnDirectXvfb = async (screen: string): Promise<PooledXvfb> => {
+const spawnDirectXvfb = async (
+  screen: string,
+  systemOutputSink: SystemOutputSink | undefined
+): Promise<PooledXvfb> => {
   installPoolCleanup();
   for (
     let displayNumber = firstPooledDisplayNumber;
@@ -823,11 +932,30 @@ const spawnDirectXvfb = async (screen: string): Promise<PooledXvfb> => {
         stdio: ['ignore', 'pipe', 'pipe'],
       }
     );
+    const xvfb: PooledXvfb = {
+      child,
+      display: `:${displayNumber}`,
+      displayNumber,
+      key: screen,
+      lastUsedAt: Date.now(),
+      screen,
+      stderr,
+      stdout,
+      systemOutputSink,
+    };
     child.stdout.on('data', (chunk: Buffer) => {
       appendOutput(stdout, chunk);
+      appendSystemOutput(xvfb.systemOutputSink, 'xvfb', 'stdout', chunk);
     });
     child.stderr.on('data', (chunk: Buffer) => {
       appendOutput(stderr, chunk);
+      appendSystemOutput(xvfb.systemOutputSink, 'xvfb', 'stderr', chunk);
+    });
+    child.stdout.once('end', () => {
+      flushSystemOutput(xvfb.systemOutputSink, 'xvfb', 'stdout');
+    });
+    child.stderr.once('end', () => {
+      flushSystemOutput(xvfb.systemOutputSink, 'xvfb', 'stderr');
     });
     child.unref();
     unrefHandle(child.stdout);
@@ -851,29 +979,10 @@ const spawnDirectXvfb = async (screen: string): Promise<PooledXvfb> => {
           });
         }),
       ]);
-      const xvfb = {
-        child,
-        display: `:${displayNumber}`,
-        displayNumber,
-        key: screen,
-        lastUsedAt: Date.now(),
-        screen,
-        stderr,
-        stdout,
-      };
       directXvfbs.add(xvfb);
       return xvfb;
     } catch (error) {
-      killXvfbNow({
-        child,
-        display: `:${displayNumber}`,
-        displayNumber,
-        key: screen,
-        lastUsedAt: Date.now(),
-        screen,
-        stderr,
-        stdout,
-      });
+      killXvfbNow(xvfb);
       leasedDisplayNumbers.delete(displayNumber);
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('ENOENT')) {
@@ -903,18 +1012,23 @@ const terminateXvfb = async (xvfb: PooledXvfb): Promise<void> => {
       await delay(25);
     }
   }
+  xvfb.systemOutputSink = undefined;
   leasedDisplayNumbers.delete(xvfb.displayNumber);
 };
 
-const leaseXvfb = async (screen: string): Promise<PooledXvfb> => {
+const leaseXvfb = async (
+  screen: string,
+  systemOutputSink: SystemOutputSink | undefined
+): Promise<PooledXvfb> => {
   for (;;) {
     const idle = popArrayEntry(idleXvfbByKey, screen);
     if (idle === undefined) {
-      return spawnDirectXvfb(screen);
+      return spawnDirectXvfb(screen, systemOutputSink);
     }
 
     if (idle.child.exitCode === null && idle.child.signalCode === null) {
       idle.lastUsedAt = Date.now();
+      idle.systemOutputSink = systemOutputSink;
       return idle;
     }
 
@@ -1031,7 +1145,8 @@ const spawnDriverProcess = (
   driverPath: string,
   socketPath: string,
   effective: EffectiveDisplay,
-  xvfb: PooledXvfb | undefined
+  xvfb: PooledXvfb | undefined,
+  systemOutputSink: SystemOutputSink | undefined
 ): DriverProcess => {
   const driverArgs = [
     '--socket',
@@ -1074,16 +1189,48 @@ const spawnDriverProcess = (
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const processState: DriverProcess = {
+    child,
+    commandLine: [command.bin, ...command.args].join(' '),
+    stderr,
+    stdout,
+    systemOutputSink,
+  };
 
   child.stdout.on('data', (chunk: Buffer) => {
     appendOutput(stdout, chunk);
+    appendSystemOutput(
+      processState.systemOutputSink,
+      'launcher-driver',
+      'stdout',
+      chunk
+    );
   });
   child.stderr.on('data', (chunk: Buffer) => {
     appendOutput(stderr, chunk);
+    appendSystemOutput(
+      processState.systemOutputSink,
+      'launcher-driver',
+      'stderr',
+      chunk
+    );
+  });
+  child.stdout.once('end', () => {
+    flushSystemOutput(
+      processState.systemOutputSink,
+      'launcher-driver',
+      'stdout'
+    );
+  });
+  child.stderr.once('end', () => {
+    flushSystemOutput(
+      processState.systemOutputSink,
+      'launcher-driver',
+      'stderr'
+    );
   });
 
-  const commandLine = [command.bin, ...command.args].join(' ');
-  return { child, commandLine, stderr, stdout };
+  return processState;
 };
 
 const listenOnSocket = (server: Server, socketPath: string): Promise<void> =>
@@ -1189,7 +1336,19 @@ const waitForDriverReady = (
         const line = input.slice(0, newlineIndex);
         input = input.slice(newlineIndex + 1);
         try {
-          if (parseReadyMessage(line) !== undefined) {
+          const message = JSON.parse(line) as
+            | DriverMessage
+            | DriverReadyMessage;
+          if (isDriverEventMessage(message as DriverMessage)) {
+            const event = message as DriverEventMessage;
+            if (event.channel === 'system.output') {
+              routeWireSystemOutput(processState.systemOutputSink, event.value);
+            }
+          } else if (
+            isRecord(message) &&
+            message.type === 'ready' &&
+            parseReadyMessage(line) !== undefined
+          ) {
             if (settled) {
               return;
             }
@@ -1317,6 +1476,11 @@ const createDriverSession = (
   };
 
   const handleEvent = (event: DriverEventMessage): void => {
+    if (event.channel === 'system.output') {
+      routeWireSystemOutput(processState.systemOutputSink, event.value);
+      return;
+    }
+
     const handlers = eventHandlers.get(
       createDriverEventKey(event.channel, event.scopeId)
     );
@@ -1453,6 +1617,10 @@ const createDriverSession = (
     };
   };
 
+  const setSystemOutputSink = (sink: SystemOutputSink | undefined): void => {
+    processState.systemOutputSink = sink;
+  };
+
   const waitForExit = async (): Promise<void> => {
     const startedAt = Date.now();
     while (
@@ -1557,14 +1725,15 @@ const createDriverSession = (
     );
   };
 
-  session = { release, request, subscribe, terminate };
+  session = { release, request, setSystemOutputSink, subscribe, terminate };
   return session;
 };
 
 const startFreshDriverSession = async (
   effective: EffectiveDisplay,
   xvfb: PooledXvfb | undefined,
-  poolOptions: DriverSessionPoolOptions
+  poolOptions: DriverSessionPoolOptions,
+  systemOutputSink: SystemOutputSink | undefined
 ): Promise<DriverSession> => {
   const driverPath = resolveDriverPath();
   const tempDirectory = mkdtempSync(
@@ -1579,7 +1748,13 @@ const startFreshDriverSession = async (
     await listenOnSocket(server, socketPath);
     server.unref();
 
-    processState = spawnDriverProcess(driverPath, socketPath, effective, xvfb);
+    processState = spawnDriverProcess(
+      driverPath,
+      socketPath,
+      effective,
+      xvfb,
+      systemOutputSink
+    );
     const connection = await waitForDriverReady(server, processState);
     server.close();
     const resolvedPoolOptions =
@@ -1615,7 +1790,8 @@ const startFreshDriverSession = async (
 };
 
 const startDriverSession = async (
-  options: GtkAppLauncherOptions
+  options: GtkAppLauncherOptions,
+  systemOutputSink: SystemOutputSink | undefined
 ): Promise<DriverSession> => {
   const display = resolveDisplay(options.display);
   const xvfbOptions = resolveXvfbOptions(options);
@@ -1625,7 +1801,8 @@ const startDriverSession = async (
     return startFreshDriverSession(
       effective,
       undefined,
-      emptyDriverSessionPoolOptions()
+      emptyDriverSessionPoolOptions(),
+      systemOutputSink
     );
   }
 
@@ -1634,19 +1811,25 @@ const startDriverSession = async (
     return startFreshDriverSession(
       effective,
       undefined,
-      emptyDriverSessionPoolOptions()
+      emptyDriverSessionPoolOptions(),
+      systemOutputSink
     );
   }
 
   if (pool.type === 'xvfb') {
-    const xvfb = await leaseXvfb(effective.xvfb.screen);
-    return startFreshDriverSession(effective, xvfb, {
-      allKey: undefined,
-      allowedMappedWindowCount: 0,
-      limits: poolLimits(pool),
-      mode: 'xvfb',
+    const xvfb = await leaseXvfb(effective.xvfb.screen, systemOutputSink);
+    return startFreshDriverSession(
+      effective,
       xvfb,
-    });
+      {
+        allKey: undefined,
+        allowedMappedWindowCount: 0,
+        limits: poolLimits(pool),
+        mode: 'xvfb',
+        xvfb,
+      },
+      systemOutputSink
+    );
   }
 
   const key = allPoolKey(effective.xvfb);
@@ -1661,19 +1844,26 @@ const startDriverSession = async (
     ) {
       idle.lastUsedAt = Date.now();
       idle.xvfb.lastUsedAt = idle.lastUsedAt;
+      idle.xvfb.systemOutputSink = systemOutputSink;
+      idle.session.setSystemOutputSink(systemOutputSink);
       return idle.session;
     }
     await idle.session.terminate().catch(() => undefined);
   }
 
-  const xvfb = await leaseXvfb(effective.xvfb.screen);
-  return startFreshDriverSession(effective, xvfb, {
-    allKey: key,
-    allowedMappedWindowCount: 0,
-    limits: poolLimits(pool),
-    mode: 'all',
+  const xvfb = await leaseXvfb(effective.xvfb.screen, systemOutputSink);
+  return startFreshDriverSession(
+    effective,
     xvfb,
-  });
+    {
+      allKey: key,
+      allowedMappedWindowCount: 0,
+      limits: poolLimits(pool),
+      mode: 'all',
+      xvfb,
+    },
+    systemOutputSink
+  );
 };
 
 const createLaunchPayload = (
@@ -2137,10 +2327,27 @@ export const createDriverBackedGtkAppLauncher = (
   options: GtkAppLauncherOptions
 ): GtkAppLauncher => {
   const outputSubscriptions = new Set<DriverEventSubscription>();
+  let systemOutputRecorder = createGtkSystemOutputRecorder(
+    normalizeOutputBufferBytes(
+      options.systemOutputBufferBytes,
+      'systemOutputBufferBytes'
+    )
+  );
   let sessionPromise: Promise<DriverSession> | undefined;
 
   const ensureSession = (): Promise<DriverSession> => {
-    sessionPromise ??= startDriverSession(options);
+    if (sessionPromise === undefined) {
+      systemOutputRecorder = createGtkSystemOutputRecorder(
+        normalizeOutputBufferBytes(
+          options.systemOutputBufferBytes,
+          'systemOutputBufferBytes'
+        )
+      );
+      sessionPromise = startDriverSession(
+        options,
+        createSystemOutputSink(systemOutputRecorder, options.onSystemOutput)
+      );
+    }
     return sessionPromise;
   };
 
@@ -2210,6 +2417,9 @@ export const createDriverBackedGtkAppLauncher = (
     );
   };
 
+  const systemOutput = (): Promise<GtkSystemOutput> =>
+    Promise.resolve(systemOutputRecorder.snapshot());
+
   const release = async (): Promise<void> => {
     const releasingSession = sessionPromise;
     sessionPromise = undefined;
@@ -2228,6 +2438,7 @@ export const createDriverBackedGtkAppLauncher = (
     environment,
     launch,
     release,
+    systemOutput,
     [Symbol.asyncDispose]: release,
   };
 };

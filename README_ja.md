@@ -311,14 +311,15 @@ gestamentが用意するテスト用のAPIを示します。
 
 ### GTKアプリケーション起動管理
 
-| API関数                        | 詳細                                                                                                                                              |
-| :----------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `launchGtkApp()`               | GTKアプリケーションを直接起動し、操作対象の `GtkApp` を返します。起動引数、環境変数、待機タイムアウトを指定できます                               |
-| `createGtkAppEnvironment()`    | GTKアプリケーション起動時に渡す環境変数を生成します。通常は `launchGtkApp()` や `createGtkAppLauncher()` が内部で使用します                       |
-| `createGtkAppLauncher()`       | 指定されたアプリケーションパス、共通引数、表示環境、環境変数、出力設定、待機タイムアウトを保持するランチャーオブジェクトを生成します              |
-| `GtkAppLauncher.launch()`      | ランチャーオブジェクトが示すGTKアプリケーションを起動し、起動したアプリケーションを表す `GtkApp` を返します。起動単位の出力callbackも指定できます |
-| `GtkAppLauncher.environment()` | ランチャーから起動するアプリケーションや補助プロセスに渡すべき最終環境変数を返します                                                              |
-| `GtkAppLauncher.release()`     | ランチャーから起動した全ての `GtkApp` を終了し、ランチャーがXvfbを起動していた場合は終了させます                                                  |
+| API関数                         | 詳細                                                                                                                                              |
+| :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `launchGtkApp()`                | GTKアプリケーションを直接起動し、操作対象の `GtkApp` を返します。起動引数、環境変数、待機タイムアウトを指定できます                               |
+| `createGtkAppEnvironment()`     | GTKアプリケーション起動時に渡す環境変数を生成します。通常は `launchGtkApp()` や `createGtkAppLauncher()` が内部で使用します                       |
+| `createGtkAppLauncher()`        | 指定されたアプリケーションパス、共通引数、表示環境、環境変数、出力設定、待機タイムアウトを保持するランチャーオブジェクトを生成します              |
+| `GtkAppLauncher.launch()`       | ランチャーオブジェクトが示すGTKアプリケーションを起動し、起動したアプリケーションを表す `GtkApp` を返します。起動単位の出力callbackも指定できます |
+| `GtkAppLauncher.environment()`  | ランチャーから起動するアプリケーションや補助プロセスに渡すべき最終環境変数を返します                                                              |
+| `GtkAppLauncher.systemOutput()` | 現在または直近のlauncher leaseで保持されたXvfb、launcher driver、tray hostのstdout/stderr snapshotを返します                                      |
+| `GtkAppLauncher.release()`      | ランチャーから起動した全ての `GtkApp` を終了し、ランチャーがXvfbを起動していた場合は終了させます                                                  |
 
 以下は、`launchGtkApp()` を使用せず、GTKアプリケーション起動管理を手動で行う例です:
 
@@ -349,19 +350,21 @@ it('launches the app', async () => {
 });
 ```
 
-| オプション            | 詳細                                                                                                                                             |
-| :-------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `appPath`             | GTKアプリケーションバイナリファイルへのパス。このファイルが起動されます                                                                          |
-| `args`                | 全ての起動に共通して渡す基本引数。`GtkAppLauncher.launch()` の引数は、この末尾に追加されます                                                     |
-| `env`                 | 全ての起動に共通して渡す環境変数の上書き                                                                                                         |
-| `outputBufferBytes`   | `GtkApp.output()` がstdout/stderrそれぞれで保持する最大byte数。省略時は全体保持、`0` は本文を保持せずtruncated flagのみを更新します              |
-| `display`             | GTKアプリケーションを表示させる方法を指定。`xvfb`または`host`で、既定は`xvfb`                                                                    |
-| `xvfbScreen`          | `display` が `xvfb` の場合に使用するXvfb画面サイズ。既定は `1280x720x24`                                                                         |
-| `xvfbTrayHost`        | `display` が `xvfb` の場合に、StatusNotifier tray hostを起動するかどうか。既定は `true`                                                          |
-| `xvfbPool`            | Xvfbセッションのプーリング設定。`type: 'xvfb'` はXvfbのみ、`type: 'all'` はDBus session、launcher driver、tray hostも再利用します                 |
-| `gsettings`           | GTKアプリケーションに渡す `GSETTINGS_BACKEND`。既定は `memory` で、`null` を指定すると未設定にします                                              |
-| `theme`               | GTKアプリケーションに渡す `GTK_THEME`。既定は `Adwaita` で、`null` を指定すると未設定にします                                                     |
-| `timeoutMs`           | アプリケーションや要素の待機操作で使用するタイムアウト。既定は `10000` msecです                                                                  |
+| オプション                | 詳細                                                                                                                                |
+| :------------------------ | :---------------------------------------------------------------------------------------------------------------------------------- |
+| `appPath`                 | GTKアプリケーションバイナリファイルへのパス。このファイルが起動されます                                                             |
+| `args`                    | 全ての起動に共通して渡す基本引数。`GtkAppLauncher.launch()` の引数は、この末尾に追加されます                                        |
+| `env`                     | 全ての起動に共通して渡す環境変数の上書き                                                                                            |
+| `outputBufferBytes`       | `GtkApp.output()` がstdout/stderrそれぞれで保持する最大byte数。省略時は全体保持、`0` は本文を保持せずtruncated flagのみを更新します |
+| `onSystemOutput`          | Xvfb、launcher driver、tray hostなど、launcher基盤プロセスのstdout/stderr chunkを受け取るcallback                                   |
+| `systemOutputBufferBytes` | `GtkAppLauncher.systemOutput()` がsource/streamごとに保持する最大byte数。省略時はlauncher leaseの全体保持、`0` は本文を保持しません |
+| `display`                 | GTKアプリケーションを表示させる方法を指定。`xvfb`または`host`で、既定は`xvfb`                                                       |
+| `xvfbScreen`              | `display` が `xvfb` の場合に使用するXvfb画面サイズ。既定は `1280x720x24`                                                            |
+| `xvfbTrayHost`            | `display` が `xvfb` の場合に、StatusNotifier tray hostを起動するかどうか。既定は `true`                                             |
+| `xvfbPool`                | Xvfbセッションのプーリング設定。`type: 'xvfb'` はXvfbのみ、`type: 'all'` はDBus session、launcher driver、tray hostも再利用します   |
+| `gsettings`               | GTKアプリケーションに渡す `GSETTINGS_BACKEND`。既定は `memory` で、`null` を指定すると未設定にします                                |
+| `theme`                   | GTKアプリケーションに渡す `GTK_THEME`。既定は `Adwaita` で、`null` を指定すると未設定にします                                       |
+| `timeoutMs`               | アプリケーションや要素の待機操作で使用するタイムアウト。既定は `10000` msecです                                                     |
 
 アプリケーションのstdout/stderrは起動単位で監視できます。`outputBufferBytes` はストリーム毎に保持する最大byte数を指定します。
 省略すると `release()` までstdout/stderr全体を保持します。
@@ -380,6 +383,30 @@ const app = await launcher.launch(['--scenario=basic'], {
 // アプリケーションプロセスのすべての状態を収集する
 const output = await app.output();
 expect(output.stderr).not.toContain('critical warning');
+```
+
+アプリケーション以外のインフラ出力は、launcher単位で監視できます。
+`systemOutputBufferBytes` はsource/streamごとの保持上限で、省略すると現在または直近のlauncher lease全体を保持します。
+`xvfbPool` でXvfbやdriverが再利用される場合でも、`systemOutput()` と `onSystemOutput` はlauncher leaseごとに分離されます。
+
+```typescript
+const systemEvents: string[] = [];
+const launcher = createGtkAppLauncher({
+  appPath: './my-app',
+  onSystemOutput: (event) => {
+    systemEvents.push(`[${event.source}:${event.stream}] ${event.text}`);
+  },
+});
+
+await launcher.environment();
+await launcher.release();
+
+const systemOutput = await launcher.systemOutput();
+expect(systemOutput.sources).toEqual(
+  expect.arrayContaining([
+    expect.objectContaining({ source: 'launcher-driver' }),
+  ])
+);
 ```
 
 ### GTKアプリケーションの操作

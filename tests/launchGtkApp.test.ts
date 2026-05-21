@@ -5,13 +5,22 @@
 
 import { describe, expect, it } from 'vitest';
 import { delay } from 'async-primitives';
+import { fileURLToPath } from 'node:url';
 
 import {
   createGtkAppEnvironment,
   createGtkAppLauncher,
   launchGtkApp,
 } from '../src/launchGtkApp';
-import type { GtkApp, GtkAppOutput, GtkAppOutputEvent } from '../src/types';
+import type {
+  GtkApp,
+  GtkAppOutput,
+  GtkAppOutputEvent,
+  GtkSystemOutput,
+  GtkSystemOutputEvent,
+  GtkSystemOutputSource,
+} from '../src/types';
+import { spawnText } from './support/process';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -26,6 +35,10 @@ process.stdout.write(${JSON.stringify(stdout)}, () => {
   });
 });
 `;
+
+const packageEntryPath = fileURLToPath(
+  new URL('../dist/index.cjs', import.meta.url)
+);
 
 const waitForExitedOutput = async (app: GtkApp): Promise<GtkAppOutput> => {
   const startedAt = Date.now();
@@ -54,6 +67,22 @@ const outputText = (
     .join('');
 
 const expectOutputSequences = (events: readonly GtkAppOutputEvent[]): void => {
+  expect(events.map((event) => event.sequence)).toEqual(
+    events.map((_event, index) => index)
+  );
+  expect(events.every((event) => Number.isFinite(event.timestampMs))).toBe(
+    true
+  );
+};
+
+const systemSourceSnapshot = (
+  output: GtkSystemOutput,
+  source: GtkSystemOutputSource
+) => output.sources.find((entry) => entry.source === source);
+
+const expectSystemOutputSequences = (
+  events: readonly GtkSystemOutputEvent[]
+): void => {
   expect(events.map((event) => event.sequence)).toEqual(
     events.map((_event, index) => index)
   );
@@ -274,5 +303,222 @@ describe('GTK application output capture', () => {
     } finally {
       await launcher.release();
     }
+  });
+});
+
+describe('GTK launcher system output capture', () => {
+  it('captures launcher-driver and tray-host output with system callbacks', async () => {
+    const previousDriverStdout =
+      process.env.GESTAMENT_TEST_DRIVER_SYSTEM_STDOUT;
+    const previousDriverStderr =
+      process.env.GESTAMENT_TEST_DRIVER_SYSTEM_STDERR;
+    const previousTrayStdout =
+      process.env.GESTAMENT_TEST_TRAY_HOST_SYSTEM_STDOUT;
+    const previousTrayStderr =
+      process.env.GESTAMENT_TEST_TRAY_HOST_SYSTEM_STDERR;
+    const restoreEnv = (name: string, value: string | undefined): void => {
+      if (value === undefined) {
+        delete process.env[name];
+        return;
+      }
+      process.env[name] = value;
+    };
+    process.env.GESTAMENT_TEST_DRIVER_SYSTEM_STDOUT = 'driver-start-out';
+    process.env.GESTAMENT_TEST_DRIVER_SYSTEM_STDERR = 'driver-start-err';
+    process.env.GESTAMENT_TEST_TRAY_HOST_SYSTEM_STDOUT = 'tray-start-out';
+    process.env.GESTAMENT_TEST_TRAY_HOST_SYSTEM_STDERR = 'tray-start-err';
+
+    const events: GtkSystemOutputEvent[] = [];
+    const launcher = createGtkAppLauncher({
+      appPath: process.execPath,
+      args: ['-e', nodeOutputScript('', '', 0)],
+      onSystemOutput: (event) => {
+        events.push(event);
+      },
+      xvfbTrayHost: true,
+    });
+
+    try {
+      const app = await launcher.launch();
+      await waitForExitedOutput(app);
+
+      const output = await launcher.systemOutput();
+      const driverOutput = systemSourceSnapshot(output, 'launcher-driver');
+      expect(driverOutput).toMatchObject({
+        stderrTruncated: false,
+        stdoutTruncated: false,
+      });
+      expect(
+        `${driverOutput?.stdout ?? ''}${driverOutput?.stderr ?? ''}`
+      ).toContain('driver-start-out');
+      expect(
+        `${driverOutput?.stdout ?? ''}${driverOutput?.stderr ?? ''}`
+      ).toContain('driver-start-err');
+      expect(systemSourceSnapshot(output, 'tray-host')).toMatchObject({
+        stderr: 'tray-start-err',
+        stderrTruncated: false,
+        stdout: 'tray-start-out',
+        stdoutTruncated: false,
+      });
+      expect(systemSourceSnapshot(output, 'tray-host')?.stdout).not.toContain(
+        'gestament-tray-host-ready'
+      );
+      expectSystemOutputSequences(events);
+    } finally {
+      await launcher.release();
+      restoreEnv('GESTAMENT_TEST_DRIVER_SYSTEM_STDOUT', previousDriverStdout);
+      restoreEnv('GESTAMENT_TEST_DRIVER_SYSTEM_STDERR', previousDriverStderr);
+      restoreEnv('GESTAMENT_TEST_TRAY_HOST_SYSTEM_STDOUT', previousTrayStdout);
+      restoreEnv('GESTAMENT_TEST_TRAY_HOST_SYSTEM_STDERR', previousTrayStderr);
+    }
+  });
+
+  it('keeps the last system output snapshot after release and resets on the next lease', async () => {
+    const launcher = createGtkAppLauncher({
+      appPath: process.execPath,
+      env: {
+        GESTAMENT_TEST_DRIVER_COMMAND_SYSTEM_STDOUT: 'lease-output',
+      },
+      xvfbTrayHost: false,
+    });
+
+    try {
+      await launcher.environment();
+      await launcher.release();
+      const firstOutput = await launcher.systemOutput();
+
+      await launcher.environment();
+      const secondOutput = await launcher.systemOutput();
+
+      expect(systemSourceSnapshot(firstOutput, 'launcher-driver')?.stdout).toBe(
+        'lease-output'
+      );
+      expect(
+        systemSourceSnapshot(secondOutput, 'launcher-driver')?.stdout
+      ).toBe('lease-output');
+    } finally {
+      await launcher.release();
+    }
+  });
+
+  it('separates system output across pooled launcher leases', async () => {
+    const firstEvents: GtkSystemOutputEvent[] = [];
+    const secondEvents: GtkSystemOutputEvent[] = [];
+    const launchWithSystemOutput = async (
+      label: string,
+      events: GtkSystemOutputEvent[]
+    ): Promise<{
+      readonly dbusSessionBusAddress: string | undefined;
+      readonly display: string | undefined;
+      readonly output: GtkSystemOutput;
+    }> => {
+      const launcher = createGtkAppLauncher({
+        appPath: process.execPath,
+        env: {
+          GESTAMENT_TEST_DRIVER_COMMAND_SYSTEM_STDOUT: `system:${label}\n`,
+        },
+        onSystemOutput: (event) => {
+          events.push(event);
+        },
+        xvfbPool: { type: 'all' },
+        xvfbScreen: '450x320x24',
+        xvfbTrayHost: false,
+      });
+      const env = await launcher.environment();
+      await launcher.release();
+      return {
+        dbusSessionBusAddress: env.DBUS_SESSION_BUS_ADDRESS,
+        display: env.DISPLAY,
+        output: await launcher.systemOutput(),
+      };
+    };
+
+    const first = await launchWithSystemOutput('first', firstEvents);
+    const firstEventCountAfterFirst = firstEvents.length;
+    const second = await launchWithSystemOutput('second', secondEvents);
+
+    expect(first.display).toBe(second.display);
+    expect(first.dbusSessionBusAddress).toBe(second.dbusSessionBusAddress);
+    expect(systemSourceSnapshot(first.output, 'launcher-driver')?.stdout).toBe(
+      'system:first\n'
+    );
+    expect(systemSourceSnapshot(second.output, 'launcher-driver')?.stdout).toBe(
+      'system:second\n'
+    );
+    expect(firstEvents.length).toBe(firstEventCountAfterFirst);
+    expect(firstEvents.map((event) => event.text).join('')).not.toContain(
+      'system:second'
+    );
+    expect(secondEvents.map((event) => event.text).join('')).toContain(
+      'system:second'
+    );
+  });
+
+  it('keeps the launcher session usable when system output callbacks throw', async () => {
+    const script = `
+const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
+const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
+(async () => {
+  const events = [];
+  let thrown = false;
+  const uncaughtPromise = new Promise((resolve) => {
+    process.once('uncaughtException', (error) => {
+      resolve(error && error.message ? error.message : String(error));
+    });
+  });
+  const launcher = createGtkAppLauncher({
+    appPath: process.execPath,
+    env: {
+      GESTAMENT_TEST_DRIVER_COMMAND_SYSTEM_STDOUT: 'throw-output',
+    },
+    onSystemOutput: (event) => {
+      events.push(event);
+      if (!thrown) {
+        thrown = true;
+        throw new Error('system-output-callback-error');
+      }
+    },
+    xvfbTrayHost: false,
+  });
+  await launcher.environment();
+  const beforeRelease = await launcher.systemOutput();
+  await launcher.release();
+  const afterRelease = await launcher.systemOutput();
+  const uncaught = await Promise.race([
+    uncaughtPromise,
+    delay(1000).then(() => null),
+  ]);
+  console.log(JSON.stringify({
+    afterRelease,
+    beforeRelease,
+    eventCount: events.length,
+    uncaught,
+  }));
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+`;
+    const result = await spawnText(process.execPath, ['-e', script], {
+      env: process.env,
+      timeoutMs: 20_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const output = JSON.parse(result.stdout.trim()) as {
+      readonly afterRelease: GtkSystemOutput;
+      readonly beforeRelease: GtkSystemOutput;
+      readonly eventCount: number;
+      readonly uncaught: string | null;
+    };
+
+    expect(output.uncaught).toBe('system-output-callback-error');
+    expect(output.eventCount).toBeGreaterThan(0);
+    expect(
+      systemSourceSnapshot(output.beforeRelease, 'launcher-driver')?.stdout
+    ).toBe('throw-output');
+    expect(
+      systemSourceSnapshot(output.afterRelease, 'launcher-driver')?.stdout
+    ).toBe('throw-output');
   });
 });

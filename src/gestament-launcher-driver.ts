@@ -44,6 +44,7 @@ import type {
   WireGtkAppEnvironment,
   WireGtkAppOutput,
   WireGtkAppOutputEvent,
+  WireGtkSystemOutput,
   WireImageInfo,
 } from './launcherDriverProtocol';
 import type {
@@ -153,15 +154,39 @@ const waitForTrayHostReady = (host: ChildProcess): Promise<void> =>
     host.stdout.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8');
       output += text;
-      if (!settled && output.includes(trayHostReadyLine)) {
+      const readyIndex = output.indexOf(trayHostReadyLine);
+      if (!settled && readyIndex >= 0) {
         settled = true;
         clearTimeout(timeout);
+        const beforeReady = output.slice(0, readyIndex);
+        if (beforeReady.length > 0) {
+          writeSystemOutputChunk('stdout', Buffer.from(beforeReady));
+        }
+        let afterReadyIndex = readyIndex + trayHostReadyLine.length;
+        if (output.slice(afterReadyIndex, afterReadyIndex + 2) === '\r\n') {
+          afterReadyIndex += 2;
+        } else if (output[afterReadyIndex] === '\n') {
+          afterReadyIndex += 1;
+        }
+        const afterReady = output.slice(afterReadyIndex);
+        if (afterReady.length > 0) {
+          writeSystemOutputChunk('stdout', Buffer.from(afterReady));
+        }
         resolveReady();
         return;
       }
       if (settled) {
-        process.stdout.write(text);
+        writeSystemOutputChunk('stdout', chunk);
       }
+    });
+    host.stdout.once('end', () => {
+      writeSystemOutputFlush('stdout');
+    });
+    host.stderr?.on('data', (chunk: Buffer) => {
+      writeSystemOutputChunk('stderr', chunk);
+    });
+    host.stderr?.once('end', () => {
+      writeSystemOutputFlush('stderr');
     });
 
     host.once('exit', (code, signal) => {
@@ -199,7 +224,7 @@ const startTrayHost = async (): Promise<ChildProcess> => {
   );
   const host = spawn(process.execPath, [hostPath], {
     env: process.env,
-    stdio: ['ignore', 'pipe', 'inherit'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   try {
     await waitForTrayHostReady(host);
@@ -234,6 +259,28 @@ const writeReady = (socket: Socket): void => {
   socket.write(`${JSON.stringify(ready)}\n`);
 };
 
+const writeInternalTestOutput = (): void => {
+  const stdout = process.env.GESTAMENT_TEST_DRIVER_SYSTEM_STDOUT;
+  if (stdout !== undefined) {
+    process.stdout.write(stdout);
+  }
+  const stderr = process.env.GESTAMENT_TEST_DRIVER_SYSTEM_STDERR;
+  if (stderr !== undefined) {
+    process.stderr.write(stderr);
+  }
+};
+
+const writePayloadInternalTestOutput = (env: WireGtkAppEnvironment): void => {
+  const stdout = env.GESTAMENT_TEST_DRIVER_COMMAND_SYSTEM_STDOUT;
+  if (stdout !== null && stdout !== undefined) {
+    process.stdout.write(stdout);
+  }
+  const stderr = env.GESTAMENT_TEST_DRIVER_COMMAND_SYSTEM_STDERR;
+  if (stderr !== null && stderr !== undefined) {
+    process.stderr.write(stderr);
+  }
+};
+
 const writeDriverEvent = (
   channel: DriverEventChannel,
   scopeId: string,
@@ -246,6 +293,28 @@ const writeDriverEvent = (
   } catch {
     // The parent process owns event delivery; ignore writes after disconnect.
   }
+};
+
+const writeSystemOutputChunk = (
+  stream: 'stdout' | 'stderr',
+  chunk: Buffer
+): void => {
+  const value: WireGtkSystemOutput = {
+    chunkBase64: chunk.toString('base64'),
+    source: 'tray-host',
+    stream,
+    type: 'chunk',
+  };
+  writeDriverEvent('system.output', 'system', value);
+};
+
+const writeSystemOutputFlush = (stream: 'stdout' | 'stderr'): void => {
+  const value: WireGtkSystemOutput = {
+    source: 'tray-host',
+    stream,
+    type: 'flush',
+  };
+  writeDriverEvent('system.output', 'system', value);
 };
 
 const wireEnvironmentToGtkAppEnvironment = (
@@ -505,6 +574,7 @@ const handleLauncherCommand = async (
   switch (command) {
     case 'launcher.environment': {
       const environmentPayload = payload as DriverEnvironmentPayload;
+      writePayloadInternalTestOutput(environmentPayload.env);
       return gtkAppEnvironmentToWireEnvironment(
         createGtkAppEnvironment(
           process.env,
@@ -514,6 +584,7 @@ const handleLauncherCommand = async (
     }
     case 'launcher.launch': {
       const launchPayload = payload as DriverLaunchPayload;
+      writePayloadInternalTestOutput(launchPayload.env);
       const outputScopeId = launchPayload.outputScopeId;
       const launchOptions: LaunchGtkAppOptions = {
         env: wireEnvironmentToGtkAppEnvironment(launchPayload.env),
@@ -928,10 +999,10 @@ const shutdown = async (exitCode: number): Promise<void> => {
 
 const run = async (): Promise<void> => {
   const parsed = parseArguments(process.argv.slice(2));
-  trayHostProcess = parsed.withTrayHost ? await startTrayHost() : undefined;
-
   const socket = await connectToParent(parsed.socketPath);
   installSocketProtocol(socket);
+  writeInternalTestOutput();
+  trayHostProcess = parsed.withTrayHost ? await startTrayHost() : undefined;
   writeReady(socket);
 
   process.once('SIGINT', () => {

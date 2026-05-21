@@ -1087,6 +1087,9 @@ export type GtkAppDisplay = 'xvfb' | 'host';
 /** Standard output stream captured from a launched GTK application. */
 export type GtkAppOutputStream = 'stdout' | 'stderr';
 
+/** Infrastructure process that produced system output for a GTK launcher. */
+export type GtkSystemOutputSource = 'xvfb' | 'launcher-driver' | 'tray-host';
+
 /**
  * Output chunk emitted by a launched GTK application.
  */
@@ -1145,6 +1148,76 @@ export interface GtkAppOutput {
    * Whether stderr was truncated by outputBufferBytes.
    */
   readonly stderrTruncated: boolean;
+}
+
+/**
+ * Output chunk emitted by infrastructure processes used by a GTK launcher.
+ */
+export interface GtkSystemOutputEvent {
+  /**
+   * Infrastructure process category that produced this chunk.
+   */
+  readonly source: GtkSystemOutputSource;
+
+  /**
+   * Output stream that produced this chunk.
+   */
+  readonly stream: GtkAppOutputStream;
+
+  /**
+   * UTF-8 decoded output text for this chunk.
+   */
+  readonly text: string;
+
+  /**
+   * Monotonic sequence number across sources and streams for this launcher lease.
+   */
+  readonly sequence: number;
+
+  /**
+   * Time when gestament received this chunk.
+   */
+  readonly timestampMs: number;
+}
+
+/**
+ * Output snapshot for one infrastructure process category.
+ */
+export interface GtkSystemOutputSourceSnapshot {
+  /**
+   * Infrastructure process category for this snapshot.
+   */
+  readonly source: GtkSystemOutputSource;
+
+  /**
+   * Captured stdout text.
+   */
+  readonly stdout: string;
+
+  /**
+   * Captured stderr text.
+   */
+  readonly stderr: string;
+
+  /**
+   * Whether stdout was truncated by systemOutputBufferBytes.
+   */
+  readonly stdoutTruncated: boolean;
+
+  /**
+   * Whether stderr was truncated by systemOutputBufferBytes.
+   */
+  readonly stderrTruncated: boolean;
+}
+
+/**
+ * Output snapshot captured from infrastructure processes used by a GTK launcher.
+ */
+export interface GtkSystemOutput {
+  /**
+   * Captured output grouped by infrastructure process category.
+   */
+  readonly sources: readonly GtkSystemOutputSourceSnapshot[];
 }
 
 /**
@@ -1345,6 +1418,19 @@ export interface GtkAppLauncherOptions {
    */
   readonly outputBufferBytes?: number | undefined;
   /**
+   * Callback invoked for each stdout/stderr chunk produced by launcher infrastructure.
+   */
+  readonly onSystemOutput?: ((event: GtkSystemOutputEvent) => void) | undefined;
+  /**
+   * Default maximum captured bytes retained per system output source stream.
+   *
+   * @remarks
+   * Omit to retain complete infrastructure stdout/stderr for the launcher
+   * lease. 0 disables retained output text while preserving truncation flags
+   * and onSystemOutput notifications.
+   */
+  readonly systemOutputBufferBytes?: number | undefined;
+  /**
    * Display environment used for launched GTK applications.
    * Default is 'xvfb'.
    *
@@ -1417,6 +1503,16 @@ export interface GtkAppLauncher extends Releasable {
    * returned DISPLAY and DBUS_SESSION_BUS_ADDRESS values are concrete.
    */
   readonly environment: () => Promise<GtkAppEnvironment>;
+
+  /**
+   * Reads the retained infrastructure stdout/stderr output for the current or previous launcher lease.
+   *
+   * @returns A promise that resolves to the current system output snapshot.
+   * @remarks
+   * The snapshot remains available after release() until the next launcher
+   * session starts, so output produced during release() can be inspected.
+   */
+  readonly systemOutput: () => Promise<GtkSystemOutput>;
 
   /**
    * Launches the configured GTK application and tracks it for release().

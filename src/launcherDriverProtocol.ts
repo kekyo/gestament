@@ -10,6 +10,7 @@ import type {
   GtkCaptureBounds,
   GtkImagePoint,
   GtkImageSize,
+  GtkSystemOutputSource,
   GtkTrayItemSelector,
   GtkWidgetKind,
 } from './types';
@@ -81,7 +82,7 @@ export type DriverCommand =
 
 export type WireGtkAppEnvironment = Readonly<Record<string, string | null>>;
 
-export type DriverEventChannel = 'app.output';
+export type DriverEventChannel = 'app.output' | 'system.output';
 
 export interface DriverLaunchPayload {
   readonly appPath: string;
@@ -209,6 +210,19 @@ export interface WireCapture {
 export type WireGtkAppOutputEvent = GtkAppOutputEvent;
 
 export type WireGtkAppOutput = GtkAppOutput;
+
+export type WireGtkSystemOutput =
+  | {
+      readonly chunkBase64: string;
+      readonly source: GtkSystemOutputSource;
+      readonly stream: 'stdout' | 'stderr';
+      readonly type: 'chunk';
+    }
+  | {
+      readonly source: GtkSystemOutputSource;
+      readonly stream: 'stdout' | 'stderr';
+      readonly type: 'flush';
+    };
 
 export interface WireImageInfo {
   readonly bounds: GtkCaptureBounds;

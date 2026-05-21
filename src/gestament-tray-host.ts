@@ -7,6 +7,14 @@
 import { nativeRunTrayHost } from './native';
 
 try {
+  const stdout = process.env.GESTAMENT_TEST_TRAY_HOST_SYSTEM_STDOUT;
+  if (stdout !== undefined) {
+    process.stdout.write(stdout);
+  }
+  const stderr = process.env.GESTAMENT_TEST_TRAY_HOST_SYSTEM_STDERR;
+  if (stderr !== undefined) {
+    process.stderr.write(stderr);
+  }
   nativeRunTrayHost();
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
