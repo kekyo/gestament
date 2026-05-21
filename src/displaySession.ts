@@ -28,8 +28,11 @@ import type {
   DriverCommand,
   DriverEnvironmentPayload,
   DriverElementRef,
+  DriverEventChannel,
+  DriverEventMessage,
   DriverErrorResponse,
   DriverLaunchPayload,
+  DriverMessage,
   DriverReadyMessage,
   DriverRequest,
   DriverResponse,
@@ -38,6 +41,7 @@ import type {
   SerializedDriverError,
   WireCapture,
   WireGtkAppEnvironment,
+  WireGtkAppOutput,
   WireImageInfo,
 } from './launcherDriverProtocol';
 import type {
@@ -45,7 +49,9 @@ import type {
   GtkAppDisplay,
   GtkAppEnvironment,
   GtkAppLauncher,
+  GtkAppLauncherLaunchOptions,
   GtkAppLauncherOptions,
+  GtkAppOutputEvent,
   GtkCapture,
   GtkCaptureBounds,
   GtkElementInfo,
@@ -86,7 +92,16 @@ interface DriverSession {
     payload: unknown
   ) => Promise<Result>;
   readonly release: () => Promise<void>;
+  readonly subscribe: (
+    channel: DriverEventChannel,
+    scopeId: string,
+    handler: (value: unknown) => void
+  ) => DriverEventSubscription;
   readonly terminate: () => Promise<void>;
+}
+
+interface DriverEventSubscription {
+  readonly dispose: () => void;
 }
 
 interface PooledXvfb {
@@ -184,6 +199,7 @@ const sessionOwnedEnvironmentKeys = [
   'XDG_SESSION_TYPE',
 ] as const;
 
+let outputScopeCounter = 0;
 let socketCounter = 0;
 const leasedDisplayNumbers = new Set<number>();
 const idleXvfbByKey = new Map<string, PooledXvfb[]>();
@@ -256,6 +272,41 @@ const resolveDisplay = (display: GtkAppDisplay | undefined): GtkAppDisplay => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const createDriverEventKey = (
+  channel: DriverEventChannel,
+  scopeId: string
+): string => `${channel}\n${scopeId}`;
+
+const createOutputScopeId = (): string => {
+  const scopeId = `output-${process.pid}-${outputScopeCounter}`;
+  outputScopeCounter += 1;
+  return scopeId;
+};
+
+const isDriverEventMessage = (
+  message: DriverMessage
+): message is DriverEventMessage =>
+  isRecord(message) &&
+  message.type === 'event' &&
+  typeof message.channel === 'string' &&
+  typeof message.scopeId === 'string';
+
+const resolveOutputBufferBytes = (
+  launcherValue: number | undefined,
+  launchValue: number | undefined
+): number | null => {
+  const value = launchValue ?? launcherValue;
+  if (value === undefined) {
+    return null;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw createGtkInvalidArgumentError(
+      'outputBufferBytes must be a non-negative safe integer.'
+    );
+  }
+  return value;
+};
 
 const resolvePoolLimit = (
   name: string,
@@ -1242,6 +1293,7 @@ const createDriverSession = (
   tempDirectory: string,
   poolOptions: DriverSessionPoolOptions
 ): DriverSession => {
+  const eventHandlers = new Map<string, Set<(value: unknown) => void>>();
   const pending = new Map<number, PendingRequest>();
   let input = bufferedInput;
   let nextRequestId = 1;
@@ -1264,8 +1316,33 @@ const createDriverSession = (
     rejectPending(createGtkAppExitedError('Launcher driver has exited.'));
   };
 
+  const handleEvent = (event: DriverEventMessage): void => {
+    const handlers = eventHandlers.get(
+      createDriverEventKey(event.channel, event.scopeId)
+    );
+    if (handlers === undefined) {
+      return;
+    }
+
+    for (const handler of handlers) {
+      try {
+        handler(event.value);
+      } catch (error) {
+        queueMicrotask(() => {
+          throw error;
+        });
+      }
+    }
+  };
+
   const handleResponse = (line: string): void => {
-    const response = JSON.parse(line) as DriverResponse;
+    const message = JSON.parse(line) as DriverMessage;
+    if (isDriverEventMessage(message)) {
+      handleEvent(message);
+      return;
+    }
+
+    const response = message as DriverResponse;
     const entry = pending.get(response.id);
     if (entry === undefined) {
       return;
@@ -1349,6 +1426,31 @@ const createDriverSession = (
         }
       });
     });
+  };
+
+  const subscribe = (
+    channel: DriverEventChannel,
+    scopeId: string,
+    handler: (value: unknown) => void
+  ): DriverEventSubscription => {
+    const key = createDriverEventKey(channel, scopeId);
+    const handlers = eventHandlers.get(key) ?? new Set();
+    handlers.add(handler);
+    eventHandlers.set(key, handlers);
+
+    let disposed = false;
+    return {
+      dispose: (): void => {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
+        handlers.delete(handler);
+        if (handlers.size === 0) {
+          eventHandlers.delete(key);
+        }
+      },
+    };
   };
 
   const waitForExit = async (): Promise<void> => {
@@ -1455,7 +1557,7 @@ const createDriverSession = (
     );
   };
 
-  session = { release, request, terminate };
+  session = { release, request, subscribe, terminate };
   return session;
 };
 
@@ -1576,7 +1678,9 @@ const startDriverSession = async (
 
 const createLaunchPayload = (
   options: GtkAppLauncherOptions,
-  args: readonly string[]
+  args: readonly string[],
+  launchOptions: GtkAppLauncherLaunchOptions | undefined,
+  outputScopeId: string | null
 ): DriverLaunchPayload => {
   const display = resolveDisplay(options.display);
   const xvfb = resolveXvfbOptions(options);
@@ -1586,6 +1690,11 @@ const createLaunchPayload = (
     appPath: options.appPath,
     args: [...(options.args ?? []), ...args],
     env: resolveLauncherEnvironment(options, effective),
+    outputBufferBytes: resolveOutputBufferBytes(
+      options.outputBufferBytes,
+      launchOptions?.outputBufferBytes
+    ),
+    outputScopeId,
     timeoutMs: options.timeoutMs ?? null,
   };
 };
@@ -1616,7 +1725,8 @@ const trayRefToProxy = (
 
 const createProxyGtkApp = (
   session: DriverSession,
-  ref: DriverAppRef
+  ref: DriverAppRef,
+  outputSubscription: DriverEventSubscription | undefined
 ): GtkApp => {
   let released = false;
 
@@ -1642,6 +1752,7 @@ const createProxyGtkApp = (
       return;
     }
     released = true;
+    outputSubscription?.dispose();
     await session.request<null>('app.release', { appId: ref.appId });
   };
 
@@ -1652,6 +1763,8 @@ const createProxyGtkApp = (
       wireEnvironmentToGtkAppEnvironment(
         await appRequest<WireGtkAppEnvironment>('app.environment')
       ),
+    output: (): Promise<WireGtkAppOutput> =>
+      appRequest<WireGtkAppOutput>('app.output'),
     findById: async (id: string): Promise<GtkWidgetElement | undefined> =>
       elementRefToProxy(
         session,
@@ -2023,6 +2136,7 @@ const createProxyGtkTrayItem = (
 export const createDriverBackedGtkAppLauncher = (
   options: GtkAppLauncherOptions
 ): GtkAppLauncher => {
+  const outputSubscriptions = new Set<DriverEventSubscription>();
   let sessionPromise: Promise<DriverSession> | undefined;
 
   const ensureSession = (): Promise<DriverSession> => {
@@ -2030,14 +2144,59 @@ export const createDriverBackedGtkAppLauncher = (
     return sessionPromise;
   };
 
-  const launch = async (args?: readonly string[]): Promise<GtkApp> => {
-    const payload = createLaunchPayload(options, args ?? []);
+  const trackOutputSubscription = (
+    subscription: DriverEventSubscription
+  ): DriverEventSubscription => {
+    let tracked: DriverEventSubscription;
+    tracked = {
+      dispose: (): void => {
+        if (!outputSubscriptions.delete(tracked)) {
+          return;
+        }
+        subscription.dispose();
+      },
+    };
+    outputSubscriptions.add(tracked);
+    return tracked;
+  };
+
+  const disposeOutputSubscriptions = (): void => {
+    for (const subscription of [...outputSubscriptions]) {
+      subscription.dispose();
+    }
+  };
+
+  const launch = async (
+    args?: readonly string[],
+    launchOptions?: GtkAppLauncherLaunchOptions
+  ): Promise<GtkApp> => {
     const session = await ensureSession();
-    const appRef = await session.request<DriverAppRef>(
-      'launcher.launch',
-      payload
+    const onOutput = launchOptions?.onOutput;
+    const outputScopeId = onOutput === undefined ? null : createOutputScopeId();
+    const outputSubscription =
+      outputScopeId === null
+        ? undefined
+        : trackOutputSubscription(
+            session.subscribe('app.output', outputScopeId, (value) => {
+              onOutput?.(value as GtkAppOutputEvent);
+            })
+          );
+    const payload = createLaunchPayload(
+      options,
+      args ?? [],
+      launchOptions,
+      outputScopeId
     );
-    return createProxyGtkApp(session, appRef);
+    try {
+      const appRef = await session.request<DriverAppRef>(
+        'launcher.launch',
+        payload
+      );
+      return createProxyGtkApp(session, appRef, outputSubscription);
+    } catch (error) {
+      outputSubscription?.dispose();
+      throw error;
+    }
   };
 
   const environment = async (): Promise<GtkAppEnvironment> => {
@@ -2058,7 +2217,11 @@ export const createDriverBackedGtkAppLauncher = (
       return;
     }
     const session = await releasingSession;
-    await session.release();
+    try {
+      await session.release();
+    } finally {
+      disposeOutputSubscriptions();
+    }
   };
 
   return {

@@ -22,6 +22,7 @@ import type {
   DriverAppPayload,
   DriverAppRef,
   DriverCommand,
+  DriverEventChannel,
   DriverElementPayload,
   DriverElementRef,
   DriverIdPayload,
@@ -41,6 +42,8 @@ import type {
   SerializedDriverError,
   WireCapture,
   WireGtkAppEnvironment,
+  WireGtkAppOutput,
+  WireGtkAppOutputEvent,
   WireImageInfo,
 } from './launcherDriverProtocol';
 import type {
@@ -50,6 +53,7 @@ import type {
   GtkImageInfo,
   GtkTrayItem,
   GtkWidgetElement,
+  LaunchGtkAppOptions,
 } from './types';
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -91,6 +95,7 @@ let nextAppId = 1;
 let nextElementId = 1;
 let nextTrayItemId = 1;
 let nextImageInfoId = 1;
+let parentSocket: Socket | undefined;
 let shuttingDown = false;
 let trayHostProcess: ChildProcess | undefined;
 
@@ -227,6 +232,20 @@ const connectToParent = (socketPath: string): Promise<Socket> =>
 const writeReady = (socket: Socket): void => {
   const ready: DriverReadyMessage = { type: 'ready' };
   socket.write(`${JSON.stringify(ready)}\n`);
+};
+
+const writeDriverEvent = (
+  channel: DriverEventChannel,
+  scopeId: string,
+  value: unknown
+): void => {
+  try {
+    parentSocket?.write(
+      `${JSON.stringify({ channel, scopeId, type: 'event', value })}\n`
+    );
+  } catch {
+    // The parent process owns event delivery; ignore writes after disconnect.
+  }
 };
 
 const wireEnvironmentToGtkAppEnvironment = (
@@ -495,8 +514,19 @@ const handleLauncherCommand = async (
     }
     case 'launcher.launch': {
       const launchPayload = payload as DriverLaunchPayload;
-      const launchOptions = {
+      const outputScopeId = launchPayload.outputScopeId;
+      const launchOptions: LaunchGtkAppOptions = {
         env: wireEnvironmentToGtkAppEnvironment(launchPayload.env),
+        ...(launchPayload.outputBufferBytes === null
+          ? {}
+          : { outputBufferBytes: launchPayload.outputBufferBytes }),
+        ...(outputScopeId === null
+          ? {}
+          : {
+              onOutput: (event: WireGtkAppOutputEvent): void => {
+                writeDriverEvent('app.output', outputScopeId, event);
+              },
+            }),
         ...(launchPayload.timeoutMs === null
           ? {}
           : { timeoutMs: launchPayload.timeoutMs }),
@@ -534,6 +564,8 @@ const handleAppCommand = async (
   switch (command) {
     case 'app.environment':
       return gtkAppEnvironmentToWireEnvironment(await app.environment());
+    case 'app.output':
+      return (await app.output()) satisfies WireGtkAppOutput;
     case 'app.release':
       await releaseApp(appId);
       return null;
@@ -858,6 +890,7 @@ const handleRequestLine = async (
 };
 
 const installSocketProtocol = (socket: Socket): void => {
+  parentSocket = socket;
   let input = '';
 
   socket.on('data', (chunk: Buffer) => {
@@ -872,9 +905,11 @@ const installSocketProtocol = (socket: Socket): void => {
   });
 
   socket.once('close', () => {
+    parentSocket = undefined;
     void shutdown(0);
   });
   socket.once('error', () => {
+    parentSocket = undefined;
     void shutdown(1);
   });
 };

@@ -315,14 +315,14 @@ The following are the testing APIs provided by gestament.
 
 ### GTK application launch management
 
-| API function                   | Details                                                                                                                                              |
-| :----------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `launchGtkApp()`               | Directly launches a GTK application and returns the target `GtkApp`. You can specify launch arguments, environment variables, and wait timeout.      |
-| `createGtkAppEnvironment()`    | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`.   |
-| `createGtkAppLauncher()`       | Creates a launcher object that holds the specified application path, common arguments, display environment, environment variables, and wait timeout. |
-| `GtkAppLauncher.launch()`      | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application.                        |
-| `GtkAppLauncher.environment()` | Returns the final environment that launched apps and helper processes should use for this launcher.                                                  |
-| `GtkAppLauncher.release()`     | Terminate all `GtkApp` instances launched from the launcher, and if the launcher was running Xvfb, terminate it as well.                             |
+| API function                   | Details                                                                                                                                                                     |
+| :----------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `launchGtkApp()`               | Directly launches a GTK application and returns the target `GtkApp`. You can specify launch arguments, environment variables, and wait timeout.                             |
+| `createGtkAppEnvironment()`    | Generates environment variables to pass when launching a GTK application. Usually used internally by `launchGtkApp()` or `createGtkAppLauncher()`.                          |
+| `createGtkAppLauncher()`       | Creates a launcher object that holds the specified application path, common arguments, display environment, environment variables, output settings, and wait timeout.       |
+| `GtkAppLauncher.launch()`      | Launches the GTK application represented by the launcher object and returns a `GtkApp` representing the launched application. Per-launch output callbacks can be specified. |
+| `GtkAppLauncher.environment()` | Returns the final environment that launched apps and helper processes should use for this launcher.                                                                         |
+| `GtkAppLauncher.release()`     | Terminate all `GtkApp` instances launched from the launcher, and if the launcher was running Xvfb, terminate it as well.                                                    |
 
 The following example manually manages GTK application launches without using `launchGtkApp()` directly:
 
@@ -353,6 +353,23 @@ it('launches the app', async () => {
 });
 ```
 
+Application stdout and stderr can be observed per launch. `outputBufferBytes` limits the retained
+snapshot per stream; omit it to retain complete stdout/stderr until `release()`.
+
+```typescript
+// Collect the application's standard output and error logs
+const outputEvents: string[] = [];
+const app = await launcher.launch(['--scenario=basic'], {
+  onOutput: (event) => {
+    outputEvents.push(`[${event.stream}] ${event.text}`);
+  },
+});
+
+// Collect all states of the application process
+const output = await app.output();
+expect(output.stderr).not.toContain('critical warning');
+```
+
 ### Operating GTK applications
 
 | API function                | Details                                                                                                                                           |
@@ -360,6 +377,7 @@ it('launches the app', async () => {
 | `GtkApp.release()`          | Terminates the running GTK application process.                                                                                                   |
 | `GtkApp.capture()`          | Captures the entire X11 root window pointed to by `DISPLAY` as a PNG and returns a `GtkCapture` containing the image and display bounds.          |
 | `GtkApp.environment()`      | Returns the final environment used for the launched app. Pass it to helper processes that must observe the same display and DBus session.         |
+| `GtkApp.output()`           | Returns the retained stdout/stderr snapshot and current process exit status before `release()`.                                                   |
 | `GtkApp.findById()`         | Waits for an element matching the accessible ID and returns a `GtkWidgetElement` if found. Returns `undefined` if not found.                      |
 | `GtkApp.getById()`          | Waits for an element matching the accessible ID and returns a `GtkWidgetElement`. Throws an exception if not found.                               |
 | `GtkApp.findByPath()`       | Waits for an accessible ID plus child indexes separated by `.`, `:`, `;`, or `,`. Returns `undefined` if not found.                               |

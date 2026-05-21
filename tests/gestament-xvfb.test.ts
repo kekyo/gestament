@@ -661,6 +661,58 @@ const invalidPoolCode = async (xvfbPool) => {
 };
 const displaySet = (launched) =>
   launched.map((entry) => entry.env.display).sort().join('|');
+const outputChildScript = (label) => [
+  "process.stdout.write(" + JSON.stringify("stdout:" + label + "\\n") + ", () => {",
+  "  process.stderr.write(" + JSON.stringify("stderr:" + label + "\\n") + ", () => {",
+  "    process.exit(0);",
+  "  });",
+  "});",
+].join("\\n");
+const waitForExitedOutput = async (app) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt <= ${JSON.stringify(xvfbPoolChildEnvironmentTimeoutMs)}) {
+    const output = await app.output();
+    if (output.exitCode !== null || output.exitSignal !== null) {
+      return output;
+    }
+    await delay(25);
+  }
+  throw new Error('Timed out waiting for app output.');
+};
+const eventText = (events, stream) =>
+  events
+    .filter((event) => event.stream === stream)
+    .map((event) => event.text)
+    .join('');
+const summarizeOutputLaunch = (launched) => ({
+  env: launched.env,
+  eventCount: launched.events.length,
+  eventStderr: eventText(launched.events, 'stderr'),
+  eventStdout: eventText(launched.events, 'stdout'),
+  output: launched.output,
+});
+const launchOutputApp = async (label) => {
+  const events = [];
+  const launcher = createGtkAppLauncher({
+    appPath: process.execPath,
+    args: ['-e', outputChildScript(label)],
+    xvfbPool: { type: 'all' },
+    xvfbScreen: '440x315x24',
+    xvfbTrayHost: false,
+  });
+  const env = pickSessionEnv(await launcher.environment());
+  try {
+    const app = await launcher.launch([], {
+      onOutput: (event) => {
+        events.push(event);
+      },
+    });
+    const output = await waitForExitedOutput(app);
+    return { env, events, output };
+  } finally {
+    await launcher.release();
+  }
+};
 (async () => {
   const invalidPoolCodes = await Promise.all([
     invalidPoolCode('invalid'),
@@ -762,6 +814,16 @@ const displaySet = (launched) =>
     xvfbScreen: '430x310x24',
   });
 
+  const firstOutputPool = await launchOutputApp('first');
+  const firstOutputPoolEventCountAfterFirst = firstOutputPool.events.length;
+  const secondOutputPool = await launchOutputApp('second');
+  const outputPool = {
+    first: summarizeOutputLaunch(firstOutputPool),
+    firstEventCountAfterFirst: firstOutputPoolEventCountAfterFirst,
+    firstEventCountAfterSecond: firstOutputPool.events.length,
+    second: summarizeOutputLaunch(secondOutputPool),
+  };
+
   let coverWindowIsAbsent = true;
   let firstFixtureWindowCount = 0;
   let oldFixtureAppCode = 'SKIPPED';
@@ -809,6 +871,7 @@ const displaySet = (launched) =>
     invalidPoolCodes,
     oldAllAppCode,
     oldFixtureAppCode,
+    outputPool,
     secondAll,
     secondFixtureWindowCount,
     secondNoRetain,
@@ -871,6 +934,44 @@ const displaySet = (launched) =>
           readonly invalidPoolCodes: readonly (string | null)[];
           readonly oldAllAppCode: string | null;
           readonly oldFixtureAppCode: string | null;
+          readonly outputPool: {
+            readonly first: {
+              readonly env: {
+                readonly dbusSessionBusAddress: string | null;
+                readonly display: string | null;
+              };
+              readonly eventCount: number;
+              readonly eventStderr: string;
+              readonly eventStdout: string;
+              readonly output: {
+                readonly exitCode: number | null;
+                readonly exitSignal: string | null;
+                readonly stderr: string;
+                readonly stderrTruncated: boolean;
+                readonly stdout: string;
+                readonly stdoutTruncated: boolean;
+              };
+            };
+            readonly firstEventCountAfterFirst: number;
+            readonly firstEventCountAfterSecond: number;
+            readonly second: {
+              readonly env: {
+                readonly dbusSessionBusAddress: string | null;
+                readonly display: string | null;
+              };
+              readonly eventCount: number;
+              readonly eventStderr: string;
+              readonly eventStdout: string;
+              readonly output: {
+                readonly exitCode: number | null;
+                readonly exitSignal: string | null;
+                readonly stderr: string;
+                readonly stderrTruncated: boolean;
+                readonly stdout: string;
+                readonly stdoutTruncated: boolean;
+              };
+            };
+          };
           readonly secondAll: {
             readonly bounds: {
               readonly height: number;
@@ -961,6 +1062,35 @@ const displaySet = (launched) =>
         expect(output.firstAll.env.display).toBe(output.secondAll.env.display);
         expect(output.firstAll.env.dbusSessionBusAddress).toBe(
           output.secondAll.env.dbusSessionBusAddress
+        );
+        expect(output.outputPool.first.env.display).toBe(
+          output.outputPool.second.env.display
+        );
+        expect(output.outputPool.first.env.dbusSessionBusAddress).toBe(
+          output.outputPool.second.env.dbusSessionBusAddress
+        );
+        expect(output.outputPool.first.output).toMatchObject({
+          exitCode: 0,
+          exitSignal: null,
+          stderr: 'stderr:first\n',
+          stderrTruncated: false,
+          stdout: 'stdout:first\n',
+          stdoutTruncated: false,
+        });
+        expect(output.outputPool.second.output).toMatchObject({
+          exitCode: 0,
+          exitSignal: null,
+          stderr: 'stderr:second\n',
+          stderrTruncated: false,
+          stdout: 'stdout:second\n',
+          stdoutTruncated: false,
+        });
+        expect(output.outputPool.first.eventStdout).toBe('stdout:first\n');
+        expect(output.outputPool.first.eventStderr).toBe('stderr:first\n');
+        expect(output.outputPool.second.eventStdout).toBe('stdout:second\n');
+        expect(output.outputPool.second.eventStderr).toBe('stderr:second\n');
+        expect(output.outputPool.firstEventCountAfterSecond).toBe(
+          output.outputPool.firstEventCountAfterFirst
         );
         expect(output.oldAllAppCode).toBe('APP_EXITED');
         if (fixtureAppExists) {

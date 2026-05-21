@@ -311,14 +311,14 @@ gestamentが用意するテスト用のAPIを示します。
 
 ### GTKアプリケーション起動管理
 
-| API関数                        | 詳細                                                                                                                        |
-| :----------------------------- | :-------------------------------------------------------------------------------------------------------------------------- |
-| `launchGtkApp()`               | GTKアプリケーションを直接起動し、操作対象の `GtkApp` を返します。起動引数、環境変数、待機タイムアウトを指定できます         |
-| `createGtkAppEnvironment()`    | GTKアプリケーション起動時に渡す環境変数を生成します。通常は `launchGtkApp()` や `createGtkAppLauncher()` が内部で使用します |
-| `createGtkAppLauncher()`       | 指定されたアプリケーションパス、共通引数、表示環境、環境変数、待機タイムアウトを保持するランチャーオブジェクトを生成します  |
-| `GtkAppLauncher.launch()`      | ランチャーオブジェクトが示すGTKアプリケーションを起動し、起動したアプリケーションを表す `GtkApp` を返します                 |
-| `GtkAppLauncher.environment()` | ランチャーから起動するアプリケーションや補助プロセスに渡すべき最終環境変数を返します                                        |
-| `GtkAppLauncher.release()`     | ランチャーから起動した全ての `GtkApp` を終了し、ランチャーがXvfbを起動していた場合は終了させます                            |
+| API関数                        | 詳細                                                                                                                                              |
+| :----------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `launchGtkApp()`               | GTKアプリケーションを直接起動し、操作対象の `GtkApp` を返します。起動引数、環境変数、待機タイムアウトを指定できます                               |
+| `createGtkAppEnvironment()`    | GTKアプリケーション起動時に渡す環境変数を生成します。通常は `launchGtkApp()` や `createGtkAppLauncher()` が内部で使用します                       |
+| `createGtkAppLauncher()`       | 指定されたアプリケーションパス、共通引数、表示環境、環境変数、出力設定、待機タイムアウトを保持するランチャーオブジェクトを生成します              |
+| `GtkAppLauncher.launch()`      | ランチャーオブジェクトが示すGTKアプリケーションを起動し、起動したアプリケーションを表す `GtkApp` を返します。起動単位の出力callbackも指定できます |
+| `GtkAppLauncher.environment()` | ランチャーから起動するアプリケーションや補助プロセスに渡すべき最終環境変数を返します                                                              |
+| `GtkAppLauncher.release()`     | ランチャーから起動した全ての `GtkApp` を終了し、ランチャーがXvfbを起動していた場合は終了させます                                                  |
 
 以下は、`launchGtkApp()` を使用せず、GTKアプリケーション起動管理を手動で行う例です:
 
@@ -349,6 +349,23 @@ it('launches the app', async () => {
 });
 ```
 
+アプリケーションのstdout/stderrは起動単位で監視できます。`outputBufferBytes` はストリーム毎に保持する文字列のの上限を指定します。
+省略すると `release()` までstdout/stderr全体を保持します。
+
+```typescript
+// アプリケーションの標準出力・エラー出力ログを収集する
+const outputEvents: string[] = [];
+const app = await launcher.launch(['--scenario=basic'], {
+  onOutput: (event) => {
+    outputEvents.push(`[${event.stream}] ${event.text}`);
+  },
+});
+
+// アプリケーションプロセスのすべての状態を収集する
+const output = await app.output();
+expect(output.stderr).not.toContain('critical warning');
+```
+
 ### GTKアプリケーションの操作
 
 | API関数                     | 詳細                                                                                                                                           |
@@ -356,6 +373,7 @@ it('launches the app', async () => {
 | `GtkApp.release()`          | 起動中のGTKアプリケーションプロセスを終了させます                                                                                              |
 | `GtkApp.capture()`          | `DISPLAY` が指すX11 root window全体をPNGとしてキャプチャし、画像と表示範囲情報を含む `GtkCapture` を返します                                   |
 | `GtkApp.environment()`      | 起動済みアプリケーションが使用している最終環境変数を返します。同じdisplay/DBusセッションを見る補助プロセスに渡します                           |
+| `GtkApp.output()`           | `release()` 前に、保持されているstdout/stderrのsnapshotと現在のプロセス終了状態を返します                                                      |
 | `GtkApp.findById()`         | accessible IDに一致する要素を待機し、見つかった場合は `GtkWidgetElement` を返します。見つからない場合は `undefined` を返します                 |
 | `GtkApp.getById()`          | accessible IDに一致する要素を待機し、`GtkWidgetElement` を返します。見つからない場合は例外を送出します                                         |
 | `GtkApp.findByPath()`       | accessible IDと `.`, `:`, `;`, `,` 区切りの子要素インデックス列に一致する要素を待機します。見つからない場合は `undefined` を返します           |
