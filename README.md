@@ -353,8 +353,25 @@ it('launches the app', async () => {
 });
 ```
 
+| Option              | Details                                                                                                                                                           |
+| :------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appPath`           | Path to the GTK application binary. This file is launched.                                                                                                        |
+| `args`              | Base arguments passed to every launch. Arguments passed to `GtkAppLauncher.launch()` are appended after these values.                                             |
+| `env`               | Environment variable overrides passed to every launch.                                                                                                            |
+| `outputBufferBytes` | Maximum retained bytes per stdout/stderr stream for `GtkApp.output()`. Omit it to retain all output, or set `0` to keep only the truncated flags without text.   |
+| `display`           | Selects how to display the GTK application. `xvfb` or `host`; the default is `xvfb`.                                                                              |
+| `xvfbScreen`        | Xvfb screen geometry used when `display` is `xvfb`. The default is `1280x720x24`.                                                                                 |
+| `xvfbTrayHost`      | Whether to start the StatusNotifier tray host when `display` is `xvfb`. The default is `true`.                                                                    |
+| `xvfbPool`          | Xvfb session pooling settings. `type: 'xvfb'` reuses only Xvfb; `type: 'all'` also reuses the DBus session, launcher driver, and tray host.                      |
+| `gsettings`         | `GSETTINGS_BACKEND` passed to the GTK application. The default is `memory`; set `null` to leave it unset.                                                         |
+| `theme`             | `GTK_THEME` passed to the GTK application. The default is `Adwaita`; set `null` to leave it unset.                                                                |
+| `timeoutMs`         | Timeout used by operations that wait for the application or elements. The default is `10000` msec.                                                                |
+
 Application stdout and stderr can be observed per launch. `outputBufferBytes` limits the retained
 snapshot per stream; omit it to retain complete stdout/stderr until `release()`.
+
+An `outputBufferBytes` value passed as the second argument to `GtkAppLauncher.launch()` overrides the
+launcher-wide default for that launch.
 
 ```typescript
 // Collect the application's standard output and error logs

@@ -349,8 +349,24 @@ it('launches the app', async () => {
 });
 ```
 
-アプリケーションのstdout/stderrは起動単位で監視できます。`outputBufferBytes` はストリーム毎に保持する文字列のの上限を指定します。
+| オプション            | 詳細                                                                                                                                             |
+| :-------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appPath`             | GTKアプリケーションバイナリファイルへのパス。このファイルが起動されます                                                                          |
+| `args`                | 全ての起動に共通して渡す基本引数。`GtkAppLauncher.launch()` の引数は、この末尾に追加されます                                                     |
+| `env`                 | 全ての起動に共通して渡す環境変数の上書き                                                                                                         |
+| `outputBufferBytes`   | `GtkApp.output()` がstdout/stderrそれぞれで保持する最大byte数。省略時は全体保持、`0` は本文を保持せずtruncated flagのみを更新します              |
+| `display`             | GTKアプリケーションを表示させる方法を指定。`xvfb`または`host`で、既定は`xvfb`                                                                    |
+| `xvfbScreen`          | `display` が `xvfb` の場合に使用するXvfb画面サイズ。既定は `1280x720x24`                                                                         |
+| `xvfbTrayHost`        | `display` が `xvfb` の場合に、StatusNotifier tray hostを起動するかどうか。既定は `true`                                                          |
+| `xvfbPool`            | Xvfbセッションのプーリング設定。`type: 'xvfb'` はXvfbのみ、`type: 'all'` はDBus session、launcher driver、tray hostも再利用します                 |
+| `gsettings`           | GTKアプリケーションに渡す `GSETTINGS_BACKEND`。既定は `memory` で、`null` を指定すると未設定にします                                              |
+| `theme`               | GTKアプリケーションに渡す `GTK_THEME`。既定は `Adwaita` で、`null` を指定すると未設定にします                                                     |
+| `timeoutMs`           | アプリケーションや要素の待機操作で使用するタイムアウト。既定は `10000` msecです                                                                  |
+
+アプリケーションのstdout/stderrは起動単位で監視できます。`outputBufferBytes` はストリーム毎に保持する最大byte数を指定します。
 省略すると `release()` までstdout/stderr全体を保持します。
+
+`GtkAppLauncher.launch()` の第2引数に指定した `outputBufferBytes` は、ランチャーの共通設定よりも優先されます。
 
 ```typescript
 // アプリケーションの標準出力・エラー出力ログを収集する
