@@ -15,10 +15,13 @@ import {
   nativeIsChildSelected,
   nativeElementInfo,
   nativeImageInfo,
+  nativeMoveWindow,
+  nativeResizeWindow,
   nativeSelectAllChildren,
   nativeSelectChildAt,
   nativeSelectedChildAt,
   nativeSelectedChildCount,
+  nativeSetWindowBounds,
   nativeSetText,
   nativeSetValue,
   nativeResizeHints,
@@ -76,6 +79,22 @@ const assertNonNegativeIndex = (name: string, index: number): void => {
 const assertFiniteNumber = (name: string, value: number): void => {
   if (!Number.isFinite(value)) {
     throw createGtkInvalidArgumentError(`${name} must be a finite number.`);
+  }
+};
+
+const int32Min = -2147483648;
+const int32Max = 2147483647;
+
+const assertInt32 = (name: string, value: number): void => {
+  if (!Number.isInteger(value) || value < int32Min || value > int32Max) {
+    throw createGtkInvalidArgumentError(`${name} must be a 32-bit integer.`);
+  }
+};
+
+const assertPositiveInt32 = (name: string, value: number): void => {
+  assertInt32(name, value);
+  if (value <= 0) {
+    throw createGtkInvalidArgumentError(`${name} must be greater than zero.`);
   }
 };
 
@@ -692,6 +711,41 @@ const createBoundsOperation =
   async (): Promise<GtkCaptureBounds> =>
     nativeBounds(handle);
 
+const createMoveToOperation =
+  (
+    handle: NativeElementHandle
+  ): ((x: number, y: number) => Promise<GtkCaptureBounds>) =>
+  async (x: number, y: number): Promise<GtkCaptureBounds> => {
+    assertInt32('x', x);
+    assertInt32('y', y);
+    return nativeMoveWindow(handle, x, y);
+  };
+
+const createResizeToOperation =
+  (
+    handle: NativeElementHandle
+  ): ((width: number, height: number) => Promise<GtkCaptureBounds>) =>
+  async (width: number, height: number): Promise<GtkCaptureBounds> => {
+    assertPositiveInt32('width', width);
+    assertPositiveInt32('height', height);
+    return nativeResizeWindow(handle, width, height);
+  };
+
+const createSetBoundsOperation =
+  (
+    handle: NativeElementHandle
+  ): ((bounds: GtkCaptureBounds) => Promise<GtkCaptureBounds>) =>
+  async (bounds: GtkCaptureBounds): Promise<GtkCaptureBounds> => {
+    if (typeof bounds !== 'object' || bounds === null) {
+      throw createGtkInvalidArgumentError('bounds must be an object.');
+    }
+    assertInt32('bounds.x', bounds.x);
+    assertInt32('bounds.y', bounds.y);
+    assertPositiveInt32('bounds.width', bounds.width);
+    assertPositiveInt32('bounds.height', bounds.height);
+    return nativeSetWindowBounds(handle, bounds);
+  };
+
 const createResizeHintsOperation =
   (handle: NativeElementHandle): (() => Promise<GtkWindowResizeHints>) =>
   async (): Promise<GtkWindowResizeHints> =>
@@ -959,7 +1013,10 @@ export const createGtkElement = (
         ...common,
         kind: 'window',
         bounds: createBoundsOperation(handle),
+        moveTo: createMoveToOperation(handle),
         ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
+        resizeTo: createResizeToOperation(handle),
+        setBounds: createSetBoundsOperation(handle),
         resizeHints: createResizeHintsOperation(handle),
         x11Info: createX11InfoOperation(handle),
       };

@@ -355,6 +355,35 @@ export interface GtkWindowElement
   readonly bounds: () => Promise<GtkCaptureBounds>;
 
   /**
+   * Moves this window to screen-relative coordinates.
+   *
+   * @param x - Left coordinate relative to the root screen.
+   * @param y - Top coordinate relative to the root screen.
+   * @returns A promise that resolves to the actual bounds observed after the move.
+   */
+  readonly moveTo: (x: number, y: number) => Promise<GtkCaptureBounds>;
+
+  /**
+   * Resizes this window.
+   *
+   * @param width - Requested window width in physical pixels.
+   * @param height - Requested window height in physical pixels.
+   * @returns A promise that resolves to the actual bounds observed after the resize.
+   */
+  readonly resizeTo: (
+    width: number,
+    height: number
+  ) => Promise<GtkCaptureBounds>;
+
+  /**
+   * Moves and resizes this window.
+   *
+   * @param bounds - Requested screen-relative bounds in physical pixels.
+   * @returns A promise that resolves to the actual bounds observed after the change.
+   */
+  readonly setBounds: (bounds: GtkCaptureBounds) => Promise<GtkCaptureBounds>;
+
+  /**
    * Reads X11 normal-size hints for this window.
    *
    * @returns A promise that resolves to the current resize hints.

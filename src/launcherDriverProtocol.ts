@@ -71,7 +71,10 @@ export type DriverCommand =
   | 'element.selectColumn'
   | 'element.deselectColumn'
   | 'element.imageInfo'
+  | 'window.moveTo'
   | 'window.resizeHints'
+  | 'window.resizeTo'
+  | 'window.setBounds'
   | 'window.x11Info'
   | 'imageInfo.capture'
   | 'tray.metadata'
@@ -132,6 +135,20 @@ export interface DriverTextPayload {
 
 export interface DriverValuePayload {
   readonly value: number;
+}
+
+export interface DriverWindowMovePayload {
+  readonly x: number;
+  readonly y: number;
+}
+
+export interface DriverWindowResizePayload {
+  readonly height: number;
+  readonly width: number;
+}
+
+export interface DriverWindowBoundsPayload {
+  readonly bounds: GtkCaptureBounds;
 }
 
 export interface DriverIdPayload {
