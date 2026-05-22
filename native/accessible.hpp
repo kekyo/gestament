@@ -274,6 +274,24 @@ bool capture_accessible_proxy(guint process_id, AtspiAccessible *accessible,
 bool read_accessible_proxy_bounds(guint process_id, AtspiAccessible *accessible,
                                   CaptureBounds *bounds, NativeError *error);
 
+/** Moves a window element and returns the observed bounds. */
+bool move_accessible_proxy_window(guint process_id, AtspiAccessible *accessible,
+                                  gint x, gint y, CaptureBounds *bounds,
+                                  NativeError *error);
+
+/** Resizes a window element and returns the observed bounds. */
+bool resize_accessible_proxy_window(guint process_id,
+                                    AtspiAccessible *accessible, gint width,
+                                    gint height, CaptureBounds *bounds,
+                                    NativeError *error);
+
+/** Moves and resizes a window element and returns the observed bounds. */
+bool set_accessible_proxy_window_bounds(guint process_id,
+                                        AtspiAccessible *accessible,
+                                        const CaptureBounds &requested_bounds,
+                                        CaptureBounds *bounds,
+                                        NativeError *error);
+
 /** Reads X11 normal-size hints for a window element within a process. */
 bool read_accessible_proxy_resize_hints(guint process_id,
                                         AtspiAccessible *accessible,

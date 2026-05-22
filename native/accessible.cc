@@ -31,6 +31,8 @@ namespace {
 constexpr guint kMaxVisitedNodes = 10000;
 constexpr gint64 kStateChangeTimeoutUsec = 5000000;
 constexpr gulong kStateChangePollUsec = 50000;
+constexpr gint64 kWindowGeometryTimeoutUsec = 2000000;
+constexpr gulong kWindowGeometryPollUsec = 50000;
 
 bool is_window_role(AtspiAccessible *accessible);
 
@@ -1232,6 +1234,223 @@ NativeError operation_failed_error(const std::string &message) {
       NativeErrorCode::operation_failed,
       message,
   };
+}
+
+struct WindowGeometryRequest {
+  CaptureBounds bounds;
+  bool update_position;
+  bool update_size;
+  std::string operation;
+};
+
+bool geometry_request_observed(const CaptureBounds &before,
+                               const CaptureBounds &actual,
+                               const WindowGeometryRequest &request) {
+  const bool position_changed =
+      actual.x != before.x || actual.y != before.y ||
+      (request.bounds.x == before.x && request.bounds.y == before.y);
+  const bool size_changed =
+      actual.width != before.width || actual.height != before.height ||
+      (request.bounds.width == before.width &&
+       request.bounds.height == before.height);
+
+  return (!request.update_position || position_changed) &&
+         (!request.update_size || size_changed);
+}
+
+bool wait_window_geometry_observed(guint process_id,
+                                   AtspiAccessible *accessible,
+                                   const CaptureBounds &before,
+                                   const WindowGeometryRequest &request,
+                                   CaptureBounds *bounds) {
+  const gint64 deadline = g_get_monotonic_time() + kWindowGeometryTimeoutUsec;
+
+  do {
+    CaptureBounds actual = {};
+    if (resolve_capture_screen_bounds(process_id, accessible, ".",
+                                      NativeErrorCode::stale_element, &actual,
+                                      nullptr) &&
+        geometry_request_observed(before, actual, request)) {
+      *bounds = actual;
+      return true;
+    }
+    g_usleep(kWindowGeometryPollUsec);
+  } while (g_get_monotonic_time() < deadline);
+
+  return false;
+}
+
+bool apply_x11_window_geometry(guint process_id, AtspiAccessible *accessible,
+                               const CaptureBounds &component_bounds,
+                               const WindowGeometryRequest &request,
+                               NativeError *error) {
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!resolve_x11_toplevel_window(process_id, accessible, component_bounds,
+                                   display.get(), &window)) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Failed to resolve the X11 window for the accessible element.");
+    }
+    return false;
+  }
+
+  int status = 0;
+  if (request.update_position && request.update_size) {
+    status = XMoveResizeWindow(
+        display.get(), window, request.bounds.x, request.bounds.y,
+        static_cast<unsigned int>(request.bounds.width),
+        static_cast<unsigned int>(request.bounds.height));
+  } else if (request.update_position) {
+    status = XMoveWindow(display.get(), window, request.bounds.x,
+                         request.bounds.y);
+  } else {
+    status = XResizeWindow(display.get(), window,
+                           static_cast<unsigned int>(request.bounds.width),
+                           static_cast<unsigned int>(request.bounds.height));
+  }
+  XSync(display.get(), False);
+
+  if (status == 0) {
+    if (error != nullptr) {
+      *error = operation_failed_error("Failed to " + request.operation +
+                                      " the X11 window.");
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool apply_atspi_window_geometry(AtspiAccessible *accessible,
+                                 const WindowGeometryRequest &request,
+                                 NativeError *error) {
+  AtspiComponent *component = atspi_accessible_get_component_iface(accessible);
+  if (component == nullptr) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Accessible window does not support Component.");
+    }
+    return false;
+  }
+
+  GError *gerror = nullptr;
+  gboolean ok = FALSE;
+  if (request.update_position && request.update_size) {
+    ok = atspi_component_set_extents(
+        component, request.bounds.x, request.bounds.y, request.bounds.width,
+        request.bounds.height, ATSPI_COORD_TYPE_SCREEN, &gerror);
+  } else if (request.update_position) {
+    ok = atspi_component_set_position(component, request.bounds.x,
+                                      request.bounds.y, ATSPI_COORD_TYPE_SCREEN,
+                                      &gerror);
+  } else {
+    ok = atspi_component_set_size(component, request.bounds.width,
+                                  request.bounds.height, &gerror);
+  }
+
+  if (gerror != nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(take_gerror_message(
+          &gerror, "Failed to " + request.operation +
+                       " the window through AT-SPI Component."));
+    } else {
+      g_clear_error(&gerror);
+    }
+    return false;
+  }
+
+  if (!ok) {
+    if (error != nullptr) {
+      *error = operation_failed_error("AT-SPI Component returned false while "
+                                      "applying the window geometry.");
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool change_accessible_proxy_window_geometry(
+    guint process_id, AtspiAccessible *accessible,
+    const WindowGeometryRequest &request, CaptureBounds *bounds,
+    NativeError *error) {
+  if (bounds == nullptr) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::invalid_argument,
+          "Window bounds result must not be null.",
+      };
+    }
+    return false;
+  }
+
+  if (!validate_accessible(process_id, accessible, error)) {
+    return false;
+  }
+  if (!is_window_role(accessible)) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error("Accessible element is not a window.");
+    }
+    return false;
+  }
+
+  CaptureBounds before = {};
+  if (!resolve_capture_screen_bounds(process_id, accessible, ".",
+                                     NativeErrorCode::stale_element, &before,
+                                     error)) {
+    return false;
+  }
+
+  CaptureBounds component_bounds = {};
+  if (!resolve_component_screen_bounds(accessible, ".",
+                                       NativeErrorCode::stale_element,
+                                       &component_bounds, error)) {
+    return false;
+  }
+
+  NativeError last_error =
+      unsupported_interface_error("Window geometry changes require X11 or "
+                                  "AT-SPI Component support.");
+  bool applied = false;
+  if (apply_x11_window_geometry(process_id, accessible, component_bounds,
+                                request, &last_error)) {
+    applied = true;
+    if (wait_window_geometry_observed(process_id, accessible, before, request,
+                                      bounds)) {
+      return true;
+    }
+    last_error = operation_failed_error("X11 window geometry change was not "
+                                        "observed on the screen.");
+  }
+
+  NativeError atspi_error = {};
+  if (apply_atspi_window_geometry(accessible, request, &atspi_error)) {
+    applied = true;
+    if (wait_window_geometry_observed(process_id, accessible, before, request,
+                                      bounds)) {
+      return true;
+    }
+    last_error = operation_failed_error("AT-SPI window geometry change was not "
+                                        "observed on the screen.");
+  } else if (!applied) {
+    last_error = atspi_error;
+  }
+
+  if (error != nullptr) {
+    *error = last_error;
+  }
+  return false;
 }
 
 bool accessible_belongs_to_process(AtspiAccessible *accessible,
@@ -3142,6 +3361,54 @@ bool read_accessible_proxy_bounds(guint process_id, AtspiAccessible *accessible,
   return resolve_capture_screen_bounds(process_id, accessible, ".",
                                        NativeErrorCode::stale_element, bounds,
                                        error);
+}
+
+bool move_accessible_proxy_window(guint process_id, AtspiAccessible *accessible,
+                                  gint x, gint y, CaptureBounds *bounds,
+                                  NativeError *error) {
+  CaptureBounds requested_bounds = {};
+  requested_bounds.x = x;
+  requested_bounds.y = y;
+  const WindowGeometryRequest request = {
+      requested_bounds,
+      true,
+      false,
+      "move",
+  };
+  return change_accessible_proxy_window_geometry(process_id, accessible, request,
+                                                 bounds, error);
+}
+
+bool resize_accessible_proxy_window(guint process_id,
+                                    AtspiAccessible *accessible, gint width,
+                                    gint height, CaptureBounds *bounds,
+                                    NativeError *error) {
+  CaptureBounds requested_bounds = {};
+  requested_bounds.width = width;
+  requested_bounds.height = height;
+  const WindowGeometryRequest request = {
+      requested_bounds,
+      false,
+      true,
+      "resize",
+  };
+  return change_accessible_proxy_window_geometry(process_id, accessible, request,
+                                                 bounds, error);
+}
+
+bool set_accessible_proxy_window_bounds(guint process_id,
+                                        AtspiAccessible *accessible,
+                                        const CaptureBounds &requested_bounds,
+                                        CaptureBounds *bounds,
+                                        NativeError *error) {
+  const WindowGeometryRequest request = {
+      requested_bounds,
+      true,
+      true,
+      "set bounds for",
+  };
+  return change_accessible_proxy_window_geometry(process_id, accessible, request,
+                                                 bounds, error);
 }
 
 bool read_accessible_proxy_resize_hints(guint process_id,

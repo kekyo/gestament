@@ -218,6 +218,23 @@ interface NativeAddon {
   readonly setValue: (element: NativeElementHandle, value: number) => void;
   readonly capture: (element: NativeElementHandle) => NativeCapture;
   readonly bounds: (element: NativeElementHandle) => NativeCaptureBounds;
+  readonly moveWindow: (
+    element: NativeElementHandle,
+    x: number,
+    y: number
+  ) => NativeCaptureBounds;
+  readonly resizeWindow: (
+    element: NativeElementHandle,
+    width: number,
+    height: number
+  ) => NativeCaptureBounds;
+  readonly setWindowBounds: (
+    element: NativeElementHandle,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+  ) => NativeCaptureBounds;
   readonly resizeHints: (
     element: NativeElementHandle
   ) => NativeWindowResizeHints;
@@ -605,6 +622,37 @@ export const nativeCapture = (element: NativeElementHandle): NativeCapture =>
 export const nativeBounds = (
   element: NativeElementHandle
 ): NativeCaptureBounds => callNative(() => loadNativeAddon().bounds(element));
+
+/** Moves a window element and returns the observed screen-relative bounds. */
+export const nativeMoveWindow = (
+  element: NativeElementHandle,
+  x: number,
+  y: number
+): NativeCaptureBounds =>
+  callNative(() => loadNativeAddon().moveWindow(element, x, y));
+
+/** Resizes a window element and returns the observed screen-relative bounds. */
+export const nativeResizeWindow = (
+  element: NativeElementHandle,
+  width: number,
+  height: number
+): NativeCaptureBounds =>
+  callNative(() => loadNativeAddon().resizeWindow(element, width, height));
+
+/** Moves and resizes a window element and returns the observed bounds. */
+export const nativeSetWindowBounds = (
+  element: NativeElementHandle,
+  bounds: NativeCaptureBounds
+): NativeCaptureBounds =>
+  callNative(() =>
+    loadNativeAddon().setWindowBounds(
+      element,
+      bounds.x,
+      bounds.y,
+      bounds.width,
+      bounds.height
+    )
+  );
 
 /** Reads X11 WM_NORMAL_HINTS for the accessible resolved by an element handle. */
 export const nativeResizeHints = (

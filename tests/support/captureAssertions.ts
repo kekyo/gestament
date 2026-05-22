@@ -28,6 +28,8 @@ const exactPixelMaxDiffRatio = 0;
 const exactPixelMaxDiffPixels = 0;
 const coveredWindowMaxDiffRatio = 0.001;
 const coveredWindowMaxDiffPixels = 32;
+const windowScreenMaxDiffRatio = 0.02;
+const windowScreenMaxDiffPixels = 5000;
 const smallControlMaxDiffRatio = 0.05;
 const switchMaxDiffPixels = 64;
 const radioMaxDiffPixels = 256;
@@ -54,6 +56,17 @@ const shouldRelaxOcrFailures = (): boolean =>
 const visualDiffLimits = (
   label: string
 ): { maxDiffPixels: number; maxDiffRatio: number } => {
+  if (
+    label === 'window-moved-screen' ||
+    label === 'window-resized-screen' ||
+    label === 'window-set-bounds-screen'
+  ) {
+    return {
+      maxDiffPixels: windowScreenMaxDiffPixels,
+      maxDiffRatio: windowScreenMaxDiffRatio,
+    };
+  }
+
   if (label === 'covered-main-window') {
     return {
       maxDiffPixels: coveredWindowMaxDiffPixels,

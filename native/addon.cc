@@ -1625,6 +1625,102 @@ napi_value bounds(napi_env env, napi_callback_info info) {
   return result;
 }
 
+napi_value move_window(napi_env env, napi_callback_info info) {
+  napi_value args[3] = {};
+  if (!read_arguments(env, info, 3, args)) {
+    return make_undefined(env);
+  }
+
+  NativeElement *element = nullptr;
+  gint x = 0;
+  gint y = 0;
+  if (!read_native_element(env, args[0], "element", &element) ||
+      !read_int32_argument(env, args[1], "x", &x) ||
+      !read_int32_argument(env, args[2], "y", &y)) {
+    return make_undefined(env);
+  }
+
+  gestament::CaptureBounds actual_bounds = {};
+  gestament::NativeError error = {};
+  if (!gestament::move_accessible_proxy_window(
+          element->process_id, element->accessible, x, y, &actual_bounds,
+          &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_bounds_object(env, actual_bounds, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value resize_window(napi_env env, napi_callback_info info) {
+  napi_value args[3] = {};
+  if (!read_arguments(env, info, 3, args)) {
+    return make_undefined(env);
+  }
+
+  NativeElement *element = nullptr;
+  gint width = 0;
+  gint height = 0;
+  if (!read_native_element(env, args[0], "element", &element) ||
+      !read_positive_int32_argument(env, args[1], "width", &width) ||
+      !read_positive_int32_argument(env, args[2], "height", &height)) {
+    return make_undefined(env);
+  }
+
+  gestament::CaptureBounds actual_bounds = {};
+  gestament::NativeError error = {};
+  if (!gestament::resize_accessible_proxy_window(
+          element->process_id, element->accessible, width, height,
+          &actual_bounds, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_bounds_object(env, actual_bounds, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value set_window_bounds(napi_env env, napi_callback_info info) {
+  napi_value args[5] = {};
+  if (!read_arguments(env, info, 5, args)) {
+    return make_undefined(env);
+  }
+
+  NativeElement *element = nullptr;
+  gestament::CaptureBounds requested_bounds = {};
+  if (!read_native_element(env, args[0], "element", &element) ||
+      !read_int32_argument(env, args[1], "x", &requested_bounds.x) ||
+      !read_int32_argument(env, args[2], "y", &requested_bounds.y) ||
+      !read_positive_int32_argument(env, args[3], "width",
+                                    &requested_bounds.width) ||
+      !read_positive_int32_argument(env, args[4], "height",
+                                    &requested_bounds.height)) {
+    return make_undefined(env);
+  }
+
+  gestament::CaptureBounds actual_bounds = {};
+  gestament::NativeError error = {};
+  if (!gestament::set_accessible_proxy_window_bounds(
+          element->process_id, element->accessible, requested_bounds,
+          &actual_bounds, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_bounds_object(env, actual_bounds, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
 napi_value resize_hints(napi_env env, napi_callback_info info) {
   napi_value args[1] = {};
   if (!read_arguments(env, info, 1, args)) {
@@ -1805,6 +1901,9 @@ napi_value initialize(napi_env env, napi_value exports) {
   set_function(env, exports, "setValue", set_value);
   set_function(env, exports, "capture", capture);
   set_function(env, exports, "bounds", bounds);
+  set_function(env, exports, "moveWindow", move_window);
+  set_function(env, exports, "resizeWindow", resize_window);
+  set_function(env, exports, "setWindowBounds", set_window_bounds);
   set_function(env, exports, "resizeHints", resize_hints);
   set_function(env, exports, "x11Info", x11_info);
   set_function(env, exports, "captureScreen", capture_screen);

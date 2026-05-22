@@ -493,22 +493,22 @@ expect(secondWindow).toBeUndefined();
 
 `GtkElement` only provides common operations. Widget-specific operations are available after narrowing by the `kind` of `GtkWidgetElement`.
 
-| Specialized type                                                                      | Operations                                                                                                                                                     |
-| :------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GtkEntryElement`                                                                     | `setText()` / `text()`                                                                                                                                         |
-| `GtkLabelElement`, `GtkTextElement`                                                   | `text()`                                                                                                                                                       |
-| `GtkButtonElement`, `GtkListItemElement`, `GtkMenuItemElement`                        | `click()`                                                                                                                                                      |
-| `GtkCheckboxElement`, `GtkSwitchElement`, `GtkRadioElement`, `GtkToggleButtonElement` | `click()` / `isChecked()` / `toggle()`                                                                                                                         |
-| `GtkSpinButtonElement`                                                                | `value()` / `valueInfo()` / `setValue()` / `increment()` / `decrement()`                                                                                       |
-| `GtkSliderElement`                                                                    | `value()` / `valueInfo()` / `setValue()`                                                                                                                       |
-| `GtkProgressBarElement`                                                               | `value()` / `valueInfo()`                                                                                                                                      |
-| `GtkImageElement`                                                                     | `imageInfo()` / `GtkImageInfo.capture()`                                                                                                                       |
-| `GtkWindowElement`                                                                    | `bounds()` / `resizeHints()` / `x11Info()` / `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`.                               |
-| `GtkContainerElement`                                                                 | `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`.                                                                            |
-| `GtkComboBoxElement`                                                                  | `click()` / `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `clearSelection()`   |
-| `GtkListElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `deselectChildAt()`, and others  |
-| `GtkMenuElement`                                                                      | `childAt()` / `getChildCount()`. Child elements are returned as `GtkMenuItemElement`.                                                                          |
-| `GtkTableElement`                                                                     | `getRowCount()` / `getColumnCount()` / `cellAt()` / `selectedRows()` / `selectedColumns()` / `selectRow()` / `selectColumn()` / `isCellSelected()`, and others |
+| Specialized type                                                                      | Operations                                                                                                                                                                   |
+| :------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GtkEntryElement`                                                                     | `setText()` / `text()`                                                                                                                                                       |
+| `GtkLabelElement`, `GtkTextElement`                                                   | `text()`                                                                                                                                                                     |
+| `GtkButtonElement`, `GtkListItemElement`, `GtkMenuItemElement`                        | `click()`                                                                                                                                                                    |
+| `GtkCheckboxElement`, `GtkSwitchElement`, `GtkRadioElement`, `GtkToggleButtonElement` | `click()` / `isChecked()` / `toggle()`                                                                                                                                       |
+| `GtkSpinButtonElement`                                                                | `value()` / `valueInfo()` / `setValue()` / `increment()` / `decrement()`                                                                                                     |
+| `GtkSliderElement`                                                                    | `value()` / `valueInfo()` / `setValue()`                                                                                                                                     |
+| `GtkProgressBarElement`                                                               | `value()` / `valueInfo()`                                                                                                                                                    |
+| `GtkImageElement`                                                                     | `imageInfo()` / `GtkImageInfo.capture()`                                                                                                                                     |
+| `GtkWindowElement`                                                                    | `bounds()` / `moveTo()` / `resizeTo()` / `setBounds()` / `resizeHints()` / `x11Info()` / `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`. |
+| `GtkContainerElement`                                                                 | `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`.                                                                                          |
+| `GtkComboBoxElement`                                                                  | `click()` / `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `clearSelection()`                 |
+| `GtkListElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `deselectChildAt()`, and others                |
+| `GtkMenuElement`                                                                      | `childAt()` / `getChildCount()`. Child elements are returned as `GtkMenuItemElement`.                                                                                        |
+| `GtkTableElement`                                                                     | `getRowCount()` / `getColumnCount()` / `cellAt()` / `selectedRows()` / `selectedColumns()` / `selectRow()` / `selectColumn()` / `isCellSelected()`, and others               |
 
 Code example:
 
@@ -552,6 +552,21 @@ if (mainWindow.kind !== 'window') {
 const bounds = await mainWindow.bounds();
 expect(bounds.width).toBeGreaterThan(0);
 
+// Move and resize the top-level window.
+const movedBounds = await mainWindow.moveTo(80, 70);
+expect(movedBounds.x).toBe(80);
+
+const resizedBounds = await mainWindow.resizeTo(460, 220);
+expect(resizedBounds.width).toBeGreaterThanOrEqual(120);
+
+const actualBounds = await mainWindow.setBounds({
+  x: 140,
+  y: 90,
+  width: 300,
+  height: 190,
+});
+expect(actualBounds).toEqual(await mainWindow.bounds());
+
 // Size constraints
 const resizeHints = await mainWindow.resizeHints();
 expect(resizeHints.minWidth).toBeGreaterThanOrEqual(0);
@@ -562,6 +577,8 @@ expect(x11Info.normalHints.widthIncrement).toBeGreaterThanOrEqual(0);
 ```
 
 - Taking a PNG screenshot will give you the window size, but if you only need the window geometry, use `bounds()`.
+- `moveTo()`, `resizeTo()`, and `setBounds()` return the actual bounds observed after the operation. GTK, the display backend, or window constraints may adjust the requested size.
+- Window geometry changes use the resolved native window first and fall back to AT-SPI Component operations when available.
 - Use `resizeHints()` for GTK/X11 size constraints such as base size, minimum size, and resize increments.
 - `x11Info()` exposes X11-specific metadata and `WM_NORMAL_HINTS`; prefer the high-level APIs above unless you need an X11 escape hatch.
 - On non-X11 backends or when the X11 window cannot be resolved, `x11Info()` rejects with `UNSUPPORTED_INTERFACE`.

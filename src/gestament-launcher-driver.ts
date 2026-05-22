@@ -39,6 +39,9 @@ import type {
   DriverTrayPayload,
   DriverTraySelectorPayload,
   DriverValuePayload,
+  DriverWindowBoundsPayload,
+  DriverWindowMovePayload,
+  DriverWindowResizePayload,
   SerializedDriverError,
   WireCapture,
   WireGtkAppEnvironment,
@@ -701,8 +704,23 @@ const handleElementCommand = async (
       return toWireCapture(await entry.element.capture());
     case 'element.bounds':
       return callElementMethod(entry, 'bounds');
+    case 'window.moveTo': {
+      const { x, y } = payload as DriverElementPayload &
+        DriverWindowMovePayload;
+      return callElementMethod(entry, 'moveTo', [x, y]);
+    }
     case 'window.resizeHints':
       return callElementMethod(entry, 'resizeHints');
+    case 'window.resizeTo': {
+      const { width, height } = payload as DriverElementPayload &
+        DriverWindowResizePayload;
+      return callElementMethod(entry, 'resizeTo', [width, height]);
+    }
+    case 'window.setBounds': {
+      const { bounds } = payload as DriverElementPayload &
+        DriverWindowBoundsPayload;
+      return callElementMethod(entry, 'setBounds', [bounds]);
+    }
     case 'window.x11Info':
       return callElementMethod(entry, 'x11Info');
     case 'element.childAt': {

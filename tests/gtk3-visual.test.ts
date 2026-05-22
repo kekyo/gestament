@@ -16,7 +16,7 @@ import type {
   GtkWidgetKind,
   GtkWidgetElement,
 } from '../src/types';
-import { createGtkAppLauncher } from '../src/launchGtkApp';
+import { createGtkAppLauncher, launchGtkApp } from '../src/launchGtkApp';
 import { createGtkCaptureExpect, waitForResult } from '../src/testing';
 import {
   expectPngRegionToContainNonLightPixels,
@@ -52,6 +52,19 @@ const mainWindowResizeHints = {
   minWidth: 120,
   widthIncrement: 7,
 } as const;
+const directLaunchEnvironmentKeys = [
+  'AT_SPI_BUS_ADDRESS',
+  'DBUS_SESSION_BUS_ADDRESS',
+  'DISPLAY',
+  'GDK_BACKEND',
+  'GESTAMENT_XVFB_ACTIVE',
+  'GSETTINGS_BACKEND',
+  'GTK_THEME',
+  'NO_AT_BRIDGE',
+  'WAYLAND_DISPLAY',
+  'XAUTHORITY',
+  'XDG_SESSION_TYPE',
+] as const;
 
 const launcher = createGtkAppLauncher({
   appPath,
@@ -59,6 +72,10 @@ const launcher = createGtkAppLauncher({
 const shortLauncher = createGtkAppLauncher({
   appPath,
   timeoutMs: missingLookupTimeoutMs,
+});
+const geometryLauncher = createGtkAppLauncher({
+  appPath,
+  xvfbScreen: '800x600x24',
 });
 
 const waitForWindowCount = async (
@@ -208,8 +225,50 @@ const expectWindowNamed = async (
   throw new Error(`Window was not found: ${name}`);
 };
 
+const expectWindowBoundsObserved = async (
+  window: GtkElementOfKind<'window'>,
+  expectedBounds: GtkCapture['bounds']
+): Promise<void> => {
+  await expect(window.bounds()).resolves.toEqual(expectedBounds);
+  const capture = await window.capture();
+  expect(capture.bounds).toEqual(expectedBounds);
+};
+
+const withProcessEnvironment = async <Result>(
+  env: Awaited<ReturnType<GtkApp['environment']>>,
+  operation: () => Promise<Result>
+): Promise<Result> => {
+  const keys = new Set([...directLaunchEnvironmentKeys, ...Object.keys(env)]);
+  const previous = new Map<string, string | undefined>();
+  for (const key of keys) {
+    previous.set(key, process.env[key]);
+    const value = env[key];
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  try {
+    return await operation();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+};
+
 afterEach(() => {
-  return Promise.all([launcher.release(), shortLauncher.release()]);
+  return Promise.all([
+    launcher.release(),
+    shortLauncher.release(),
+    geometryLauncher.release(),
+  ]);
 });
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -358,6 +417,84 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     const submitButtonCapture = await submitButton.capture();
     expectCaptureBoundsWithin(submitButtonCapture, capture);
     expectCaptureRegionToMatchCapture(capture, submitButtonCapture);
+  });
+
+  it('moves and resizes top-level windows with screen captures', async () => {
+    const app = await geometryLauncher.launch();
+
+    await waitForWindowCount(app, 1);
+    const mainWindow = expectElementKind(await app.windowAt(0), 'window');
+    const initialBounds = await mainWindow.bounds();
+
+    const movedBounds = await mainWindow.moveTo(80, 70);
+    expect(movedBounds.x).not.toBe(initialBounds.x);
+    expect(movedBounds.y).not.toBe(initialBounds.y);
+    expect(movedBounds.width).toBe(initialBounds.width);
+    expect(movedBounds.height).toBe(initialBounds.height);
+    await expectWindowBoundsObserved(mainWindow, movedBounds);
+    await expectCaptureArtifact(await app.capture(), 'window-moved-screen');
+
+    const resizedBounds = await mainWindow.resizeTo(460, 220);
+    expect(resizedBounds.x).toBe(movedBounds.x);
+    expect(resizedBounds.y).toBe(movedBounds.y);
+    expect(resizedBounds.width).not.toBe(movedBounds.width);
+    expect(resizedBounds.height).not.toBe(movedBounds.height);
+    await expectWindowBoundsObserved(mainWindow, resizedBounds);
+    await expectCaptureArtifact(await app.capture(), 'window-resized-screen');
+
+    const setBounds = await mainWindow.setBounds({
+      height: 190,
+      width: 300,
+      x: 140,
+      y: 90,
+    });
+    expect(setBounds.x).not.toBe(resizedBounds.x);
+    expect(setBounds.y).not.toBe(resizedBounds.y);
+    expect(setBounds.width).not.toBe(resizedBounds.width);
+    expect(setBounds.height).not.toBe(resizedBounds.height);
+    await expectWindowBoundsObserved(mainWindow, setBounds);
+    await expectCaptureArtifact(
+      await app.capture(),
+      'window-set-bounds-screen'
+    );
+  });
+
+  it('moves windows through the direct launch API', async () => {
+    const env = await geometryLauncher.environment();
+    await withProcessEnvironment(env, async () => {
+      const app = await launchGtkApp(appPath, [], { env });
+      try {
+        await waitForWindowCount(app, 1);
+        const mainWindow = expectElementKind(await app.windowAt(0), 'window');
+        const initialBounds = await mainWindow.bounds();
+        const movedBounds = await mainWindow.moveTo(120, 110);
+
+        expect(movedBounds.x).not.toBe(initialBounds.x);
+        expect(movedBounds.y).not.toBe(initialBounds.y);
+        await expectWindowBoundsObserved(mainWindow, movedBounds);
+      } finally {
+        await app.release();
+      }
+    });
+  });
+
+  it('rejects invalid window geometry arguments', async () => {
+    const app = await geometryLauncher.launch();
+
+    await waitForWindowCount(app, 1);
+    const mainWindow = expectElementKind(await app.windowAt(0), 'window');
+
+    await expect(mainWindow.moveTo(0.5, 0)).rejects.toMatchObject({
+      code: 'INVALID_ARGUMENT',
+    });
+    await expect(mainWindow.resizeTo(0, 100)).rejects.toMatchObject({
+      code: 'INVALID_ARGUMENT',
+    });
+    await expect(
+      mainWindow.setBounds({ height: 100, width: 0, x: 0, y: 0 })
+    ).rejects.toMatchObject({
+      code: 'INVALID_ARGUMENT',
+    });
   });
 
   it('captures covering window pixels when an accessible is obscured', async () => {

@@ -2278,8 +2278,30 @@ const createProxyGtkElement = (
     case 'window':
       target.bounds = (): Promise<GtkCaptureBounds> =>
         session.request<GtkCaptureBounds>('element.bounds', { elementId });
+      target.moveTo = (x: number, y: number): Promise<GtkCaptureBounds> =>
+        session.request<GtkCaptureBounds>('window.moveTo', {
+          elementId,
+          x,
+          y,
+        });
       target.resizeHints = (): Promise<GtkWindowResizeHints> =>
         session.request<GtkWindowResizeHints>('window.resizeHints', {
+          elementId,
+        });
+      target.resizeTo = (
+        width: number,
+        height: number
+      ): Promise<GtkCaptureBounds> =>
+        session.request<GtkCaptureBounds>('window.resizeTo', {
+          elementId,
+          height,
+          width,
+        });
+      target.setBounds = (
+        bounds: GtkCaptureBounds
+      ): Promise<GtkCaptureBounds> =>
+        session.request<GtkCaptureBounds>('window.setBounds', {
+          bounds,
           elementId,
         });
       target.x11Info = (): Promise<GtkX11WindowInfo> =>
