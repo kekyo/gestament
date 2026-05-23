@@ -29,6 +29,12 @@ import type {
   DriverImageInfoPayload,
   DriverIndexPayload,
   DriverLaunchPayload,
+  DriverKeyboardModifierPayload,
+  DriverKeyNamePayload,
+  DriverKeySymPayload,
+  DriverMouseButtonPayload,
+  DriverMouseMovePayload,
+  DriverMouseWheelPayload,
   DriverPathPayload,
   DriverReadyMessage,
   DriverRequest,
@@ -667,6 +673,39 @@ const handleAppCommand = async (
     }
     case 'app.getWindowCount':
       return app.getWindowCount();
+    case 'app.inputSetModifier': {
+      const { modifier, pressed } = payload as DriverAppPayload &
+        DriverKeyboardModifierPayload;
+      await app.input.setModifier(modifier, pressed);
+      return null;
+    }
+    case 'app.inputPressKeyName': {
+      const { key } = payload as DriverAppPayload & DriverKeyNamePayload;
+      await app.input.pressKey(key);
+      return null;
+    }
+    case 'app.inputPressKeySym': {
+      const { keysym } = payload as DriverAppPayload & DriverKeySymPayload;
+      await app.input.pressKey(keysym);
+      return null;
+    }
+    case 'app.inputMoveMouse': {
+      const { x, y } = payload as DriverAppPayload & DriverMouseMovePayload;
+      await app.input.moveMouseTo(x, y);
+      return null;
+    }
+    case 'app.inputSetMouseButton': {
+      const { button, pressed } = payload as DriverAppPayload &
+        DriverMouseButtonPayload;
+      await app.input.setMouseButton(button, pressed);
+      return null;
+    }
+    case 'app.inputScrollWheel': {
+      const { xSteps, ySteps } = payload as DriverAppPayload &
+        DriverMouseWheelPayload;
+      await app.input.scrollWheel(xSteps, ySteps);
+      return null;
+    }
     case 'app.findTrayItem': {
       const { selector } = payload as DriverAppPayload &
         DriverTraySelectorPayload;
@@ -721,6 +760,9 @@ const handleElementCommand = async (
         DriverWindowBoundsPayload;
       return callElementMethod(entry, 'setBounds', [bounds]);
     }
+    case 'window.activate':
+      await callElementMethod(entry, 'activate');
+      return null;
     case 'window.x11Info':
       return callElementMethod(entry, 'x11Info');
     case 'element.childAt': {

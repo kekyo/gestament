@@ -235,6 +235,7 @@ interface NativeAddon {
     width: number,
     height: number
   ) => NativeCaptureBounds;
+  readonly activateWindow: (element: NativeElementHandle) => void;
   readonly resizeHints: (
     element: NativeElementHandle
   ) => NativeWindowResizeHints;
@@ -246,6 +247,12 @@ interface NativeAddon {
     width: number,
     height: number
   ) => NativeCapture;
+  readonly inputSetModifier: (modifier: string, pressed: boolean) => void;
+  readonly inputPressKeyName: (key: string) => void;
+  readonly inputPressKeySym: (keysym: number) => void;
+  readonly inputMoveMouse: (x: number, y: number) => void;
+  readonly inputSetMouseButton: (button: string, pressed: boolean) => void;
+  readonly inputScrollWheel: (xSteps: number, ySteps: number) => void;
   readonly mappedX11WindowCount: () => number;
   readonly elementInfo: (element: NativeElementHandle) => NativeElementInfo;
   readonly trayItems: (processId: number) => NativeTrayItem[];
@@ -654,6 +661,11 @@ export const nativeSetWindowBounds = (
     )
   );
 
+/** Activates a window element through the current display session. */
+export const nativeActivateWindow = (element: NativeElementHandle): void => {
+  callNative(() => loadNativeAddon().activateWindow(element));
+};
+
 /** Reads X11 WM_NORMAL_HINTS for the accessible resolved by an element handle. */
 export const nativeResizeHints = (
   element: NativeElementHandle
@@ -681,6 +693,45 @@ export const nativeCaptureBounds = (
       bounds.height
     )
   );
+
+/** Presses or releases a keyboard modifier in the current display session. */
+export const nativeInputSetModifier = (
+  modifier: string,
+  pressed: boolean
+): void => {
+  callNative(() => loadNativeAddon().inputSetModifier(modifier, pressed));
+};
+
+/** Sends one press-and-release key input by X11 keysym name. */
+export const nativeInputPressKeyName = (key: string): void => {
+  callNative(() => loadNativeAddon().inputPressKeyName(key));
+};
+
+/** Sends one press-and-release key input by numeric X11 keysym value. */
+export const nativeInputPressKeySym = (keysym: number): void => {
+  callNative(() => loadNativeAddon().inputPressKeySym(keysym));
+};
+
+/** Moves the mouse pointer in the current display session. */
+export const nativeInputMoveMouse = (x: number, y: number): void => {
+  callNative(() => loadNativeAddon().inputMoveMouse(x, y));
+};
+
+/** Presses or releases one mouse button in the current display session. */
+export const nativeInputSetMouseButton = (
+  button: string,
+  pressed: boolean
+): void => {
+  callNative(() => loadNativeAddon().inputSetMouseButton(button, pressed));
+};
+
+/** Sends wheel steps in the current display session. */
+export const nativeInputScrollWheel = (
+  xSteps: number,
+  ySteps: number
+): void => {
+  callNative(() => loadNativeAddon().inputScrollWheel(xSteps, ySteps));
+};
 
 /** Counts mapped top-level X11 windows currently addressed by DISPLAY. */
 export const nativeMappedX11WindowCount = (): number =>

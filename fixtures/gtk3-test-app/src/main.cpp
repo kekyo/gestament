@@ -13,6 +13,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -54,6 +55,10 @@ void on_submit_clicked(GtkButton *, gpointer user_data) {
   auto *widgets = static_cast<AppWidgets *>(user_data);
   const gchar *entry_text = gtk_entry_get_text(widgets->name_entry);
   gtk_label_set_text(widgets->result_label, entry_text);
+}
+
+void set_result(AppWidgets *widgets, const std::string &text) {
+  gtk_label_set_text(widgets->result_label, text.c_str());
 }
 
 struct AppOptions {
@@ -174,6 +179,96 @@ void on_enumerable_menu_item_activate(GtkMenuItem *item, gpointer user_data) {
   const char *value =
       static_cast<const char *>(g_object_get_data(G_OBJECT(item), "value"));
   gtk_label_set_text(widgets->result_label, value == nullptr ? "" : value);
+}
+
+gboolean on_input_probe_motion(GtkWidget *, GdkEventMotion *event,
+                               gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  std::ostringstream text;
+  text << "motion:" << static_cast<int>(event->x) << ","
+       << static_cast<int>(event->y);
+  set_result(widgets, text.str());
+  return FALSE;
+}
+
+gboolean on_input_probe_button(GtkWidget *, GdkEventButton *event,
+                               gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  std::ostringstream text;
+  text << (event->type == GDK_BUTTON_PRESS ? "button-press:"
+                                           : "button-release:")
+       << event->button;
+  set_result(widgets, text.str());
+  return FALSE;
+}
+
+const char *scroll_direction_name(GdkScrollDirection direction) {
+  switch (direction) {
+    case GDK_SCROLL_UP:
+      return "up";
+    case GDK_SCROLL_DOWN:
+      return "down";
+    case GDK_SCROLL_LEFT:
+      return "left";
+    case GDK_SCROLL_RIGHT:
+      return "right";
+    case GDK_SCROLL_SMOOTH:
+      return "smooth";
+  }
+  return "unknown";
+}
+
+gboolean on_input_probe_scroll(GtkWidget *, GdkEventScroll *event,
+                               gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  set_result(widgets, std::string("scroll:") +
+                          scroll_direction_name(event->direction));
+  return FALSE;
+}
+
+gboolean on_input_probe_key(GtkWidget *, GdkEventKey *event,
+                            gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  std::ostringstream text;
+  text << "key:" << event->keyval;
+  set_result(widgets, text.str());
+  return FALSE;
+}
+
+gboolean on_window_focus_in(GtkWidget *widget, GdkEventFocus *, gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  const char *name = static_cast<const char *>(
+      g_object_get_data(G_OBJECT(widget), "gestament-window-name"));
+  set_result(widgets, std::string("window-active:") +
+                          (name == nullptr ? "unknown" : name));
+  return FALSE;
+}
+
+GtkWidget *create_input_probe(AppWidgets *widgets) {
+  GtkWidget *probe = gtk_event_box_new();
+  assign_widget_id(probe, "input_probe");
+  assign_widget_name(probe, "Input probe");
+  gtk_widget_set_can_focus(probe, TRUE);
+  gtk_widget_set_size_request(probe, 300, 80);
+  gtk_widget_add_events(probe, GDK_POINTER_MOTION_MASK |
+                                   GDK_BUTTON_PRESS_MASK |
+                                   GDK_BUTTON_RELEASE_MASK | GDK_SCROLL_MASK |
+                                   GDK_KEY_PRESS_MASK | GDK_FOCUS_CHANGE_MASK);
+
+  GtkWidget *label = gtk_label_new("Input probe");
+  gtk_container_add(GTK_CONTAINER(probe), label);
+
+  g_signal_connect(probe, "motion-notify-event",
+                   G_CALLBACK(on_input_probe_motion), widgets);
+  g_signal_connect(probe, "button-press-event",
+                   G_CALLBACK(on_input_probe_button), widgets);
+  g_signal_connect(probe, "button-release-event",
+                   G_CALLBACK(on_input_probe_button), widgets);
+  g_signal_connect(probe, "scroll-event", G_CALLBACK(on_input_probe_scroll),
+                   widgets);
+  g_signal_connect(probe, "key-press-event", G_CALLBACK(on_input_probe_key),
+                   widgets);
+  return probe;
 }
 
 GtkWidget *create_enumerable_menu(AppWidgets *widgets) {
@@ -508,10 +603,11 @@ int main(int argc, char **argv) {
   GtkWidget *submit_button = required_widget(builder, "submit_button");
   GtkWidget *result_label = required_widget(builder, "result_label");
   GtkWidget *controls_window = required_widget(builder, "controls_window");
+  GtkWidget *controls_box = required_widget(builder, "controls_box");
   GtkWidget *image_control = required_widget(builder, "image_control");
   if (window == nullptr || name_entry == nullptr || submit_button == nullptr ||
       result_label == nullptr || controls_window == nullptr ||
-      image_control == nullptr) {
+      controls_box == nullptr || image_control == nullptr) {
     g_object_unref(builder);
     return 1;
   }
@@ -528,6 +624,16 @@ int main(int argc, char **argv) {
   g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
   g_signal_connect(GTK_BUTTON(submit_button), "clicked",
                    G_CALLBACK(on_submit_clicked), &widgets);
+  g_object_set_data(G_OBJECT(window), "gestament-window-name",
+                    const_cast<char *>("main"));
+  g_object_set_data(G_OBJECT(controls_window), "gestament-window-name",
+                    const_cast<char *>("controls"));
+  g_signal_connect(window, "focus-in-event", G_CALLBACK(on_window_focus_in),
+                   &widgets);
+  g_signal_connect(controls_window, "focus-in-event",
+                   G_CALLBACK(on_window_focus_in), &widgets);
+  gtk_box_pack_start(GTK_BOX(controls_box), create_input_probe(&widgets),
+                     FALSE, TRUE, 0);
 
   TrayItemState *tray_item =
       options.status_notifier_item ? register_status_notifier_item(&widgets)

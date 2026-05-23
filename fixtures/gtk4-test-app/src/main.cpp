@@ -14,6 +14,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -81,6 +82,10 @@ void on_submit_clicked(GtkButton *, gpointer user_data) {
   const gchar *entry_text =
       gtk_editable_get_text(GTK_EDITABLE(widgets->name_entry));
   gtk_label_set_text(widgets->result_label, entry_text);
+}
+
+void set_result(AppWidgets *widgets, const std::string &text) {
+  gtk_label_set_text(widgets->result_label, text.c_str());
 }
 
 struct AppOptions {
@@ -249,6 +254,107 @@ GtkWidget *create_enumerable_table() {
 
   gtk_widget_set_size_request(table, 300, 120);
   return table;
+}
+
+void on_input_probe_motion(GtkEventControllerMotion *, gdouble x, gdouble y,
+                           gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  std::ostringstream text;
+  text << "motion:" << static_cast<int>(x) << "," << static_cast<int>(y);
+  set_result(widgets, text.str());
+}
+
+void on_input_probe_pressed(GtkGestureClick *gesture, gint, gdouble, gdouble,
+                            gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  std::ostringstream text;
+  text << "button-press:"
+       << gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+  set_result(widgets, text.str());
+}
+
+void on_input_probe_clicked(GtkButton *, gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  set_result(widgets, "button-release:1");
+}
+
+gboolean on_input_probe_scroll(GtkEventControllerScroll *, gdouble dx,
+                               gdouble dy, gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  const char *direction = "none";
+  if (dy > 0) {
+    direction = "down";
+  } else if (dy < 0) {
+    direction = "up";
+  } else if (dx > 0) {
+    direction = "right";
+  } else if (dx < 0) {
+    direction = "left";
+  }
+  set_result(widgets, std::string("scroll:") + direction);
+  return FALSE;
+}
+
+gboolean on_input_probe_key(GtkEventControllerKey *, guint keyval, guint,
+                            GdkModifierType, gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  std::ostringstream text;
+  text << "key:" << keyval;
+  set_result(widgets, text.str());
+  return FALSE;
+}
+
+void on_input_probe_focus_enter(GtkEventControllerFocus *, gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  set_result(widgets, "focus:probe");
+}
+
+void on_window_active_notify(GObject *object, GParamSpec *, gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  if (!gtk_window_is_active(GTK_WINDOW(object))) {
+    return;
+  }
+  const char *name = static_cast<const char *>(
+      g_object_get_data(object, "gestament-window-name"));
+  set_result(widgets, std::string("window-active:") +
+                          (name == nullptr ? "unknown" : name));
+}
+
+void configure_input_probe(GtkWidget *probe, AppWidgets *widgets) {
+  assign_widget_name(probe, "Input probe");
+
+  GtkEventController *motion = gtk_event_controller_motion_new();
+  g_signal_connect(motion, "motion", G_CALLBACK(on_input_probe_motion),
+                   widgets);
+  gtk_widget_add_controller(probe, motion);
+
+  GtkGesture *click = gtk_gesture_click_new();
+  gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);
+  g_signal_connect(click, "pressed", G_CALLBACK(on_input_probe_pressed),
+                   widgets);
+  gtk_widget_add_controller(probe, GTK_EVENT_CONTROLLER(click));
+
+  if (GTK_IS_BUTTON(probe)) {
+    g_signal_connect(probe, "clicked", G_CALLBACK(on_input_probe_clicked),
+                     widgets);
+  }
+
+  GtkEventController *scroll = gtk_event_controller_scroll_new(
+      static_cast<GtkEventControllerScrollFlags>(
+          GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES |
+          GTK_EVENT_CONTROLLER_SCROLL_DISCRETE));
+  g_signal_connect(scroll, "scroll", G_CALLBACK(on_input_probe_scroll),
+                   widgets);
+  gtk_widget_add_controller(probe, scroll);
+
+  GtkEventController *key = gtk_event_controller_key_new();
+  g_signal_connect(key, "key-pressed", G_CALLBACK(on_input_probe_key), widgets);
+  gtk_widget_add_controller(probe, key);
+
+  GtkEventController *focus = gtk_event_controller_focus_new();
+  g_signal_connect(focus, "enter", G_CALLBACK(on_input_probe_focus_enter),
+                   widgets);
+  gtk_widget_add_controller(probe, focus);
 }
 
 GtkWidget *create_enumerables_window(AppWidgets *widgets) {
@@ -667,9 +773,12 @@ int main(int argc, char **argv) {
   GtkWidget *submit_button = required_widget(builder, "submit_button");
   GtkWidget *result_label = required_widget(builder, "result_label");
   GtkWidget *controls_window = required_widget(builder, "controls_window");
+  GtkWidget *controls_box = required_widget(builder, "controls_box");
+  GtkWidget *input_probe = required_widget(builder, "input_probe");
   GtkWidget *image_control = required_widget(builder, "image_control");
   if (window == nullptr || name_entry == nullptr || submit_button == nullptr ||
       result_label == nullptr || controls_window == nullptr ||
+      controls_box == nullptr || input_probe == nullptr ||
       image_control == nullptr) {
     g_object_unref(builder);
     return 1;
@@ -689,6 +798,15 @@ int main(int argc, char **argv) {
                    G_CALLBACK(on_close_request), loop);
   g_signal_connect(GTK_BUTTON(submit_button), "clicked",
                    G_CALLBACK(on_submit_clicked), &widgets);
+  g_object_set_data(G_OBJECT(window), "gestament-window-name",
+                    const_cast<char *>("main"));
+  g_object_set_data(G_OBJECT(controls_window), "gestament-window-name",
+                    const_cast<char *>("controls"));
+  g_signal_connect(window, "notify::is-active",
+                   G_CALLBACK(on_window_active_notify), &widgets);
+  g_signal_connect(controls_window, "notify::is-active",
+                   G_CALLBACK(on_window_active_notify), &widgets);
+  configure_input_probe(input_probe, &widgets);
 
   TrayItemState *tray_item =
       options.status_notifier_item ? register_status_notifier_item(&widgets)

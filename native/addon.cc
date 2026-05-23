@@ -192,6 +192,53 @@ bool read_int32_argument(napi_env env, napi_value value, const char *name,
   return true;
 }
 
+bool read_uint32_argument(napi_env env, napi_value value, const char *name,
+                          guint *result) {
+  napi_valuetype value_type = napi_undefined;
+  if (napi_typeof(env, value, &value_type) != napi_ok ||
+      value_type != napi_number) {
+    throw_type_error(env, std::string(name) + " must be a number.");
+    return false;
+  }
+
+  double numeric_value = 0;
+  if (napi_get_value_double(env, value, &numeric_value) != napi_ok) {
+    throw_type_error(env, std::string(name) + " must be a number.");
+    return false;
+  }
+
+  if (!std::isfinite(numeric_value) ||
+      std::floor(numeric_value) != numeric_value || numeric_value < 0 ||
+      numeric_value > static_cast<double>(std::numeric_limits<guint>::max())) {
+    throw_range_error(env,
+                      std::string(name) +
+                          " must be an unsigned 32-bit integer in range.");
+    return false;
+  }
+
+  *result = static_cast<guint>(numeric_value);
+  return true;
+}
+
+bool read_bool_argument(napi_env env, napi_value value, const char *name,
+                        bool *result) {
+  napi_valuetype value_type = napi_undefined;
+  if (napi_typeof(env, value, &value_type) != napi_ok ||
+      value_type != napi_boolean) {
+    throw_type_error(env, std::string(name) + " must be a boolean.");
+    return false;
+  }
+
+  bool bool_value = false;
+  if (napi_get_value_bool(env, value, &bool_value) != napi_ok) {
+    throw_type_error(env, std::string(name) + " must be a boolean.");
+    return false;
+  }
+
+  *result = bool_value;
+  return true;
+}
+
 bool read_positive_int32_argument(napi_env env, napi_value value,
                                   const char *name, gint *result) {
   if (!read_int32_argument(env, value, name, result)) {
@@ -1431,6 +1478,148 @@ napi_value click(napi_env env, napi_callback_info info) {
   return make_undefined(env);
 }
 
+napi_value activate_window(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  NativeElement *element = nullptr;
+  if (!read_native_element(env, args[0], "element", &element)) {
+    return make_undefined(env);
+  }
+
+  gestament::NativeError error = {};
+  if (!gestament::activate_accessible_proxy_window(
+          element->process_id, element->accessible, &error)) {
+    throw_native_error(env, error);
+  }
+
+  return make_undefined(env);
+}
+
+napi_value input_set_modifier(napi_env env, napi_callback_info info) {
+  napi_value args[2] = {};
+  if (!read_arguments(env, info, 2, args)) {
+    return make_undefined(env);
+  }
+
+  std::string modifier;
+  bool pressed = false;
+  if (!read_string_argument(env, args[0], "modifier", &modifier) ||
+      !read_bool_argument(env, args[1], "pressed", &pressed)) {
+    return make_undefined(env);
+  }
+
+  gestament::NativeError error = {};
+  if (!gestament::input_set_modifier(modifier, pressed, &error)) {
+    throw_native_error(env, error);
+  }
+
+  return make_undefined(env);
+}
+
+napi_value input_press_key_name(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  std::string key;
+  if (!read_string_argument(env, args[0], "key", &key)) {
+    return make_undefined(env);
+  }
+
+  gestament::NativeError error = {};
+  if (!gestament::input_press_key_name(key, &error)) {
+    throw_native_error(env, error);
+  }
+
+  return make_undefined(env);
+}
+
+napi_value input_press_key_sym(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  guint keysym = 0;
+  if (!read_uint32_argument(env, args[0], "keysym", &keysym)) {
+    return make_undefined(env);
+  }
+
+  gestament::NativeError error = {};
+  if (!gestament::input_press_key_sym(keysym, &error)) {
+    throw_native_error(env, error);
+  }
+
+  return make_undefined(env);
+}
+
+napi_value input_move_mouse(napi_env env, napi_callback_info info) {
+  napi_value args[2] = {};
+  if (!read_arguments(env, info, 2, args)) {
+    return make_undefined(env);
+  }
+
+  gint x = 0;
+  gint y = 0;
+  if (!read_int32_argument(env, args[0], "x", &x) ||
+      !read_int32_argument(env, args[1], "y", &y)) {
+    return make_undefined(env);
+  }
+
+  gestament::NativeError error = {};
+  if (!gestament::input_move_mouse(x, y, &error)) {
+    throw_native_error(env, error);
+  }
+
+  return make_undefined(env);
+}
+
+napi_value input_set_mouse_button(napi_env env, napi_callback_info info) {
+  napi_value args[2] = {};
+  if (!read_arguments(env, info, 2, args)) {
+    return make_undefined(env);
+  }
+
+  std::string button;
+  bool pressed = false;
+  if (!read_string_argument(env, args[0], "button", &button) ||
+      !read_bool_argument(env, args[1], "pressed", &pressed)) {
+    return make_undefined(env);
+  }
+
+  gestament::NativeError error = {};
+  if (!gestament::input_set_mouse_button(button, pressed, &error)) {
+    throw_native_error(env, error);
+  }
+
+  return make_undefined(env);
+}
+
+napi_value input_scroll_wheel(napi_env env, napi_callback_info info) {
+  napi_value args[2] = {};
+  if (!read_arguments(env, info, 2, args)) {
+    return make_undefined(env);
+  }
+
+  gint x_steps = 0;
+  gint y_steps = 0;
+  if (!read_int32_argument(env, args[0], "xSteps", &x_steps) ||
+      !read_int32_argument(env, args[1], "ySteps", &y_steps)) {
+    return make_undefined(env);
+  }
+
+  gestament::NativeError error = {};
+  if (!gestament::input_scroll_wheel(x_steps, y_steps, &error)) {
+    throw_native_error(env, error);
+  }
+
+  return make_undefined(env);
+}
+
 napi_value text(napi_env env, napi_callback_info info) {
   napi_value args[1] = {};
   if (!read_arguments(env, info, 1, args)) {
@@ -1895,6 +2084,13 @@ napi_value initialize(napi_env env, napi_value exports) {
   set_function(env, exports, "tableDeselectColumn", table_deselect_column);
   set_function(env, exports, "setText", set_text);
   set_function(env, exports, "click", click);
+  set_function(env, exports, "activateWindow", activate_window);
+  set_function(env, exports, "inputSetModifier", input_set_modifier);
+  set_function(env, exports, "inputPressKeyName", input_press_key_name);
+  set_function(env, exports, "inputPressKeySym", input_press_key_sym);
+  set_function(env, exports, "inputMoveMouse", input_move_mouse);
+  set_function(env, exports, "inputSetMouseButton", input_set_mouse_button);
+  set_function(env, exports, "inputScrollWheel", input_scroll_wheel);
   set_function(env, exports, "text", text);
   set_function(env, exports, "valueInfo", value_info);
   set_function(env, exports, "imageInfo", image_info);
