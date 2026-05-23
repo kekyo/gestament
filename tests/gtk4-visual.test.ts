@@ -135,6 +135,11 @@ const waitForVisualUpdate = (): Promise<void> =>
     setTimeout(resolve, 300);
   });
 
+const captureCenter = (capture: GtkCapture): { x: number; y: number } => ({
+  x: capture.bounds.x + Math.floor(capture.bounds.width / 2),
+  y: capture.bounds.y + Math.floor(capture.bounds.height / 2),
+});
+
 const isUnsupportedImageInterfaceError = (
   error: unknown
 ): error is GtkAutomationError =>
@@ -375,6 +380,60 @@ const launcher = createGtkAppLauncher({
         kind: 'label',
       });
       await expect.poll(() => label.text()).toBe('ABC');
+    },
+    testTimeoutMs
+  );
+
+  it(
+    'synthesizes low-level input and window activation',
+    async () => {
+      const app = await launcher.launch(['--widget-controls']);
+
+      const mainWindow = expectElementKind(
+        await app.getById('main_window'),
+        'window'
+      );
+      const controlsWindow = expectElementKind(
+        await app.getById('controls_window'),
+        'window'
+      );
+      const entry = expectElementKind(await app.getById('name_entry'), 'entry');
+      const label = expectElementKind(
+        await app.getById('result_label'),
+        'label'
+      );
+      const probe = await app.getById('input_probe');
+
+      await expect(app.input.pressKey('Shift_L')).rejects.toMatchObject({
+        code: 'INVALID_ARGUMENT',
+      });
+
+      await mainWindow.activate();
+      await expect.poll(() => label.text()).toBe('window-active:main');
+
+      const entryCenter = captureCenter(await entry.capture());
+      await app.input.moveMouseTo(entryCenter.x, entryCenter.y);
+      await app.input.setMouseButton('left', true);
+      await app.input.setMouseButton('left', false);
+      await app.input.setModifier('shift', true);
+      try {
+        await app.input.pressKey('a');
+      } finally {
+        await app.input.setModifier('shift', false);
+      }
+      await expect.poll(() => entry.text()).toBe('A');
+
+      await controlsWindow.activate();
+      await expect.poll(() => label.text()).toBe('window-active:controls');
+
+      const probeCenter = captureCenter(await probe.capture());
+      await app.input.moveMouseTo(probeCenter.x, probeCenter.y);
+      await app.input.setMouseButton('left', true);
+      await expect.poll(() => label.text()).toBe('button-press:1');
+      await app.input.setMouseButton('left', false);
+      await expect.poll(() => label.text()).toBe('button-release:1');
+      await app.input.scrollWheel(0, 1);
+      await expect.poll(() => label.text()).toBe('scroll:down');
     },
     testTimeoutMs
   );

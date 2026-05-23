@@ -25,6 +25,7 @@ import {
   nativeSetText,
   nativeSetValue,
   nativeResizeHints,
+  nativeActivateWindow,
   nativeTableCellAt,
   nativeTableColumnCount,
   nativeTableDeselectColumn,
@@ -746,6 +747,12 @@ const createSetBoundsOperation =
     return nativeSetWindowBounds(handle, bounds);
   };
 
+const createActivateWindowOperation =
+  (handle: NativeElementHandle): (() => Promise<void>) =>
+  async (): Promise<void> => {
+    nativeActivateWindow(handle);
+  };
+
 const createResizeHintsOperation =
   (handle: NativeElementHandle): (() => Promise<GtkWindowResizeHints>) =>
   async (): Promise<GtkWindowResizeHints> =>
@@ -1017,6 +1024,7 @@ export const createGtkElement = (
         ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
         resizeTo: createResizeToOperation(handle),
         setBounds: createSetBoundsOperation(handle),
+        activate: createActivateWindowOperation(handle),
         resizeHints: createResizeHintsOperation(handle),
         x11Info: createX11InfoOperation(handle),
       };

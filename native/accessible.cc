@@ -33,6 +33,8 @@ constexpr gint64 kStateChangeTimeoutUsec = 5000000;
 constexpr gulong kStateChangePollUsec = 50000;
 constexpr gint64 kWindowGeometryTimeoutUsec = 2000000;
 constexpr gulong kWindowGeometryPollUsec = 50000;
+constexpr gint64 kWindowActivationTimeoutUsec = 2000000;
+constexpr gulong kWindowActivationPollUsec = 50000;
 
 bool is_window_role(AtspiAccessible *accessible);
 
@@ -1234,6 +1236,368 @@ NativeError operation_failed_error(const std::string &message) {
       NativeErrorCode::operation_failed,
       message,
   };
+}
+
+NativeError invalid_argument_error(const std::string &message) {
+  return {
+      NativeErrorCode::invalid_argument,
+      message,
+  };
+}
+
+bool open_x11_display(std::unique_ptr<Display, decltype(&XCloseDisplay)> *display,
+                      NativeError *error) {
+  display->reset(XOpenDisplay(nullptr));
+  if (display->get() == nullptr) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Low-level input and window activation require an X11 display.");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool query_xtest(Display *display) {
+  int event_base = 0;
+  int error_base = 0;
+  int major_version = 0;
+  int minor_version = 0;
+  return XTestQueryExtension(display, &event_base, &error_base, &major_version,
+                             &minor_version) != 0;
+}
+
+bool synthesize_atspi_key(glong key_value, AtspiKeySynthType type,
+                          NativeError *error) {
+  GError *gerror = nullptr;
+  const gboolean ok = atspi_generate_keyboard_event(
+      key_value, nullptr, type, &gerror);
+  if (gerror != nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          take_gerror_message(&gerror, "Failed to synthesize keyboard input."));
+    } else {
+      g_clear_error(&gerror);
+    }
+    return false;
+  }
+  if (!ok) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "AT-SPI keyboard synthesis returned false.");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool synthesize_atspi_key_from_x11_keymap(Display *display, KeySym keysym,
+                                          AtspiKeySynthType type,
+                                          NativeError *error) {
+  const KeyCode keycode = XKeysymToKeycode(display, keysym);
+  if (keycode == 0) {
+    if (type == ATSPI_KEY_PRESSRELEASE) {
+      return synthesize_atspi_key(static_cast<glong>(keysym), ATSPI_KEY_SYM,
+                                  error);
+    }
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Key is not available in the current X11 keymap.");
+    }
+    return false;
+  }
+
+  return synthesize_atspi_key(static_cast<glong>(keycode), type, error);
+}
+
+bool keysym_is_modifier(KeySym keysym) {
+  switch (keysym) {
+    case XK_Shift_L:
+    case XK_Shift_R:
+    case XK_Control_L:
+    case XK_Control_R:
+    case XK_Alt_L:
+    case XK_Alt_R:
+    case XK_Meta_L:
+    case XK_Meta_R:
+    case XK_Super_L:
+    case XK_Super_R:
+    case XK_Hyper_L:
+    case XK_Hyper_R:
+      return true;
+    default:
+      return false;
+  }
+}
+
+KeySym modifier_keysym(const std::string &modifier, NativeError *error) {
+  if (modifier == "shift") {
+    return XK_Shift_L;
+  }
+  if (modifier == "control") {
+    return XK_Control_L;
+  }
+  if (modifier == "alt") {
+    return XK_Alt_L;
+  }
+  if (modifier == "super") {
+    return XK_Super_L;
+  }
+  if (error != nullptr) {
+    *error = invalid_argument_error(
+        "modifier must be shift, control, alt, or super.");
+  }
+  return NoSymbol;
+}
+
+bool synthesize_x11_key(Display *display, KeySym keysym, bool pressed,
+                        NativeError *error) {
+  const KeyCode keycode = XKeysymToKeycode(display, keysym);
+  if (keycode == 0) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Key is not available in the current X11 keymap.");
+    }
+    return false;
+  }
+
+  const bool ok =
+      XTestFakeKeyEvent(display, keycode, pressed ? True : False,
+                        CurrentTime) != 0;
+  XSync(display, False);
+  if (!ok) {
+    if (error != nullptr) {
+      *error = operation_failed_error("Failed to synthesize X11 key input.");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool press_release_x11_key(Display *display, KeySym keysym,
+                           NativeError *error) {
+  const KeyCode keycode = XKeysymToKeycode(display, keysym);
+  if (keycode == 0) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Key is not available in the current X11 keymap.");
+    }
+    return false;
+  }
+
+  const bool pressed =
+      XTestFakeKeyEvent(display, keycode, True, CurrentTime) != 0;
+  const bool released =
+      XTestFakeKeyEvent(display, keycode, False, CurrentTime) != 0;
+  XSync(display, False);
+  if (!pressed || !released) {
+    if (error != nullptr) {
+      *error = operation_failed_error("Failed to synthesize X11 key input.");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool synthesize_atspi_mouse_event(gint x, gint y, const std::string &name,
+                                  NativeError *error) {
+  GError *gerror = nullptr;
+  const gboolean ok = atspi_generate_mouse_event(x, y, name.c_str(), &gerror);
+  if (gerror != nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          take_gerror_message(&gerror, "Failed to synthesize mouse input."));
+    } else {
+      g_clear_error(&gerror);
+    }
+    return false;
+  }
+  if (!ok) {
+    if (error != nullptr) {
+      *error = operation_failed_error("AT-SPI mouse synthesis returned false.");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool read_x11_pointer_position(Display *display, gint *x, gint *y,
+                               NativeError *error) {
+  Window root_return = 0;
+  Window child_return = 0;
+  int root_x = 0;
+  int root_y = 0;
+  int window_x = 0;
+  int window_y = 0;
+  unsigned int mask = 0;
+  if (XQueryPointer(display, DefaultRootWindow(display), &root_return,
+                    &child_return, &root_x, &root_y, &window_x, &window_y,
+                    &mask) == 0) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to read the current X11 pointer position.");
+    }
+    return false;
+  }
+
+  *x = root_x;
+  *y = root_y;
+  return true;
+}
+
+int x11_button_for_mouse_button(const std::string &button, NativeError *error) {
+  if (button == "left") {
+    return Button1;
+  }
+  if (button == "middle") {
+    return Button2;
+  }
+  if (button == "right") {
+    return Button3;
+  }
+  if (button == "back") {
+    return 8;
+  }
+  if (button == "forward") {
+    return 9;
+  }
+  if (error != nullptr) {
+    *error = invalid_argument_error(
+        "button must be left, middle, right, back, or forward.");
+  }
+  return 0;
+}
+
+std::string atspi_button_event_name(int button, bool pressed) {
+  if (button < Button1 || button > Button3) {
+    return "";
+  }
+  std::ostringstream name;
+  name << "b" << button << (pressed ? "p" : "r");
+  return name.str();
+}
+
+bool synthesize_x11_button(Display *display, int button, bool pressed,
+                           NativeError *error) {
+  const bool ok =
+      XTestFakeButtonEvent(display, static_cast<unsigned int>(button),
+                           pressed ? True : False, CurrentTime) != 0;
+  XSync(display, False);
+  if (!ok) {
+    if (error != nullptr) {
+      *error = operation_failed_error("Failed to synthesize X11 button input.");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool click_x11_button(Display *display, int button, NativeError *error) {
+  const bool pressed =
+      XTestFakeButtonEvent(display, static_cast<unsigned int>(button), True,
+                           CurrentTime) != 0;
+  const bool released =
+      XTestFakeButtonEvent(display, static_cast<unsigned int>(button), False,
+                           CurrentTime) != 0;
+  XSync(display, False);
+  if (!pressed || !released) {
+    if (error != nullptr) {
+      *error = operation_failed_error("Failed to synthesize X11 wheel input.");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool click_x11_button_steps(Display *display, gint steps, int positive_button,
+                            int negative_button, NativeError *error) {
+  for (gint remaining = steps; remaining > 0; remaining -= 1) {
+    if (!click_x11_button(display, positive_button, error)) {
+      return false;
+    }
+  }
+  for (gint remaining = steps; remaining < 0; remaining += 1) {
+    if (!click_x11_button(display, negative_button, error)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool accessible_state_contains(AtspiAccessible *accessible,
+                               AtspiStateType state) {
+  AtspiStateSet *state_set = atspi_accessible_get_state_set(accessible);
+  if (state_set == nullptr) {
+    return false;
+  }
+  const bool contains = atspi_state_set_contains(state_set, state);
+  g_object_unref(state_set);
+  return contains;
+}
+
+bool window_contains_x11_window(Display *display, Window ancestor,
+                                Window candidate) {
+  if (ancestor == 0 || candidate == 0) {
+    return false;
+  }
+  if (ancestor == candidate) {
+    return true;
+  }
+
+  Window current = candidate;
+  while (current != 0) {
+    Window root_return = 0;
+    Window parent_return = 0;
+    Window *children = nullptr;
+    unsigned int child_count = 0;
+    if (XQueryTree(display, current, &root_return, &parent_return, &children,
+                   &child_count) == 0) {
+      if (children != nullptr) {
+        XFree(children);
+      }
+      return false;
+    }
+    if (children != nullptr) {
+      XFree(children);
+    }
+    if (parent_return == ancestor) {
+      return true;
+    }
+    if (parent_return == 0 || parent_return == current ||
+        parent_return == root_return) {
+      return false;
+    }
+    current = parent_return;
+  }
+
+  return false;
+}
+
+bool window_activation_observed(Display *display, Window window,
+                                AtspiAccessible *accessible) {
+  if (accessible_state_contains(accessible, ATSPI_STATE_ACTIVE) ||
+      accessible_state_contains(accessible, ATSPI_STATE_FOCUSED)) {
+    return true;
+  }
+
+  Window focus = 0;
+  int revert_to = 0;
+  XGetInputFocus(display, &focus, &revert_to);
+  return focus != None && focus != PointerRoot &&
+         window_contains_x11_window(display, window, focus);
+}
+
+bool wait_window_activation_observed(Display *display, Window window,
+                                     AtspiAccessible *accessible) {
+  const gint64 deadline = g_get_monotonic_time() + kWindowActivationTimeoutUsec;
+  do {
+    if (window_activation_observed(display, window, accessible)) {
+      return true;
+    }
+    g_usleep(kWindowActivationPollUsec);
+  } while (g_get_monotonic_time() < deadline);
+
+  return false;
 }
 
 struct WindowGeometryRequest {
@@ -3409,6 +3773,239 @@ bool set_accessible_proxy_window_bounds(guint process_id,
   };
   return change_accessible_proxy_window_geometry(process_id, accessible, request,
                                                  bounds, error);
+}
+
+bool activate_accessible_proxy_window(guint process_id,
+                                      AtspiAccessible *accessible,
+                                      NativeError *error) {
+  if (!validate_accessible(process_id, accessible, error)) {
+    return false;
+  }
+  if (!is_window_role(accessible)) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error("Accessible element is not a window.");
+    }
+    return false;
+  }
+
+  CaptureBounds component_bounds = {};
+  if (!resolve_component_screen_bounds(accessible, ".",
+                                       NativeErrorCode::stale_element,
+                                       &component_bounds, error)) {
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      nullptr, XCloseDisplay);
+  if (!open_x11_display(&display, error)) {
+    return false;
+  }
+
+  Window window = 0;
+  if (!resolve_x11_toplevel_window(process_id, accessible, component_bounds,
+                                   display.get(), &window)) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Failed to resolve the X11 window for the accessible element.");
+    }
+    return false;
+  }
+
+  const Window root = DefaultRootWindow(display.get());
+  const Atom active_window =
+      XInternAtom(display.get(), "_NET_ACTIVE_WINDOW", True);
+  if (active_window != None) {
+    XEvent event = {};
+    event.xclient.type = ClientMessage;
+    event.xclient.serial = 0;
+    event.xclient.send_event = True;
+    event.xclient.display = display.get();
+    event.xclient.window = window;
+    event.xclient.message_type = active_window;
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = 2;
+    event.xclient.data.l[1] = CurrentTime;
+    event.xclient.data.l[2] = None;
+    event.xclient.data.l[3] = 0;
+    event.xclient.data.l[4] = 0;
+    XSendEvent(display.get(), root, False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &event);
+  }
+
+  XRaiseWindow(display.get(), window);
+  XSetInputFocus(display.get(), window, RevertToParent, CurrentTime);
+  XSync(display.get(), False);
+
+  AtspiComponent *component = atspi_accessible_get_component_iface(accessible);
+  if (component != nullptr) {
+    GError *focus_error = nullptr;
+    atspi_component_grab_focus(component, &focus_error);
+    if (focus_error != nullptr) {
+      g_clear_error(&focus_error);
+    }
+  }
+
+  if (!wait_window_activation_observed(display.get(), window, accessible)) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Window activation was not observed for the accessible element.");
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool input_set_modifier(const std::string &modifier, bool pressed,
+                        NativeError *error) {
+  const KeySym keysym = modifier_keysym(modifier, error);
+  if (keysym == NoSymbol) {
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      nullptr, XCloseDisplay);
+  if (!open_x11_display(&display, error)) {
+    return false;
+  }
+
+  if (query_xtest(display.get())) {
+    return synthesize_x11_key(display.get(), keysym, pressed, error);
+  }
+
+  return synthesize_atspi_key_from_x11_keymap(
+      display.get(), keysym, pressed ? ATSPI_KEY_PRESS : ATSPI_KEY_RELEASE,
+      error);
+}
+
+bool input_press_key_name(const std::string &key, NativeError *error) {
+  if (key.empty()) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Key name must not be empty.");
+    }
+    return false;
+  }
+
+  const KeySym keysym = XStringToKeysym(key.c_str());
+  if (keysym == NoSymbol) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Unknown X11 keysym name: " + key);
+    }
+    return false;
+  }
+  return input_press_key_sym(static_cast<guint>(keysym), error);
+}
+
+bool input_press_key_sym(guint keysym_value, NativeError *error) {
+  const KeySym keysym = static_cast<KeySym>(keysym_value);
+  if (keysym == NoSymbol) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Key symbol must not be NoSymbol.");
+    }
+    return false;
+  }
+  if (keysym_is_modifier(keysym)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error(
+          "Modifier keys must be controlled with setModifier().");
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      nullptr, XCloseDisplay);
+  if (!open_x11_display(&display, error)) {
+    return false;
+  }
+
+  if (query_xtest(display.get())) {
+    return press_release_x11_key(display.get(), keysym, error);
+  }
+
+  return synthesize_atspi_key_from_x11_keymap(display.get(), keysym,
+                                              ATSPI_KEY_PRESSRELEASE, error);
+}
+
+bool input_move_mouse(gint x, gint y, NativeError *error) {
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      nullptr, XCloseDisplay);
+  if (!open_x11_display(&display, error)) {
+    return false;
+  }
+
+  if (query_xtest(display.get())) {
+    const bool moved =
+        XTestFakeMotionEvent(display.get(), DefaultScreen(display.get()), x, y,
+                             CurrentTime) != 0;
+    XSync(display.get(), False);
+    if (!moved) {
+      if (error != nullptr) {
+        *error = operation_failed_error(
+            "Failed to synthesize X11 pointer motion.");
+      }
+      return false;
+    }
+    return true;
+  }
+
+  return synthesize_atspi_mouse_event(x, y, "abs", error);
+}
+
+bool input_set_mouse_button(const std::string &button, bool pressed,
+                            NativeError *error) {
+  const int x11_button = x11_button_for_mouse_button(button, error);
+  if (x11_button == 0) {
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      nullptr, XCloseDisplay);
+  if (!open_x11_display(&display, error)) {
+    return false;
+  }
+
+  if (query_xtest(display.get())) {
+    return synthesize_x11_button(display.get(), x11_button, pressed, error);
+  }
+
+  const std::string event_name = atspi_button_event_name(x11_button, pressed);
+  if (event_name.empty()) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "AT-SPI mouse synthesis supports only left, middle, and right "
+          "buttons.");
+    }
+    return false;
+  }
+
+  gint x = 0;
+  gint y = 0;
+  if (!read_x11_pointer_position(display.get(), &x, &y, error)) {
+    return false;
+  }
+  return synthesize_atspi_mouse_event(x, y, event_name, error);
+}
+
+bool input_scroll_wheel(gint x_steps, gint y_steps, NativeError *error) {
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      nullptr, XCloseDisplay);
+  if (!open_x11_display(&display, error)) {
+    return false;
+  }
+
+  if (!query_xtest(display.get())) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Mouse wheel synthesis requires the X11 XTest extension.");
+    }
+    return false;
+  }
+
+  if (!click_x11_button_steps(display.get(), y_steps, Button5, Button4,
+                              error)) {
+    return false;
+  }
+  return click_x11_button_steps(display.get(), x_steps, 7, 6, error);
 }
 
 bool read_accessible_proxy_resize_hints(guint process_id,

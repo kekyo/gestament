@@ -232,6 +232,83 @@ export interface GtkCapturable {
 }
 
 /**
+ * Keyboard modifier keys that can be held or released independently.
+ */
+export type GtkKeyboardModifier = 'shift' | 'control' | 'alt' | 'super';
+
+/**
+ * Keyboard key identifier used by low-level input synthesis.
+ *
+ * @remarks
+ * String values are interpreted as X11 keysym names. Number values are
+ * interpreted as numeric X11 keysym values.
+ */
+export type GtkKeyInput = string | number;
+
+/**
+ * Mouse buttons that can be held or released independently.
+ */
+export type GtkMouseButton = 'left' | 'middle' | 'right' | 'back' | 'forward';
+
+/**
+ * Low-level input controller for the display session used by a launched app.
+ */
+export interface GtkInputController {
+  /**
+   * Presses or releases one keyboard modifier.
+   *
+   * @param modifier - Modifier key to change.
+   * @param pressed - true to hold the modifier, false to release it.
+   * @returns A promise that resolves when the modifier state was synthesized.
+   */
+  readonly setModifier: (
+    modifier: GtkKeyboardModifier,
+    pressed: boolean
+  ) => Promise<void>;
+
+  /**
+   * Sends one press-and-release key input.
+   *
+   * @param key - X11 keysym name or numeric keysym value.
+   * @returns A promise that resolves when the key press was synthesized.
+   * @remarks
+   * Modifier keys are intentionally rejected here. Use `setModifier()` to
+   * control Shift, Control, Alt, or Super state explicitly.
+   */
+  readonly pressKey: (key: GtkKeyInput) => Promise<void>;
+
+  /**
+   * Moves the mouse pointer to screen-relative coordinates.
+   *
+   * @param x - Horizontal coordinate relative to the root screen.
+   * @param y - Vertical coordinate relative to the root screen.
+   * @returns A promise that resolves when pointer motion was synthesized.
+   */
+  readonly moveMouseTo: (x: number, y: number) => Promise<void>;
+
+  /**
+   * Presses or releases one mouse button.
+   *
+   * @param button - Mouse button to change.
+   * @param pressed - true to hold the button, false to release it.
+   * @returns A promise that resolves when the button state was synthesized.
+   */
+  readonly setMouseButton: (
+    button: GtkMouseButton,
+    pressed: boolean
+  ) => Promise<void>;
+
+  /**
+   * Sends mouse wheel steps.
+   *
+   * @param xSteps - Horizontal wheel steps. Positive values scroll right.
+   * @param ySteps - Vertical wheel steps. Positive values scroll down.
+   * @returns A promise that resolves when all wheel steps were synthesized.
+   */
+  readonly scrollWheel: (xSteps: number, ySteps: number) => Promise<void>;
+}
+
+/**
  * A GTK accessible element resolved within a launched application process.
  *
  * If the host widget or window disappears after this element is obtained,
@@ -382,6 +459,17 @@ export interface GtkWindowElement
    * @returns A promise that resolves to the actual bounds observed after the change.
    */
   readonly setBounds: (bounds: GtkCaptureBounds) => Promise<GtkCaptureBounds>;
+
+  /**
+   * Activates this window as if the window manager focused it.
+   *
+   * @returns A promise that resolves when the activation request has been sent
+   * and focus has been observed.
+   * @remarks
+   * This operation is currently supported for X11 windows. It rejects with
+   * UNSUPPORTED_INTERFACE when the window cannot be resolved on X11.
+   */
+  readonly activate: () => Promise<void>;
 
   /**
    * Reads X11 normal-size hints for this window.
@@ -1334,6 +1422,15 @@ export interface GtkApp extends Releasable, GtkCapturable {
    * retained after releasing the application or launcher.
    */
   readonly output: () => Promise<GtkAppOutput>;
+
+  /**
+   * Low-level keyboard and mouse input controller for this app's display session.
+   *
+   * @remarks
+   * This controls the display session, not a specific widget. Activate or focus
+   * the intended target before sending keyboard input.
+   */
+  readonly input: GtkInputController;
 
   /**
    * Waits for an accessible id and returns an element when it exists.

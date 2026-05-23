@@ -10,6 +10,8 @@ import type {
   GtkCaptureBounds,
   GtkImagePoint,
   GtkImageSize,
+  GtkKeyboardModifier,
+  GtkMouseButton,
   GtkSystemOutputSource,
   GtkTrayItemSelector,
   GtkWidgetKind,
@@ -32,6 +34,12 @@ export type DriverCommand =
   | 'app.getByPath'
   | 'app.windowAt'
   | 'app.getWindowCount'
+  | 'app.inputSetModifier'
+  | 'app.inputPressKeyName'
+  | 'app.inputPressKeySym'
+  | 'app.inputMoveMouse'
+  | 'app.inputSetMouseButton'
+  | 'app.inputScrollWheel'
   | 'app.findTrayItem'
   | 'app.getTrayItem'
   | 'app.trayItemAt'
@@ -75,6 +83,7 @@ export type DriverCommand =
   | 'window.resizeHints'
   | 'window.resizeTo'
   | 'window.setBounds'
+  | 'window.activate'
   | 'window.x11Info'
   | 'imageInfo.capture'
   | 'tray.metadata'
@@ -135,6 +144,34 @@ export interface DriverTextPayload {
 
 export interface DriverValuePayload {
   readonly value: number;
+}
+
+export interface DriverKeyboardModifierPayload {
+  readonly modifier: GtkKeyboardModifier;
+  readonly pressed: boolean;
+}
+
+export interface DriverKeyNamePayload {
+  readonly key: string;
+}
+
+export interface DriverKeySymPayload {
+  readonly keysym: number;
+}
+
+export interface DriverMouseMovePayload {
+  readonly x: number;
+  readonly y: number;
+}
+
+export interface DriverMouseButtonPayload {
+  readonly button: GtkMouseButton;
+  readonly pressed: boolean;
+}
+
+export interface DriverMouseWheelPayload {
+  readonly xSteps: number;
+  readonly ySteps: number;
 }
 
 export interface DriverWindowMovePayload {

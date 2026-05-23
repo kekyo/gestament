@@ -28,6 +28,7 @@ import {
   normalizeOutputBufferBytes,
   type GtkSystemOutputRecorder,
 } from './output';
+import { createGtkInputController } from './input';
 import { appendPrerequisiteInstallHint } from './prerequisites';
 import type {
   DriverAppRef,
@@ -2077,6 +2078,31 @@ const createProxyGtkApp = (
       ),
     output: (): Promise<WireGtkAppOutput> =>
       appRequest<WireGtkAppOutput>('app.output'),
+    input: createGtkInputController({
+      setModifier: (modifier, pressed): Promise<void> =>
+        appRequest<null>('app.inputSetModifier', { modifier, pressed }).then(
+          () => undefined
+        ),
+      pressKeyName: (key): Promise<void> =>
+        appRequest<null>('app.inputPressKeyName', { key }).then(
+          () => undefined
+        ),
+      pressKeySym: (keysym): Promise<void> =>
+        appRequest<null>('app.inputPressKeySym', { keysym }).then(
+          () => undefined
+        ),
+      moveMouseTo: (x, y): Promise<void> =>
+        appRequest<null>('app.inputMoveMouse', { x, y }).then(() => undefined),
+      setMouseButton: (button, pressed): Promise<void> =>
+        appRequest<null>('app.inputSetMouseButton', {
+          button,
+          pressed,
+        }).then(() => undefined),
+      scrollWheel: (xSteps, ySteps): Promise<void> =>
+        appRequest<null>('app.inputScrollWheel', { xSteps, ySteps }).then(
+          () => undefined
+        ),
+    }),
     findById: async (id: string): Promise<GtkWidgetElement | undefined> =>
       elementRefToProxy(
         session,
@@ -2304,6 +2330,10 @@ const createProxyGtkElement = (
           bounds,
           elementId,
         });
+      target.activate = (): Promise<void> =>
+        session
+          .request<null>('window.activate', { elementId })
+          .then(() => undefined);
       target.x11Info = (): Promise<GtkX11WindowInfo> =>
         session.request<GtkX11WindowInfo>('window.x11Info', { elementId });
       addChildContainerProxyOperations(session, elementId, target);

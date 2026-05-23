@@ -44,6 +44,28 @@ const assertSpecializedOperations = async (
       await element.setText('ABC');
       break;
     case 'window':
+      await element.activate();
+      expectType<Promise<void>>(element.activate());
+      expectType<Promise<GtkCapture>>(element.capture());
+      expectType<number>((await element.bounds()).x);
+      expectType<number>((await element.resizeHints()).baseWidth);
+      expectType<string>((await element.x11Info()).windowId);
+      await element.moveTo(0, 0);
+      await element.resizeTo(100, 100);
+      await element.setBounds({ height: 100, width: 100, x: 0, y: 0 });
+      expectType<number>(
+        (
+          await element.setBounds({
+            height: 100,
+            width: 100,
+            x: 0,
+            y: 0,
+          })
+        ).height
+      );
+      // @ts-expect-error Window elements do not expose Text operations.
+      await element.setText('ABC');
+      break;
     case 'container':
       expectType<number>(await element.getChildCount());
       const genericChild: GtkWidgetElement | undefined =
@@ -223,6 +245,14 @@ const assertKindExtractor = async (
 const assertAppOperations = async (app: GtkApp): Promise<void> => {
   expectType<GtkCapturable>(app);
   expectType<GtkCapture>(await app.capture());
+  await app.input.setModifier('shift', true);
+  await app.input.setModifier('shift', false);
+  await app.input.pressKey('a');
+  await app.input.pressKey(0x61);
+  await app.input.moveMouseTo(0, 0);
+  await app.input.setMouseButton('left', true);
+  await app.input.setMouseButton('left', false);
+  await app.input.scrollWheel(0, 1);
   const pathElement: GtkWidgetElement = await app.getByPath('main_window.0.0');
   const optionalPathElement: GtkWidgetElement | undefined =
     await app.findByPath('main_window.0.0');

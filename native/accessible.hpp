@@ -292,6 +292,11 @@ bool set_accessible_proxy_window_bounds(guint process_id,
                                         CaptureBounds *bounds,
                                         NativeError *error);
 
+/** Activates a top-level window element through the current X11 display. */
+bool activate_accessible_proxy_window(guint process_id,
+                                      AtspiAccessible *accessible,
+                                      NativeError *error);
+
 /** Reads X11 normal-size hints for a window element within a process. */
 bool read_accessible_proxy_resize_hints(guint process_id,
                                         AtspiAccessible *accessible,
@@ -309,6 +314,26 @@ bool capture_screen(CaptureResult *result, NativeError *error);
 /** Captures real screen pixels for explicit screen-relative bounds. */
 bool capture_screen_bounds(const CaptureBounds &bounds, CaptureResult *result,
                            NativeError *error);
+
+/** Presses or releases a keyboard modifier on the current display. */
+bool input_set_modifier(const std::string &modifier, bool pressed,
+                        NativeError *error);
+
+/** Sends one press-and-release key by X11 keysym name. */
+bool input_press_key_name(const std::string &key, NativeError *error);
+
+/** Sends one press-and-release key by numeric X11 keysym value. */
+bool input_press_key_sym(guint keysym, NativeError *error);
+
+/** Moves the mouse pointer to screen-relative coordinates. */
+bool input_move_mouse(gint x, gint y, NativeError *error);
+
+/** Presses or releases a mouse button on the current display. */
+bool input_set_mouse_button(const std::string &button, bool pressed,
+                            NativeError *error);
+
+/** Sends mouse wheel steps on the current display. */
+bool input_scroll_wheel(gint x_steps, gint y_steps, NativeError *error);
 
 /** Counts mapped top-level X11 windows on the current DISPLAY. */
 bool count_mapped_x11_windows(guint *count, NativeError *error);

@@ -15,6 +15,7 @@ import {
 } from './errors';
 import { createDriverBackedGtkAppLauncher } from './displaySession';
 import { createGtkElement } from './element';
+import { createGtkInputController } from './input';
 import {
   createGtkAppOutputRecorder,
   notifyGtkAppOutput,
@@ -26,6 +27,12 @@ import {
   nativeFindById,
   nativeCaptureScreen,
   nativeProcessAtspiReadiness,
+  nativeInputMoveMouse,
+  nativeInputPressKeyName,
+  nativeInputPressKeySym,
+  nativeInputScrollWheel,
+  nativeInputSetModifier,
+  nativeInputSetMouseButton,
   nativeTrayItems,
   nativeWindowAt,
   nativeWindowCount,
@@ -459,6 +466,39 @@ export const launchGtkApp = (
     return trayItem;
   };
 
+  const input = createGtkInputController({
+    setModifier: async (modifier, pressed): Promise<void> => {
+      assertNotReleased();
+      assertProcessRunning(state, appPath);
+      nativeInputSetModifier(modifier, pressed);
+    },
+    pressKeyName: async (key): Promise<void> => {
+      assertNotReleased();
+      assertProcessRunning(state, appPath);
+      nativeInputPressKeyName(key);
+    },
+    pressKeySym: async (keysym): Promise<void> => {
+      assertNotReleased();
+      assertProcessRunning(state, appPath);
+      nativeInputPressKeySym(keysym);
+    },
+    moveMouseTo: async (x, y): Promise<void> => {
+      assertNotReleased();
+      assertProcessRunning(state, appPath);
+      nativeInputMoveMouse(x, y);
+    },
+    setMouseButton: async (button, pressed): Promise<void> => {
+      assertNotReleased();
+      assertProcessRunning(state, appPath);
+      nativeInputSetMouseButton(button, pressed);
+    },
+    scrollWheel: async (xSteps, ySteps): Promise<void> => {
+      assertNotReleased();
+      assertProcessRunning(state, appPath);
+      nativeInputScrollWheel(xSteps, ySteps);
+    },
+  });
+
   const app: GtkApp = {
     capture: async (): Promise<GtkCapture> => {
       assertNotReleased();
@@ -488,6 +528,7 @@ export const launchGtkApp = (
         state.exitSignal === null ? null : state.exitSignal
       );
     },
+    input,
     findById,
     findByPath,
     getById,
