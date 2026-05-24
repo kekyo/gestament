@@ -29,7 +29,10 @@ static inline gboolean gestament_gtk_id_is_available(const char *id) {
  * @param id Stable id used by gestament tests.
  *
  * The id is also assigned as the widget name so CSS/debugging tools show the
- * same stable identifier. Invalid or empty arguments are ignored.
+ * same stable identifier. GTK3 exposes this value through ATK accessible id.
+ * GTK4 does not provide a public API for assigning an AT-SPI AccessibleId to a
+ * programmatically-created widget, so use GtkBuilder object ids when GTK4
+ * getById() support is required. Invalid or empty arguments are ignored.
  */
 static inline void gestament_gtk_assign_accessible_id(GtkWidget *widget,
                                                       const char *id) {

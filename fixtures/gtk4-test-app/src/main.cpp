@@ -93,10 +93,12 @@ struct AppOptions {
   bool status_notifier_item;
   bool widget_controls;
   bool widget_enumerables;
+  bool widget_standards;
 };
 
 AppOptions app_options(int argc, char **argv) {
   AppOptions options = {
+      false,
       false,
       false,
       false,
@@ -117,6 +119,9 @@ AppOptions app_options(int argc, char **argv) {
     if (argument == "--widget-enumerables") {
       options.widget_enumerables = true;
     }
+    if (argument == "--widget-standards") {
+      options.widget_standards = true;
+    }
   }
 
   return options;
@@ -131,7 +136,8 @@ std::vector<char *> filtered_arguments(int argc, char **argv) {
     if (argument == "--cover-submit-button" ||
         argument == "--status-notifier-item" ||
         argument == "--widget-controls" ||
-        argument == "--widget-enumerables") {
+        argument == "--widget-enumerables" ||
+        argument == "--widget-standards") {
       continue;
     }
     filtered.push_back(argv[index]);
@@ -391,6 +397,29 @@ GtkWidget *create_enumerables_window(AppWidgets *widgets) {
   gtk_box_append(GTK_BOX(box), create_enumerable_menu(window, widgets));
   gtk_box_append(GTK_BOX(box), create_enumerable_table());
   return window;
+}
+
+gboolean on_standard_link_activate(GtkLinkButton *button, gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  gtk_link_button_set_visited(button, TRUE);
+  set_result(widgets, "link-activated");
+  return TRUE;
+}
+
+void on_standard_calendar_day_selected(GtkCalendar *calendar,
+                                       gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  GDateTime *date = gtk_calendar_get_date(calendar);
+  if (date == nullptr) {
+    set_result(widgets, "calendar:unknown");
+    return;
+  }
+
+  gchar *formatted = g_date_time_format(date, "%Y-%m-%d");
+  set_result(widgets, std::string("calendar:") +
+                          (formatted == nullptr ? "unknown" : formatted));
+  g_free(formatted);
+  g_date_time_unref(date);
 }
 
 void drain_events() {
@@ -776,10 +805,14 @@ int main(int argc, char **argv) {
   GtkWidget *controls_box = required_widget(builder, "controls_box");
   GtkWidget *input_probe = required_widget(builder, "input_probe");
   GtkWidget *image_control = required_widget(builder, "image_control");
+  GtkWidget *standards_window = required_widget(builder, "standards_window");
+  GtkWidget *standard_link = required_widget(builder, "standard_link");
+  GtkWidget *standard_calendar = required_widget(builder, "standard_calendar");
   if (window == nullptr || name_entry == nullptr || submit_button == nullptr ||
       result_label == nullptr || controls_window == nullptr ||
       controls_box == nullptr || input_probe == nullptr ||
-      image_control == nullptr) {
+      image_control == nullptr || standards_window == nullptr ||
+      standard_link == nullptr || standard_calendar == nullptr) {
     g_object_unref(builder);
     return 1;
   }
@@ -806,6 +839,10 @@ int main(int argc, char **argv) {
                    G_CALLBACK(on_window_active_notify), &widgets);
   g_signal_connect(controls_window, "notify::is-active",
                    G_CALLBACK(on_window_active_notify), &widgets);
+  g_signal_connect(standard_link, "activate-link",
+                   G_CALLBACK(on_standard_link_activate), &widgets);
+  g_signal_connect(standard_calendar, "day-selected",
+                   G_CALLBACK(on_standard_calendar_day_selected), &widgets);
   configure_input_probe(input_probe, &widgets);
 
   TrayItemState *tray_item =
@@ -825,6 +862,9 @@ int main(int argc, char **argv) {
   if (enumerables_window != nullptr) {
     gtk_window_present(GTK_WINDOW(enumerables_window));
   }
+  if (options.widget_standards) {
+    gtk_window_present(GTK_WINDOW(standards_window));
+  }
   drain_events();
 
   GtkWidget *cover_window =
@@ -837,6 +877,9 @@ int main(int argc, char **argv) {
   g_main_loop_unref(loop);
   if (enumerables_window != nullptr) {
     gtk_window_destroy(GTK_WINDOW(enumerables_window));
+  }
+  if (standards_window != nullptr) {
+    gtk_window_destroy(GTK_WINDOW(standards_window));
   }
   if (cover_window != nullptr) {
     gtk_window_destroy(GTK_WINDOW(cover_window));

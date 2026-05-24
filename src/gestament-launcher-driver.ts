@@ -367,7 +367,11 @@ const registerElement = (
   const elementId = `element-${nextElementId}`;
   nextElementId += 1;
   elements.set(elementId, { appId, element });
-  return { elementId, kind: element.kind };
+  return {
+    elementId,
+    hasTableNavigation: 'getRowCount' in element && 'cellAt' in element,
+    kind: element.kind,
+  };
 };
 
 const registerTrayItem = (
@@ -791,6 +795,21 @@ const handleElementCommand = async (
     case 'element.toggle':
       await callElementMethod(entry, 'toggle');
       return null;
+    case 'element.isSelected':
+      return callElementMethod(entry, 'isSelected');
+    case 'element.select':
+      await callElementMethod(entry, 'select');
+      return null;
+    case 'element.isExpanded':
+      return callElementMethod(entry, 'isExpanded');
+    case 'element.expand':
+      await callElementMethod(entry, 'expand');
+      return null;
+    case 'element.collapse':
+      await callElementMethod(entry, 'collapse');
+      return null;
+    case 'element.isVisited':
+      return callElementMethod(entry, 'isVisited');
     case 'element.value':
       return callElementMethod(entry, 'value');
     case 'element.valueInfo':

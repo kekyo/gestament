@@ -66,10 +66,12 @@ struct AppOptions {
   bool status_notifier_item;
   bool widget_controls;
   bool widget_enumerables;
+  bool widget_standards;
 };
 
 AppOptions app_options(int argc, char **argv) {
   AppOptions options = {
+      false,
       false,
       false,
       false,
@@ -90,6 +92,9 @@ AppOptions app_options(int argc, char **argv) {
     if (argument == "--widget-enumerables") {
       options.widget_enumerables = true;
     }
+    if (argument == "--widget-standards") {
+      options.widget_standards = true;
+    }
   }
 
   return options;
@@ -104,7 +109,8 @@ std::vector<char *> filtered_arguments(int argc, char **argv) {
     if (argument == "--cover-submit-button" ||
         argument == "--status-notifier-item" ||
         argument == "--widget-controls" ||
-        argument == "--widget-enumerables") {
+        argument == "--widget-enumerables" ||
+        argument == "--widget-standards") {
       continue;
     }
     filtered.push_back(argv[index]);
@@ -360,6 +366,179 @@ GtkWidget *create_enumerables_window(AppWidgets *widgets) {
   gtk_box_pack_start(GTK_BOX(box), create_enumerable_menu(widgets), FALSE, TRUE,
                      0);
   gtk_box_pack_start(GTK_BOX(box), create_enumerable_table(), FALSE, TRUE, 0);
+  return window;
+}
+
+void on_standard_button_clicked(GtkButton *, gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  set_result(widgets, "toolbar-clicked");
+}
+
+gboolean on_standard_link_activate(GtkLinkButton *button, gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  gtk_link_button_set_visited(button, TRUE);
+  set_result(widgets, "link-activated");
+  return TRUE;
+}
+
+void on_standard_calendar_day_selected(GtkCalendar *calendar,
+                                       gpointer user_data) {
+  auto *widgets = static_cast<AppWidgets *>(user_data);
+  guint year = 0;
+  guint month = 0;
+  guint day = 0;
+  gtk_calendar_get_date(calendar, &year, &month, &day);
+  std::ostringstream text;
+  text << "calendar:" << year << "-" << (month + 1) << "-" << day;
+  set_result(widgets, text.str());
+}
+
+GtkWidget *create_standard_notebook() {
+  GtkWidget *notebook = gtk_notebook_new();
+  assign_widget_id(notebook, "standard_notebook");
+
+  GtkWidget *page_a = gtk_label_new("Notebook Page A");
+  assign_widget_id(page_a, "standard_notebook_panel_a");
+  GtkWidget *tab_a = gtk_label_new("Notebook A");
+  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), page_a, tab_a);
+
+  GtkWidget *page_b = gtk_label_new("Notebook Page B");
+  assign_widget_id(page_b, "standard_notebook_panel_b");
+  GtkWidget *tab_b = gtk_label_new("Notebook B");
+  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), page_b, tab_b);
+
+  return notebook;
+}
+
+GtkWidget *create_standard_stack_switcher() {
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+  assign_widget_id(box, "standard_stack_box");
+
+  GtkWidget *stack = gtk_stack_new();
+  assign_widget_id(stack, "standard_stack");
+  GtkWidget *page_a = gtk_label_new("Stack Page A");
+  assign_widget_id(page_a, "standard_stack_panel_a");
+  GtkWidget *page_b = gtk_label_new("Stack Page B");
+  assign_widget_id(page_b, "standard_stack_panel_b");
+  gtk_stack_add_titled(GTK_STACK(stack), page_a, "stack-a", "Stack A");
+  gtk_stack_add_titled(GTK_STACK(stack), page_b, "stack-b", "Stack B");
+
+  GtkWidget *switcher = gtk_stack_switcher_new();
+  assign_widget_id(switcher, "standard_stack_switcher");
+  gtk_stack_switcher_set_stack(GTK_STACK_SWITCHER(switcher), GTK_STACK(stack));
+
+  gtk_box_pack_start(GTK_BOX(box), switcher, FALSE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(box), stack, FALSE, TRUE, 0);
+  return box;
+}
+
+GtkWidget *create_standard_tree() {
+  GtkTreeStore *store = gtk_tree_store_new(1, G_TYPE_STRING);
+  GtkTreeIter parent = {};
+  gtk_tree_store_append(store, &parent, nullptr);
+  gtk_tree_store_set(store, &parent, 0, "Tree A", -1);
+
+  GtkTreeIter child = {};
+  gtk_tree_store_append(store, &child, &parent);
+  gtk_tree_store_set(store, &child, 0, "Tree A.1", -1);
+
+  GtkTreeIter parent_b = {};
+  gtk_tree_store_append(store, &parent_b, nullptr);
+  gtk_tree_store_set(store, &parent_b, 0, "Tree B", -1);
+
+  GtkWidget *tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+  assign_widget_id(tree, "standard_tree");
+  gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(tree), FALSE);
+  GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(tree));
+  gtk_tree_selection_set_mode(selection, GTK_SELECTION_SINGLE);
+
+  GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
+  GtkTreeViewColumn *column =
+      gtk_tree_view_column_new_with_attributes("", renderer, "text", 0, nullptr);
+  gtk_tree_view_append_column(GTK_TREE_VIEW(tree), column);
+  gtk_tree_view_expand_all(GTK_TREE_VIEW(tree));
+  gtk_widget_set_size_request(tree, 300, 120);
+
+  g_object_unref(store);
+  return tree;
+}
+
+GtkWidget *create_standard_widgets_window(AppWidgets *widgets) {
+  GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+  assign_widget_id(window, "standards_window");
+  gtk_window_set_title(GTK_WINDOW(window), "Gestament GTK3 Standards");
+  gtk_window_set_default_size(GTK_WINDOW(window), 520, 760);
+
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+  assign_widget_id(box, "standards_box");
+  gtk_widget_set_margin_start(box, 16);
+  gtk_widget_set_margin_end(box, 16);
+  gtk_widget_set_margin_top(box, 16);
+  gtk_widget_set_margin_bottom(box, 16);
+  gtk_container_add(GTK_CONTAINER(window), box);
+
+  gtk_box_pack_start(GTK_BOX(box), create_standard_notebook(), FALSE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(box), create_standard_stack_switcher(), FALSE, TRUE,
+                     0);
+
+  GtkWidget *expander = gtk_expander_new("More options");
+  assign_widget_id(expander, "standard_expander");
+  GtkWidget *expander_child = gtk_label_new("Expanded content");
+  assign_widget_id(expander_child, "standard_expander_child");
+  gtk_container_add(GTK_CONTAINER(expander), expander_child);
+  gtk_box_pack_start(GTK_BOX(box), expander, FALSE, TRUE, 0);
+
+  GtkAdjustment *adjustment =
+      gtk_adjustment_new(20, 0, 100, 5, 10, 0);
+  GtkWidget *scrollbar =
+      gtk_scrollbar_new(GTK_ORIENTATION_HORIZONTAL, adjustment);
+  assign_widget_id(scrollbar, "standard_scrollbar");
+  gtk_widget_set_size_request(scrollbar, 260, 24);
+  gtk_box_pack_start(GTK_BOX(box), scrollbar, FALSE, TRUE, 0);
+
+  GtkWidget *link =
+      gtk_link_button_new_with_label("https://example.invalid", "Example Link");
+  assign_widget_id(link, "standard_link");
+  g_signal_connect(link, "activate-link", G_CALLBACK(on_standard_link_activate),
+                   widgets);
+  gtk_box_pack_start(GTK_BOX(box), link, FALSE, TRUE, 0);
+
+  GtkWidget *separator_area = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  assign_widget_id(separator_area, "standard_separator_area");
+  gtk_widget_set_size_request(separator_area, -1, 24);
+  GtkWidget *separator = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+  assign_widget_id(separator, "standard_separator");
+  gtk_box_pack_start(GTK_BOX(separator_area), separator, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(box), separator_area, FALSE, TRUE, 0);
+
+  GtkWidget *calendar = gtk_calendar_new();
+  assign_widget_id(calendar, "standard_calendar");
+  g_signal_connect(calendar, "day-selected",
+                   G_CALLBACK(on_standard_calendar_day_selected), widgets);
+  gtk_box_pack_start(GTK_BOX(box), calendar, FALSE, TRUE, 0);
+
+  gtk_box_pack_start(GTK_BOX(box), create_standard_tree(), FALSE, TRUE, 0);
+
+  GtkWidget *toolbar = gtk_toolbar_new();
+  assign_widget_id(toolbar, "standard_toolbar");
+  GtkToolItem *tool_button = gtk_tool_button_new(nullptr, "Tool");
+  assign_widget_id(GTK_WIDGET(tool_button), "standard_toolbar_button");
+  g_signal_connect(tool_button, "clicked", G_CALLBACK(on_standard_button_clicked),
+                   widgets);
+  gtk_toolbar_insert(GTK_TOOLBAR(toolbar), tool_button, -1);
+  gtk_box_pack_start(GTK_BOX(box), toolbar, FALSE, TRUE, 0);
+
+  GtkWidget *info_bar = gtk_info_bar_new();
+  assign_widget_id(info_bar, "standard_info_bar");
+  GtkWidget *info_content = gtk_info_bar_get_content_area(GTK_INFO_BAR(info_bar));
+  gtk_container_add(GTK_CONTAINER(info_content), gtk_label_new("Information"));
+  gtk_box_pack_start(GTK_BOX(box), info_bar, FALSE, TRUE, 0);
+
+  GtkWidget *status_bar = gtk_statusbar_new();
+  assign_widget_id(status_bar, "standard_status_bar");
+  gtk_statusbar_push(GTK_STATUSBAR(status_bar), 1, "Ready");
+  gtk_box_pack_start(GTK_BOX(box), status_bar, FALSE, TRUE, 0);
+
   return window;
 }
 
@@ -641,6 +820,9 @@ int main(int argc, char **argv) {
   GtkWidget *enumerables_window =
       options.widget_enumerables ? create_enumerables_window(&widgets)
                                  : nullptr;
+  GtkWidget *standards_window =
+      options.widget_standards ? create_standard_widgets_window(&widgets)
+                               : nullptr;
 
   set_main_window_geometry_hints(window);
   gtk_widget_show_all(window);
@@ -649,6 +831,9 @@ int main(int argc, char **argv) {
   }
   if (enumerables_window != nullptr) {
     gtk_widget_show_all(enumerables_window);
+  }
+  if (standards_window != nullptr) {
+    gtk_widget_show_all(standards_window);
   }
   while (gtk_events_pending()) {
     gtk_main_iteration();

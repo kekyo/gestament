@@ -17,7 +17,7 @@ import type {
   GtkWidgetElement,
 } from '../src/types';
 import { createGtkAppLauncher, launchGtkApp } from '../src/launchGtkApp';
-import { createGtkCaptureExpect, waitForResult } from '../src/testing';
+import { createGtkCaptureExpect, toPass, waitForResult } from '../src/testing';
 import {
   expectPngRegionToContainNonLightPixels,
   expectPngToContainDarkPixels,
@@ -1168,6 +1168,150 @@ describeGtk3('GTK3 AT-SPI automation', () => {
       await expect(table.isColumnSelected(1)).resolves.toBe(false);
       await expect(table.selectedColumns()).resolves.toEqual([]);
     }
+  });
+
+  it('recognizes and controls additional standard widgets', async () => {
+    const app = await launcher.launch(['--widget-standards']);
+    const resultLabel = expectElementKind(
+      await app.getById('result_label'),
+      'label'
+    );
+
+    const standardsWindow = expectElementKind(
+      await app.getById('standards_window'),
+      'window'
+    );
+    expect(await standardsWindow.getChildCount()).toBe(1);
+
+    const standardsBox = expectElementKind(
+      await app.getById('standards_box'),
+      'container'
+    );
+    expect(await standardsBox.getChildCount()).toBe(11);
+
+    const notebook = expectElementKind(
+      await app.getById('standard_notebook'),
+      'tabList'
+    );
+    expect(await notebook.getChildCount()).toBe(2);
+    expect(await notebook.getSelectedChildCount()).toBe(1);
+    const tabA = expectElementKind(await notebook.childAt(0), 'tab');
+    const tabB = expectElementKind(await notebook.childAt(1), 'tab');
+    await expect(tabA.info()).resolves.toMatchObject({ name: 'Notebook A' });
+    await expect(tabB.info()).resolves.toMatchObject({ name: 'Notebook B' });
+    await expect(tabA.isSelected()).resolves.toBe(true);
+    await expect(tabB.isSelected()).resolves.toBe(false);
+    await notebook.selectChildAt(1);
+    await expect.poll(() => tabB.isSelected()).toBe(true);
+    await tabA.select();
+    await expect.poll(() => tabA.isSelected()).toBe(true);
+    await expectCaptureArtifact(await notebook.capture(), 'standard-notebook');
+    await expect(notebook.childAt(-1)).rejects.toMatchObject({
+      code: 'INVALID_ARGUMENT',
+    });
+    await expect(notebook.selectChildAt(2)).rejects.toMatchObject({
+      code: 'OPERATION_FAILED',
+    });
+
+    const expander = expectElementKind(
+      await app.getById('standard_expander'),
+      'expander'
+    );
+    expect(await expander.getChildCount()).toBe(1);
+    await expect(expander.isExpanded()).resolves.toBe(false);
+    await expander.expand();
+    await expect.poll(() => expander.isExpanded()).toBe(true);
+    await expander.collapse();
+    await expect.poll(() => expander.isExpanded()).toBe(false);
+    await expander.toggle();
+    await expect.poll(() => expander.isExpanded()).toBe(true);
+    await toPass(
+      async () => {
+        await expectCaptureArtifact(
+          await expander.capture(),
+          'standard-expander-expanded'
+        );
+      },
+      { message: 'standard expander expanded visual state' }
+    );
+
+    const scrollbar = expectElementKind(
+      await app.getById('standard_scrollbar'),
+      'scrollbar'
+    );
+    await expect(scrollbar.value()).resolves.toBe(20);
+    await scrollbar.setValue(35);
+    await expect.poll(() => scrollbar.value()).toBe(35);
+    await toPass(
+      async () => {
+        await expectCaptureArtifact(
+          await scrollbar.capture(),
+          'standard-scrollbar'
+        );
+      },
+      { message: 'standard scrollbar visual state' }
+    );
+
+    const link = expectElementKind(await app.getById('standard_link'), 'link');
+    await expect(link.isVisited()).resolves.toBe(false);
+    await link.click();
+    await expect.poll(() => resultLabel.text()).toBe('link-activated');
+    await expect.poll(() => link.isVisited()).toBe(true);
+    await expectCaptureArtifact(await link.capture(), 'standard-link-visited');
+
+    const calendar = expectElementKind(
+      await app.getById('standard_calendar'),
+      'calendar'
+    );
+    expect(await calendar.getChildCount()).toBe(0);
+    expect(calendar.getRowCount).toBeUndefined();
+    await expectCaptureArtifact(await calendar.capture(), 'standard-calendar');
+
+    const tree = expectElementKind(await app.getById('standard_tree'), 'table');
+    expect(await tree.getRowCount()).toBeGreaterThan(0);
+    expect(await tree.getColumnCount()).toBe(1);
+    const treeCell = expectElementKind(await tree.cellAt(0, 0), 'tableCell');
+    await expect(treeCell.info()).resolves.toMatchObject({ name: 'Tree A' });
+    await expectCaptureArtifact(await tree.capture(), 'standard-tree');
+
+    const toolbar = expectElementKind(
+      await app.getById('standard_toolbar'),
+      'toolbar'
+    );
+    expect(await toolbar.getChildCount()).toBe(1);
+    await expectCaptureArtifact(await toolbar.capture(), 'standard-toolbar');
+
+    const infoBar = expectElementKind(
+      await app.getById('standard_info_bar'),
+      'infoBar'
+    );
+    expect(await infoBar.getChildCount()).toBe(1);
+    await expectCaptureArtifact(await infoBar.capture(), 'standard-info-bar');
+
+    const statusBar = expectElementKind(
+      await app.getById('standard_status_bar'),
+      'statusBar'
+    );
+    expect(await statusBar.getChildCount()).toBe(0);
+    await expectCaptureArtifact(
+      await statusBar.capture(),
+      'standard-status-bar'
+    );
+
+    const separator = expectElementKind(
+      await app.getById('standard_separator'),
+      'separator'
+    );
+    const separatorCapture = await separator.capture();
+    expect(separatorCapture.bounds.width).toBeGreaterThan(0);
+    expect(separatorCapture.bounds.height).toBeGreaterThan(0);
+    const separatorArea = expectElement(
+      await app.getById('standard_separator_area')
+    );
+    await expectCaptureArtifact(
+      await separatorArea.capture(),
+      'standard-separator'
+    );
   });
 
   it('resolves and controls a StatusNotifier tray item', async () => {

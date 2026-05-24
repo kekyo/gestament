@@ -203,7 +203,8 @@ For example, if you want to check whether a `GtkLabel` displays `This is foobar`
 
 This is roughly the same as the `id` attribute in the HTML DOM, and is similar to identifying an element with `parent.getElementById()`.
 
-When you create windows and widgets programmatically, assign an accessible ID like this:
+When you create windows and widgets programmatically, assign an accessible ID like this.
+However, this code is for GTK3. GTK4 does not provide a public API for assigning an AT-SPI `AccessibleId` to a widget created only from code:
 
 ```cpp
 #include <atk/atk.h>
@@ -218,19 +219,19 @@ if (accessible != NULL) {
 }
 ```
 
-However, this code is for GTK3. GTK4 requires a different way to assign accessible IDs.
-To absorb those differences, gestament provides the helper function `gestament_gtk_assign_accessible_id()`:
+To absorb the GTK3 case and keep a matching widget name for debugging, gestament provides the helper function `gestament_gtk_assign_accessible_id()`:
 
 ```cpp
 #include <gestament/gtk.h>
 
 GtkWidget *label = gtk_label_new("Hello, gestament");
 
-// Available on both GTK3 and GTK4.
+// GTK3: applies the ATK accessible id.
+// GTK4: applies the widget name only; use GtkBuilder ids for getById().
 gestament_gtk_assign_accessible_id(label, "foobar_label");
 ```
 
-If you use a `GtkBuilder` `.ui` file, you can use the usual `<object id="...">` values as IDs:
+On GTK4 4.22 and later, `GtkBuilder` object IDs are exposed as AT-SPI accessible IDs by GTK itself. If you need `getById()` on GTK4, define those widgets in a `GtkBuilder` `.ui` file with the usual `<object id="...">` values:
 
 ```xml
 <interface>
@@ -244,8 +245,7 @@ If you use a `GtkBuilder` `.ui` file, you can use the usual `<object id="...">` 
 </interface>
 ```
 
-However, this `id=` is a `GtkBuilder` ID, so it must be reapplied as an accessible ID.
-You can apply all IDs in a `GtkBuilder` at once by using the helper function `gestament_gtk_assign_accessible_ids_from_builder()`:
+For GTK3, these `GtkBuilder` IDs still need to be applied as ATK accessible IDs. You can apply all IDs in a `GtkBuilder` at once by using the helper function `gestament_gtk_assign_accessible_ids_from_builder()`:
 
 ```cpp
 #include <gestament/gtk.h>
@@ -253,7 +253,8 @@ You can apply all IDs in a `GtkBuilder` at once by using the helper function `ge
 GtkBuilder *builder = gtk_builder_new();
 gtk_builder_add_from_file(builder, "main-window.ui", nullptr);
 
-// Apply all IDs in the specified GtkBuilder as accessible IDs.
+// GTK3: applies all GtkBuilder ids as accessible IDs.
+// GTK4: keeps the same code path and assigns matching widget names.
 gestament_gtk_assign_accessible_ids_from_builder(builder);
 ```
 
@@ -508,9 +509,18 @@ expect(secondWindow).toBeUndefined();
 | `GtkWindowElement`                                                                    | `activate()` / `bounds()` / `moveTo()` / `resizeTo()` / `setBounds()` / `resizeHints()` / `x11Info()` / `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`. |
 | `GtkContainerElement`                                                                 | `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`.                                                                                                         |
 | `GtkComboBoxElement`                                                                  | `click()` / `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `clearSelection()`                                |
+| `GtkTabListElement`                                                                   | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()`                                                                 |
+| `GtkTabElement`                                                                       | `click()` / `isSelected()` / `select()`                                                                                                                                                     |
+| `GtkTabPanelElement`, `GtkToolbarElement`, `GtkStatusBarElement`, `GtkInfoBarElement` | `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`.                                                                                                         |
+| `GtkExpanderElement`, `GtkTreeItemElement`                                            | `click()` / `isExpanded()` / `expand()` / `collapse()` / `toggle()` / `childAt()` / `getChildCount()`                                                                                       |
+| `GtkScrollbarElement`                                                                 | `value()` / `valueInfo()` / `setValue()`                                                                                                                                                    |
+| `GtkLinkElement`                                                                      | `click()` / `isVisited()`                                                                                                                                                                   |
+| `GtkCalendarElement`                                                                  | `childAt()` / `getChildCount()`. Some backends also expose optional `getRowCount()` / `getColumnCount()` / `cellAt()` table-navigation operations.                                          |
 | `GtkListElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `deselectChildAt()`, and others                               |
 | `GtkMenuElement`                                                                      | `childAt()` / `getChildCount()`. Child elements are returned as `GtkMenuItemElement`.                                                                                                       |
 | `GtkTableElement`                                                                     | `getRowCount()` / `getColumnCount()` / `cellAt()` / `selectedRows()` / `selectedColumns()` / `selectRow()` / `selectColumn()` / `isCellSelected()`, and others                              |
+| `GtkTreeElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()`                                                                 |
+| `GtkSeparatorElement`                                                                 | `info()` / `capture()`                                                                                                                                                                      |
 
 Code example:
 
@@ -725,6 +735,16 @@ const cell = await table.cellAt(0, 1);
 if (cell !== undefined) {
   expect((await cell.info()).name).toBe('R0C1');
 }
+
+// Tab widget.
+const tabs = await app.getById('settings_tabs');
+if (tabs.kind !== 'tabList') {
+  throw new Error(`Unexpected widget kind: ${tabs.kind}`);
+}
+
+await tabs.selectChildAt(1);
+const selectedTab = await tabs.selectedChildAt(0);
+expect(selectedTab?.kind).toBe('tab');
 ```
 
 ### Operating GTK system trays

@@ -162,6 +162,10 @@ export type GtkWidgetKind =
   | 'spinButton'
   | 'progressBar'
   | 'comboBox'
+  | 'tabList'
+  | 'tab'
+  | 'tabPanel'
+  | 'expander'
   | 'list'
   | 'listItem'
   | 'table'
@@ -169,6 +173,15 @@ export type GtkWidgetKind =
   | 'image'
   | 'menu'
   | 'menuItem'
+  | 'scrollbar'
+  | 'link'
+  | 'calendar'
+  | 'toolbar'
+  | 'statusBar'
+  | 'infoBar'
+  | 'separator'
+  | 'tree'
+  | 'treeItem'
   | 'unknown';
 
 /** Metadata exposed by AT-SPI for a GTK accessible element. */
@@ -536,6 +549,58 @@ export interface GtkCheckable {
 }
 
 /**
+ * Shared operations for widgets that expose a selected state.
+ */
+export interface GtkSelectableItem {
+  /**
+   * Reads whether this element is currently selected.
+   *
+   * @returns A promise that resolves to true when the element is selected.
+   */
+  readonly isSelected: () => Promise<boolean>;
+
+  /**
+   * Selects this element through its primary action.
+   *
+   * @returns A promise that resolves when the selection action has been executed.
+   */
+  readonly select: () => Promise<void>;
+}
+
+/**
+ * Shared operations for widgets that can reveal or hide additional content.
+ */
+export interface GtkExpandable {
+  /**
+   * Reads whether this element is currently expanded.
+   *
+   * @returns A promise that resolves to true when the element is expanded.
+   */
+  readonly isExpanded: () => Promise<boolean>;
+
+  /**
+   * Expands this element when it is currently collapsed.
+   *
+   * @returns A promise that resolves when the expand action has been executed or the element is already expanded.
+   */
+  readonly expand: () => Promise<void>;
+
+  /**
+   * Collapses this element when it is currently expanded.
+   *
+   * @returns A promise that resolves when the collapse action has been executed or the element is already collapsed.
+   */
+  readonly collapse: () => Promise<void>;
+
+  /**
+   * Toggles this element's expanded state through its primary action.
+   *
+   * @returns A promise that resolves when the toggle action has been executed.
+   */
+  readonly toggle: () => Promise<void>;
+}
+
+/**
  * A GTK button element with an executable primary action.
  */
 export interface GtkButtonElement extends GtkElement, GtkClickable {
@@ -871,6 +936,54 @@ export interface GtkComboBoxElement
 }
 
 /**
+ * A GTK tab element with executable and selectable operations.
+ */
+export interface GtkTabElement
+  extends GtkElement, GtkClickable, GtkSelectableItem {
+  /**
+   * Discriminator for tab elements.
+   */
+  readonly kind: 'tab';
+}
+
+/**
+ * A GTK tab list element with selectable tab operations.
+ */
+export interface GtkTabListElement
+  extends GtkElement, GtkSelectableChildContainer<GtkTabElement> {
+  /**
+   * Discriminator for tab list elements.
+   */
+  readonly kind: 'tabList';
+}
+
+/**
+ * A GTK tab panel element with child traversal.
+ */
+export interface GtkTabPanelElement
+  extends GtkElement, GtkChildContainer<GtkWidgetElement> {
+  /**
+   * Discriminator for tab panel elements.
+   */
+  readonly kind: 'tabPanel';
+}
+
+/**
+ * A GTK expander element with executable, expandable, and child traversal operations.
+ */
+export interface GtkExpanderElement
+  extends
+    GtkElement,
+    GtkClickable,
+    GtkExpandable,
+    GtkChildContainer<GtkWidgetElement> {
+  /**
+   * Discriminator for expander elements.
+   */
+  readonly kind: 'expander';
+}
+
+/**
  * A GTK list element with selectable list item operations.
  */
 export interface GtkListElement
@@ -963,14 +1076,9 @@ export interface GtkTableSelection {
 }
 
 /**
- * A GTK table element.
+ * GTK table navigation operations.
  */
-export interface GtkTableElement extends GtkElement, GtkTableSelection {
-  /**
-   * Discriminator for table elements.
-   */
-  readonly kind: 'table';
-
+export interface GtkTableNavigation {
   /**
    * Counts logical table rows.
    *
@@ -996,6 +1104,17 @@ export interface GtkTableElement extends GtkElement, GtkTableSelection {
     row: number,
     column: number
   ) => Promise<GtkTableCellElement | undefined>;
+}
+
+/**
+ * A GTK table element.
+ */
+export interface GtkTableElement
+  extends GtkElement, GtkTableNavigation, GtkTableSelection {
+  /**
+   * Discriminator for table elements.
+   */
+  readonly kind: 'table';
 }
 
 /**
@@ -1037,6 +1156,140 @@ export interface GtkMenuElement
 }
 
 /**
+ * A GTK scrollbar element with read-write value operations.
+ */
+export interface GtkScrollbarElement extends GtkElement, GtkValueControl {
+  /**
+   * Discriminator for scrollbar elements.
+   */
+  readonly kind: 'scrollbar';
+}
+
+/**
+ * A GTK link element with executable and visited-state operations.
+ */
+export interface GtkLinkElement extends GtkElement, GtkClickable {
+  /**
+   * Discriminator for link elements.
+   */
+  readonly kind: 'link';
+
+  /**
+   * Reads whether this link has been visited.
+   *
+   * @returns A promise that resolves to true when the link is visited.
+   */
+  readonly isVisited: () => Promise<boolean>;
+}
+
+/**
+ * A GTK calendar element with child traversal and optional table navigation.
+ */
+export interface GtkCalendarElement
+  extends GtkElement, GtkChildContainer<GtkWidgetElement> {
+  /**
+   * Discriminator for calendar elements.
+   */
+  readonly kind: 'calendar';
+
+  /**
+   * Counts logical calendar rows when the backend exposes AT-SPI Table.
+   *
+   * @returns A promise that resolves to the current row count.
+   */
+  readonly getRowCount?: () => Promise<number>;
+
+  /**
+   * Counts logical calendar columns when the backend exposes AT-SPI Table.
+   *
+   * @returns A promise that resolves to the current column count.
+   */
+  readonly getColumnCount?: () => Promise<number>;
+
+  /**
+   * Resolves a logical calendar cell when the backend exposes AT-SPI Table.
+   *
+   * @param row - Zero-based table row index.
+   * @param column - Zero-based table column index.
+   * @returns A promise that resolves to the table cell element, or undefined when no cell exists at the position.
+   */
+  readonly cellAt?: (
+    row: number,
+    column: number
+  ) => Promise<GtkTableCellElement | undefined>;
+}
+
+/**
+ * A GTK toolbar element with child traversal.
+ */
+export interface GtkToolbarElement
+  extends GtkElement, GtkChildContainer<GtkWidgetElement> {
+  /**
+   * Discriminator for toolbar elements.
+   */
+  readonly kind: 'toolbar';
+}
+
+/**
+ * A GTK status bar element with child traversal.
+ */
+export interface GtkStatusBarElement
+  extends GtkElement, GtkChildContainer<GtkWidgetElement> {
+  /**
+   * Discriminator for status bar elements.
+   */
+  readonly kind: 'statusBar';
+}
+
+/**
+ * A GTK info bar element with child traversal.
+ */
+export interface GtkInfoBarElement
+  extends GtkElement, GtkChildContainer<GtkWidgetElement> {
+  /**
+   * Discriminator for info bar elements.
+   */
+  readonly kind: 'infoBar';
+}
+
+/**
+ * A GTK separator element.
+ */
+export interface GtkSeparatorElement extends GtkElement {
+  /**
+   * Discriminator for separator elements.
+   */
+  readonly kind: 'separator';
+}
+
+/**
+ * A GTK tree element with selectable tree item operations.
+ */
+export interface GtkTreeElement
+  extends GtkElement, GtkSelectableChildContainer<GtkTreeItemElement> {
+  /**
+   * Discriminator for tree elements.
+   */
+  readonly kind: 'tree';
+}
+
+/**
+ * A GTK tree item element with executable, selectable, expandable, and child traversal operations.
+ */
+export interface GtkTreeItemElement
+  extends
+    GtkElement,
+    GtkClickable,
+    GtkSelectableItem,
+    GtkExpandable,
+    GtkChildContainer<GtkWidgetElement> {
+  /**
+   * Discriminator for tree item elements.
+   */
+  readonly kind: 'treeItem';
+}
+
+/**
  * A GTK element whose widget category is not recognized.
  */
 export interface GtkUnknownElement extends GtkElement {
@@ -1064,6 +1317,10 @@ export type GtkWidgetElement =
   | GtkSpinButtonElement
   | GtkProgressBarElement
   | GtkComboBoxElement
+  | GtkTabListElement
+  | GtkTabElement
+  | GtkTabPanelElement
+  | GtkExpanderElement
   | GtkListElement
   | GtkListItemElement
   | GtkTableElement
@@ -1071,6 +1328,15 @@ export type GtkWidgetElement =
   | GtkImageElement
   | GtkMenuElement
   | GtkMenuItemElement
+  | GtkScrollbarElement
+  | GtkLinkElement
+  | GtkCalendarElement
+  | GtkToolbarElement
+  | GtkStatusBarElement
+  | GtkInfoBarElement
+  | GtkSeparatorElement
+  | GtkTreeElement
+  | GtkTreeItemElement
   | GtkUnknownElement;
 
 /**

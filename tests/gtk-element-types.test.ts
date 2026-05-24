@@ -144,6 +144,42 @@ const assertSpecializedOperations = async (
         await selectedComboChild.click();
       }
       break;
+    case 'tabList':
+      expectType<number>(await element.getChildCount());
+      expectType<number>(await element.getSelectedChildCount());
+      await element.selectChildAt(1);
+      const tab = await element.childAt(0);
+      if (tab !== undefined) {
+        await tab.click();
+        expectType<boolean>(await tab.isSelected());
+        await tab.select();
+        // @ts-expect-error Tab elements do not expose EditableText operations.
+        await tab.setText('ABC');
+      }
+      break;
+    case 'tab':
+      await element.click();
+      expectType<boolean>(await element.isSelected());
+      await element.select();
+      // @ts-expect-error Tab elements do not expose child traversal operations.
+      await element.childAt(0);
+      break;
+    case 'tabPanel':
+      expectType<number>(await element.getChildCount());
+      expectType<GtkWidgetElement | undefined>(await element.childAt(0));
+      // @ts-expect-error Tab panels do not expose selectable child operations.
+      await element.selectChildAt(0);
+      break;
+    case 'expander':
+      await element.click();
+      expectType<boolean>(await element.isExpanded());
+      await element.expand();
+      await element.collapse();
+      await element.toggle();
+      expectType<GtkWidgetElement | undefined>(await element.childAt(0));
+      // @ts-expect-error Expanders do not expose Value operations.
+      await element.value();
+      break;
     case 'list':
       expectType<number>(await element.getChildCount());
       expectType<number>(await element.getSelectedChildCount());
@@ -195,6 +231,64 @@ const assertSpecializedOperations = async (
       await element.click();
       // @ts-expect-error Item elements do not expose Selection container operations.
       await element.selectChildAt(0);
+      break;
+    case 'scrollbar':
+      expectType<number>(await element.value());
+      expectType<GtkValueInfo>(await element.valueInfo());
+      await element.setValue(30);
+      // @ts-expect-error Scrollbar elements do not expose spin step operations.
+      await element.increment();
+      break;
+    case 'link':
+      await element.click();
+      expectType<boolean>(await element.isVisited());
+      // @ts-expect-error Link elements do not expose child traversal operations.
+      await element.childAt(0);
+      break;
+    case 'calendar':
+      expectType<number>(await element.getChildCount());
+      expectType<GtkWidgetElement | undefined>(await element.childAt(0));
+      if (element.getRowCount !== undefined) {
+        expectType<number>(await element.getRowCount());
+      }
+      if (element.cellAt !== undefined) {
+        expectType<GtkTableCellElement | undefined>(await element.cellAt(0, 0));
+      }
+      // @ts-expect-error Calendar elements do not expose Value operations.
+      await element.value();
+      break;
+    case 'toolbar':
+    case 'statusBar':
+    case 'infoBar':
+      expectType<number>(await element.getChildCount());
+      expectType<GtkWidgetElement | undefined>(await element.childAt(0));
+      // @ts-expect-error Generic bar elements do not expose Value operations.
+      await element.value();
+      break;
+    case 'separator':
+      expectType<GtkCapture>(await element.capture());
+      // @ts-expect-error Separator elements do not expose child traversal operations.
+      await element.childAt(0);
+      break;
+    case 'tree':
+      expectType<number>(await element.getChildCount());
+      expectType<number>(await element.getSelectedChildCount());
+      await element.selectChildAt(0);
+      const treeItem = await element.childAt(0);
+      if (treeItem !== undefined) {
+        await treeItem.select();
+        await treeItem.expand();
+      }
+      break;
+    case 'treeItem':
+      await element.click();
+      expectType<boolean>(await element.isSelected());
+      expectType<boolean>(await element.isExpanded());
+      await element.select();
+      await element.expand();
+      await element.collapse();
+      await element.toggle();
+      expectType<GtkWidgetElement | undefined>(await element.childAt(0));
       break;
     default:
       expectType<GtkCapture>(await element.capture());

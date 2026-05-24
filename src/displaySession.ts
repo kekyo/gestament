@@ -2241,6 +2241,49 @@ const addCheckableProxyOperations = (
       .then(() => undefined);
 };
 
+const addSelectableItemProxyOperations = (
+  session: DriverSession,
+  elementId: string,
+  target: Record<string, unknown>
+): void => {
+  target.isSelected = (): Promise<boolean> =>
+    session.request<boolean>('element.isSelected', { elementId });
+  target.select = (): Promise<void> =>
+    session
+      .request<null>('element.select', { elementId })
+      .then(() => undefined);
+};
+
+const addExpandableProxyOperations = (
+  session: DriverSession,
+  elementId: string,
+  target: Record<string, unknown>
+): void => {
+  target.isExpanded = (): Promise<boolean> =>
+    session.request<boolean>('element.isExpanded', { elementId });
+  target.expand = (): Promise<void> =>
+    session
+      .request<null>('element.expand', { elementId })
+      .then(() => undefined);
+  target.collapse = (): Promise<void> =>
+    session
+      .request<null>('element.collapse', { elementId })
+      .then(() => undefined);
+  target.toggle = (): Promise<void> =>
+    session
+      .request<null>('element.toggle', { elementId })
+      .then(() => undefined);
+};
+
+const addVisitedProxyOperation = (
+  session: DriverSession,
+  elementId: string,
+  target: Record<string, unknown>
+): void => {
+  target.isVisited = (): Promise<boolean> =>
+    session.request<boolean>('element.isVisited', { elementId });
+};
+
 const addTextProxyOperation = (
   session: DriverSession,
   elementId: string,
@@ -2266,6 +2309,29 @@ const addValueProxyOperations = (
         .request<null>('element.setValue', { elementId, value })
         .then(() => undefined);
   }
+};
+
+const addTableNavigationProxyOperations = (
+  session: DriverSession,
+  elementId: string,
+  target: Record<string, unknown>
+): void => {
+  target.getRowCount = (): Promise<number> =>
+    session.request<number>('element.getRowCount', { elementId });
+  target.getColumnCount = (): Promise<number> =>
+    session.request<number>('element.getColumnCount', { elementId });
+  target.cellAt = async (
+    row: number,
+    column: number
+  ): Promise<GtkWidgetElement | undefined> =>
+    elementRefToProxy(
+      session,
+      await session.request<DriverElementRef | null>('element.cellAt', {
+        column,
+        elementId,
+        row,
+      })
+    );
 };
 
 const createProxyImageInfo = (
@@ -2386,26 +2452,35 @@ const createProxyGtkElement = (
       addClickableProxyOperation(session, elementId, target);
       addSelectableChildContainerProxyOperations(session, elementId, target);
       break;
+    case 'tabList':
+      addSelectableChildContainerProxyOperations(session, elementId, target);
+      break;
+    case 'tab':
+      addClickableProxyOperation(session, elementId, target);
+      addSelectableItemProxyOperations(session, elementId, target);
+      break;
+    case 'tabPanel':
+      addChildContainerProxyOperations(session, elementId, target);
+      break;
+    case 'expander':
+      addClickableProxyOperation(session, elementId, target);
+      addExpandableProxyOperations(session, elementId, target);
+      addChildContainerProxyOperations(session, elementId, target);
+      break;
     case 'list':
       addSelectableChildContainerProxyOperations(session, elementId, target);
       break;
+    case 'tree':
+      addSelectableChildContainerProxyOperations(session, elementId, target);
+      break;
+    case 'treeItem':
+      addClickableProxyOperation(session, elementId, target);
+      addSelectableItemProxyOperations(session, elementId, target);
+      addExpandableProxyOperations(session, elementId, target);
+      addChildContainerProxyOperations(session, elementId, target);
+      break;
     case 'table':
-      target.getRowCount = (): Promise<number> =>
-        session.request<number>('element.getRowCount', { elementId });
-      target.getColumnCount = (): Promise<number> =>
-        session.request<number>('element.getColumnCount', { elementId });
-      target.cellAt = async (
-        row: number,
-        column: number
-      ): Promise<GtkWidgetElement | undefined> =>
-        elementRefToProxy(
-          session,
-          await session.request<DriverElementRef | null>('element.cellAt', {
-            column,
-            elementId,
-            row,
-          })
-        );
+      addTableNavigationProxyOperations(session, elementId, target);
       target.selectedRows = (): Promise<readonly number[]> =>
         session.request<readonly number[]>('element.selectedRows', {
           elementId,
@@ -2444,6 +2519,24 @@ const createProxyGtkElement = (
           .request<null>('element.deselectColumn', { column, elementId })
           .then(() => undefined);
       break;
+    case 'scrollbar':
+      addValueProxyOperations(session, elementId, target, true);
+      break;
+    case 'link':
+      addClickableProxyOperation(session, elementId, target);
+      addVisitedProxyOperation(session, elementId, target);
+      break;
+    case 'calendar':
+      addChildContainerProxyOperations(session, elementId, target);
+      if (ref.hasTableNavigation) {
+        addTableNavigationProxyOperations(session, elementId, target);
+      }
+      break;
+    case 'toolbar':
+    case 'statusBar':
+    case 'infoBar':
+      addChildContainerProxyOperations(session, elementId, target);
+      break;
     case 'image':
       target.imageInfo = async (): Promise<GtkImageInfo> =>
         createProxyImageInfo(
@@ -2454,6 +2547,7 @@ const createProxyGtkElement = (
         );
       break;
     case 'tableCell':
+    case 'separator':
     case 'unknown':
       break;
   }
