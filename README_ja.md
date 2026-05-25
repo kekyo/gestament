@@ -202,7 +202,8 @@ AT-SPIは、これらの要素を "accessible ID" で特定するため、ウイ
 
 これは、HTML DOMで言うところの `id` 属性とほぼ同じであり、 `parent.getElementById()` でエレメントを特定することに似ています。
 
-プログラマブルにウインドウやウィジェットを生成する場合は、以下のようにaccessible IDを指定します:
+プログラマブルにウインドウやウィジェットを生成する場合は、以下のようにaccessible IDを指定します。
+但し、このコードはGTK3向けです。GTK4には、コードだけで生成したwidgetにAT-SPIの `AccessibleId` を後から設定する公開APIがありません:
 
 ```cpp
 #include <atk/atk.h>
@@ -217,19 +218,19 @@ if (accessible != NULL) {
 }
 ```
 
-但し、このコードはGTK3で、GTK4ではaccessible IDの指定を異なる方法で指定する必要があります。
-これらの差異を吸収するため、 gestamentでは以下のようなヘルパー関数 `gestament_gtk_assign_accessible_id()` を用意しています:
+GTK3でのID設定とデバッグ用widget nameの統一のため、 gestamentでは以下のようなヘルパー関数 `gestament_gtk_assign_accessible_id()` を用意しています:
 
 ```cpp
 #include <gestament/gtk.h>
 
 GtkWidget *label = gtk_label_new("Hello, gestament");
 
-// GTK3/4どちらでも使用できる
+// GTK3: ATK accessible idを設定する
+// GTK4: widget nameのみ設定する。getById()にはGtkBuilder idを使用する
 gestament_gtk_assign_accessible_id(label, "foobar_label");
 ```
 
-また、 `GtkBuilder` の `.ui` ファイルを使っている場合は、通常の `<object id="...">` をIDとして使用できます:
+GTK4 4.22以降では、 `GtkBuilder` のobject IDがGTK自身によってAT-SPI accessible IDとして公開されます。GTK4で `getById()` 可能なIDが必要なwidgetは、 `.ui` ファイル内に通常の `<object id="...">` として定義してください:
 
 ```xml
 <interface>
@@ -243,7 +244,7 @@ gestament_gtk_assign_accessible_id(label, "foobar_label");
 </interface>
 ```
 
-但し、この `id=` は `GtkBuilder` のIDなので、これをaccessible idとして再適用する必要があります。
+GTK3では、この `GtkBuilder` IDをATK accessible IDとして再適用する必要があります。
 以下のヘルパー関数 `gestament_gtk_assign_accessible_ids_from_builder()` を使用すれば、`GtkBuilder` に対して一括で全てのIDを適用することが出来ます:
 
 ```cpp
@@ -252,7 +253,8 @@ gestament_gtk_assign_accessible_id(label, "foobar_label");
 GtkBuilder *builder = gtk_builder_new();
 gtk_builder_add_from_file(builder, "main-window.ui", nullptr);
 
-// 指定されたGtkBuilderの全てのidを、accessible IDとして適用する
+// GTK3: 指定されたGtkBuilderの全てのidをaccessible IDとして適用する
+// GTK4: 同じコードパスを維持し、対応するwidget nameを設定する
 gestament_gtk_assign_accessible_ids_from_builder(builder);
 ```
 
@@ -502,9 +504,18 @@ expect(secondWindow).toBeUndefined();
 | `GtkWindowElement`                                                                    | `activate()` / `bounds()` / `moveTo()` / `resizeTo()` / `setBounds()` / `resizeHints()` / `x11Info()` / `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります |
 | `GtkContainerElement`                                                                 | `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります                                                                                                         |
 | `GtkComboBoxElement`                                                                  | `click()` / `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `clearSelection()`                        |
+| `GtkTabListElement`                                                                   | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()`                                                         |
+| `GtkTabElement`                                                                       | `click()` / `isSelected()` / `select()`                                                                                                                                             |
+| `GtkTabPanelElement`, `GtkToolbarElement`, `GtkStatusBarElement`, `GtkInfoBarElement` | `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります                                                                                                         |
+| `GtkExpanderElement`, `GtkTreeItemElement`                                            | `click()` / `isExpanded()` / `expand()` / `collapse()` / `toggle()` / `childAt()` / `getChildCount()`                                                                               |
+| `GtkScrollbarElement`                                                                 | `value()` / `valueInfo()` / `setValue()`                                                                                                                                            |
+| `GtkLinkElement`                                                                      | `click()` / `isVisited()`                                                                                                                                                           |
+| `GtkCalendarElement`                                                                  | `childAt()` / `getChildCount()`。backendによっては任意の `getRowCount()` / `getColumnCount()` / `cellAt()` によるtable navigationも公開されます                                     |
 | `GtkListElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `deselectChildAt()` など                              |
 | `GtkMenuElement`                                                                      | `childAt()` / `getChildCount()`。子要素は `GtkMenuItemElement` として返ります                                                                                                       |
 | `GtkTableElement`                                                                     | `getRowCount()` / `getColumnCount()` / `cellAt()` / `selectedRows()` / `selectedColumns()` / `selectRow()` / `selectColumn()` / `isCellSelected()` など                             |
+| `GtkTreeElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()`                                                         |
+| `GtkSeparatorElement`                                                                 | `info()` / `capture()`                                                                                                                                                              |
 
 コード例:
 
@@ -718,6 +729,16 @@ const cell = await table.cellAt(0, 1);
 if (cell !== undefined) {
   expect((await cell.info()).name).toBe('R0C1');
 }
+
+// タブウィジェット
+const tabs = await app.getById('settings_tabs');
+if (tabs.kind !== 'tabList') {
+  throw new Error(`Unexpected widget kind: ${tabs.kind}`);
+}
+
+await tabs.selectChildAt(1);
+const selectedTab = await tabs.selectedChildAt(0);
+expect(selectedTab?.kind).toBe('tab');
 ```
 
 ### GTKシステムトレイの操作

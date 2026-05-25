@@ -125,6 +125,48 @@ const expectElementKind = <Kind extends GtkWidgetKind>(
   return resolved as GtkElementOfKind<Kind>;
 };
 
+type ChildContainerElement = GtkWidgetElement & {
+  readonly childAt: (index: number) => Promise<GtkWidgetElement | undefined>;
+  readonly getChildCount: () => Promise<number>;
+};
+
+const hasChildContainerOperations = (
+  element: GtkWidgetElement
+): element is ChildContainerElement =>
+  'childAt' in element && 'getChildCount' in element;
+
+const findDescendantKind = async <Kind extends GtkWidgetKind>(
+  root: GtkWidgetElement,
+  kind: Kind
+): Promise<GtkElementOfKind<Kind> | undefined> => {
+  const queue: GtkWidgetElement[] = [root];
+
+  for (const element of queue) {
+    if (element.kind === kind) {
+      return element as GtkElementOfKind<Kind>;
+    }
+    if (!hasChildContainerOperations(element)) {
+      continue;
+    }
+
+    const childCount = await element.getChildCount();
+    for (let index = 0; index < childCount; index += 1) {
+      const child = await element.childAt(index);
+      if (child !== undefined) {
+        queue.push(child);
+      }
+    }
+  }
+
+  return undefined;
+};
+
+const expectDescendantKind = async <Kind extends GtkWidgetKind>(
+  root: GtkWidgetElement,
+  kind: Kind
+): Promise<GtkElementOfKind<Kind>> =>
+  expectElementKind(await findDescendantKind(root, kind), kind);
+
 const expectTrayItem = (item: GtkTrayItem | undefined): GtkTrayItem => {
   expect(item).toBeDefined();
   return item as GtkTrayItem;
@@ -1287,6 +1329,148 @@ const launcher = createGtkAppLauncher({
       await expect(combo.isChildSelected(1)).rejects.toMatchObject({
         code: 'UNSUPPORTED_INTERFACE',
       });
+    },
+    testTimeoutMs
+  );
+
+  it(
+    'recognizes and controls additional standard widgets',
+    async () => {
+      const app = await launcher.launch(['--widget-standards']);
+      const resultLabel = expectElementKind(
+        await app.getById('result_label'),
+        'label'
+      );
+
+      const standardsWindow = expectElementKind(
+        await app.getById('standards_window'),
+        'window'
+      );
+      expect(await standardsWindow.getChildCount()).toBe(1);
+
+      const standardsBox = expectElementKind(
+        await app.getById('standards_box'),
+        'container'
+      );
+      expect(await standardsBox.getChildCount()).toBe(7);
+
+      const notebookContainer = expectElementKind(
+        await app.getById('standard_notebook'),
+        'container'
+      );
+      const notebook = await expectDescendantKind(notebookContainer, 'tabList');
+      expect(await notebook.getChildCount()).toBe(2);
+      const notebookTabA = expectElementKind(await notebook.childAt(0), 'tab');
+      const notebookTabB = expectElementKind(await notebook.childAt(1), 'tab');
+      await expect(notebookTabA.isSelected()).resolves.toBe(true);
+      await notebook.selectChildAt(1);
+      await expect.poll(() => notebookTabB.isSelected()).toBe(true);
+      await notebookTabA.select();
+      await expect.poll(() => notebookTabA.isSelected()).toBe(true);
+      await expectCaptureArtifact(
+        await notebookContainer.capture(),
+        'standard-notebook'
+      );
+
+      const stackBox = expectElementKind(
+        await app.getById('standard_stack_box'),
+        'container'
+      );
+      expect(await stackBox.getChildCount()).toBe(2);
+      const stackSwitcher = expectElementKind(
+        await app.getById('standard_stack_switcher'),
+        'tabList'
+      );
+      expect(await stackSwitcher.getChildCount()).toBe(2);
+      const stackTabB = expectElementKind(
+        await stackSwitcher.childAt(1),
+        'tab'
+      );
+      await stackTabB.select();
+      await expect.poll(() => stackTabB.isSelected()).toBe(true);
+      await expectCaptureArtifact(
+        await stackSwitcher.capture(),
+        'standard-stack-switcher'
+      );
+
+      const expander = expectElementKind(
+        await app.getById('standard_expander'),
+        'expander'
+      );
+      expect(await expander.getChildCount()).toBe(1);
+      await expect(expander.isExpanded()).resolves.toBe(false);
+      await expander.expand();
+      await expect.poll(() => expander.isExpanded()).toBe(true);
+      await expander.collapse();
+      await expect.poll(() => expander.isExpanded()).toBe(false);
+      await toPass(
+        async () => {
+          await expectCaptureArtifact(
+            await expander.capture(),
+            'standard-expander-collapsed'
+          );
+        },
+        { message: 'standard expander collapsed visual state' }
+      );
+
+      const scrollbar = expectElementKind(
+        await app.getById('standard_scrollbar'),
+        'scrollbar'
+      );
+      await expect(scrollbar.value()).resolves.toBe(20);
+      await scrollbar.setValue(35);
+      await expect.poll(() => scrollbar.value()).toBe(35);
+      await toPass(
+        async () => {
+          await expectCaptureArtifact(
+            await scrollbar.capture(),
+            'standard-scrollbar'
+          );
+        },
+        { message: 'standard scrollbar visual state' }
+      );
+
+      const link = expectElementKind(
+        await app.getById('standard_link'),
+        'link'
+      );
+      await expect(link.isVisited()).resolves.toBe(false);
+      await link.click();
+      await expect.poll(() => resultLabel.text()).toBe('link-activated');
+      await expect.poll(() => link.isVisited()).toBe(true);
+      await expectCaptureArtifact(
+        await link.capture(),
+        'standard-link-visited'
+      );
+
+      const calendar = expectElementKind(
+        await app.getById('standard_calendar'),
+        'calendar'
+      );
+      expect(await calendar.getChildCount()).toBeGreaterThanOrEqual(0);
+      if (calendar.getRowCount !== undefined) {
+        expect(await calendar.getRowCount()).toBeGreaterThan(0);
+      }
+      await expectCaptureArtifact(
+        await calendar.capture(),
+        'standard-calendar'
+      );
+
+      const separatorArea = expectElementKind(
+        await app.getById('standard_separator_area'),
+        'container'
+      );
+      const separator = expectElementKind(
+        await app.getById('standard_separator'),
+        'separator'
+      );
+      const separatorCapture = await separator.capture();
+      expect(separatorCapture.bounds.width).toBeGreaterThan(0);
+      expect(separatorCapture.bounds.height).toBeGreaterThan(0);
+      await expectCaptureArtifact(
+        await separatorArea.capture(),
+        'standard-separator'
+      );
     },
     testTimeoutMs
   );

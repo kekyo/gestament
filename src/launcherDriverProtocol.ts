@@ -54,6 +54,12 @@ export type DriverCommand =
   | 'element.setText'
   | 'element.isChecked'
   | 'element.toggle'
+  | 'element.isSelected'
+  | 'element.select'
+  | 'element.isExpanded'
+  | 'element.expand'
+  | 'element.collapse'
+  | 'element.isVisited'
   | 'element.value'
   | 'element.valueInfo'
   | 'element.setValue'
@@ -243,6 +249,7 @@ export interface SerializedDriverError {
 
 export interface DriverElementRef {
   readonly elementId: string;
+  readonly hasTableNavigation: boolean;
   readonly kind: GtkWidgetKind;
 }
 

@@ -59,7 +59,9 @@ import type {
   GtkImageInfo,
   GtkListItemElement,
   GtkMenuItemElement,
+  GtkTabElement,
   GtkTableCellElement,
+  GtkTreeItemElement,
   GtkValueInfo,
   GtkWidgetElement,
   GtkWidgetKind,
@@ -123,22 +125,107 @@ const overrideElementInfo = (
   return handle;
 };
 
+const isGtk4CalendarPanel = (
+  handle: NativeElementHandle,
+  info: NativeElementInfo
+): boolean => {
+  if (
+    normalizeRoleName(info.roleName) !== 'panel' ||
+    !hasState(info, 'focusable') ||
+    nativeChildCount(handle) !== 2
+  ) {
+    return false;
+  }
+
+  const headerHandle = nativeChildAt(handle, 0);
+  const gridHandle = nativeChildAt(handle, 1);
+  if (headerHandle === undefined || gridHandle === undefined) {
+    return false;
+  }
+
+  for (const child of [headerHandle, gridHandle]) {
+    const childInfo = nativeElementInfo(child);
+    if (
+      normalizeRoleName(childInfo.roleName) !== 'panel' ||
+      !hasState(childInfo, 'horizontal')
+    ) {
+      return false;
+    }
+  }
+
+  let headerButtonCount = 0;
+  const headerChildCount = nativeChildCount(headerHandle);
+  for (let index = 0; index < headerChildCount; index += 1) {
+    const child = nativeChildAt(headerHandle, index);
+    if (
+      child !== undefined &&
+      normalizeRoleName(nativeElementInfo(child).roleName) === 'button'
+    ) {
+      headerButtonCount += 1;
+    }
+  }
+  if (headerButtonCount < 2) {
+    return false;
+  }
+
+  const gridChildCount = nativeChildCount(gridHandle);
+  if (gridChildCount < 42) {
+    return false;
+  }
+
+  for (let index = 0; index < gridChildCount; index += 1) {
+    const child = nativeChildAt(gridHandle, index);
+    if (
+      child === undefined ||
+      normalizeRoleName(nativeElementInfo(child).roleName) !== 'label'
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+const widgetKindFromHandleInfo = (
+  handle: NativeElementHandle,
+  info: NativeElementInfo
+): GtkWidgetKind => {
+  const kind = widgetKindFromInfo(info);
+  if (kind === 'container' && isGtk4CalendarPanel(handle, info)) {
+    return 'calendar';
+  }
+  return kind;
+};
+
 const nativeInfoKind = (handle: NativeElementHandle): GtkWidgetKind =>
   elementInfoOverrides.get(handle)?.kind ??
-  widgetKindFromInfo(nativeElementInfo(handle));
+  widgetKindFromHandleInfo(handle, nativeElementInfo(handle));
 
 const widgetKindFromInfo = (info: NativeElementInfo): GtkWidgetKind => {
   const roleName = normalizeRoleName(info.roleName);
   if (hasInterface(info, 'TableCell')) {
     return 'tableCell';
   }
+  if (hasInterface(info, 'Hyperlink')) {
+    return 'link';
+  }
+  if (
+    (roleName === 'button' || roleName === 'toggle button') &&
+    (hasState(info, 'expandable') ||
+      hasState(info, 'expanded') ||
+      hasState(info, 'collapsed'))
+  ) {
+    return 'expander';
+  }
   switch (roleName) {
     case 'frame':
     case 'dialog':
+    case 'alert dialog':
     case 'window':
       return 'window';
     case 'filler':
     case 'panel':
+    case 'grouping':
     case 'scroll pane':
     case 'layered pane':
     case 'split pane':
@@ -179,17 +266,42 @@ const widgetKindFromInfo = (info: NativeElementInfo): GtkWidgetKind => {
       return 'spinButton';
     case 'progress bar':
     case 'level bar':
+    case 'meter':
       return 'progressBar';
     case 'combo box':
       return 'comboBox';
+    case 'page tab list':
+    case 'tab list':
+      return 'tabList';
+    case 'page tab':
+    case 'tab':
+      return 'tab';
+    case 'tab panel':
+      return 'tabPanel';
+    case 'scroll bar':
+      return 'scrollbar';
+    case 'link':
+      return 'link';
+    case 'calendar':
+      return 'calendar';
+    case 'tool bar':
+      return 'toolbar';
+    case 'status bar':
+      return 'statusBar';
+    case 'info bar':
+    case 'alert':
+      return 'infoBar';
+    case 'separator':
+      return 'separator';
     case 'list':
     case 'list box':
       return 'list';
     case 'tree':
-      return hasInterface(info, 'Table') ? 'table' : 'list';
+      return hasInterface(info, 'Table') ? 'table' : 'tree';
     case 'list item':
-    case 'tree item':
       return 'listItem';
+    case 'tree item':
+      return 'treeItem';
     case 'table':
     case 'tree table':
       return 'table';
@@ -220,7 +332,11 @@ const toGtkElementInfo = (info: NativeElementInfo): GtkElementInfo => ({
 const toGtkElementInfoForHandle = (
   handle: NativeElementHandle
 ): GtkElementInfo => {
-  const info = toGtkElementInfo(nativeElementInfo(handle));
+  const nativeInfo = nativeElementInfo(handle);
+  const info: GtkElementInfo = {
+    ...nativeInfo,
+    kind: widgetKindFromHandleInfo(handle, nativeInfo),
+  };
   const override = elementInfoOverrides.get(handle);
   return override === undefined ? info : { ...info, ...override };
 };
@@ -329,6 +445,99 @@ const createSelectableChildContainerOperations = <
   },
   deselectChildAt: async (index: number): Promise<void> => {
     assertNonNegativeIndex('index', index);
+    nativeDeselectChildAt(handle, index);
+  },
+  selectAllChildren: async (): Promise<void> => {
+    nativeSelectAllChildren(handle);
+  },
+  clearSelection: async (): Promise<void> => {
+    nativeClearSelection(handle);
+  },
+});
+
+const createStateSelectableChildContainerOperations = <
+  Child extends GtkWidgetElement,
+>(
+  handle: NativeElementHandle,
+  expectedKinds: readonly GtkWidgetKind[]
+): {
+  readonly childAt: (index: number) => Promise<Child | undefined>;
+  readonly getChildCount: () => Promise<number>;
+  readonly getSelectedChildCount: () => Promise<number>;
+  readonly selectedChildAt: (
+    selectedIndex: number
+  ) => Promise<Child | undefined>;
+  readonly isChildSelected: (index: number) => Promise<boolean>;
+  readonly selectChildAt: (index: number) => Promise<void>;
+  readonly deselectChildAt: (index: number) => Promise<void>;
+  readonly selectAllChildren: () => Promise<void>;
+  readonly clearSelection: () => Promise<void>;
+} => ({
+  ...createChildContainerOperations<Child>(handle, expectedKinds),
+  getSelectedChildCount: async (): Promise<number> => {
+    const childCount = nativeChildCount(handle);
+    let selectedCount = 0;
+    for (let index = 0; index < childCount; index += 1) {
+      const childHandle = nativeChildAt(handle, index);
+      if (
+        childHandle !== undefined &&
+        hasState(nativeElementInfo(childHandle), 'selected')
+      ) {
+        selectedCount += 1;
+      }
+    }
+    return selectedCount;
+  },
+  selectedChildAt: async (
+    selectedIndex: number
+  ): Promise<Child | undefined> => {
+    assertNonNegativeIndex('selectedIndex', selectedIndex);
+    const childCount = nativeChildCount(handle);
+    let currentSelectedIndex = 0;
+    for (let index = 0; index < childCount; index += 1) {
+      const childHandle = nativeChildAt(handle, index);
+      if (
+        childHandle === undefined ||
+        !hasState(nativeElementInfo(childHandle), 'selected')
+      ) {
+        continue;
+      }
+
+      if (currentSelectedIndex === selectedIndex) {
+        const child = createGtkElement(childHandle);
+        return assertExpectedKind<Child>(
+          child,
+          expectedKinds,
+          'selectedChildAt()'
+        );
+      }
+      currentSelectedIndex += 1;
+    }
+
+    return undefined;
+  },
+  isChildSelected: async (index: number): Promise<boolean> => {
+    assertNonNegativeIndex('index', index);
+    const childHandle = nativeChildAt(handle, index);
+    if (childHandle === undefined) {
+      throw createOperationFailedForOutOfRangeIndex(index);
+    }
+    return hasState(nativeElementInfo(childHandle), 'selected');
+  },
+  selectChildAt: async (index: number): Promise<void> => {
+    assertNonNegativeIndex('index', index);
+    const childHandle = nativeChildAt(handle, index);
+    if (childHandle === undefined) {
+      throw createOperationFailedForOutOfRangeIndex(index);
+    }
+    nativeClick(childHandle);
+  },
+  deselectChildAt: async (index: number): Promise<void> => {
+    assertNonNegativeIndex('index', index);
+    const childHandle = nativeChildAt(handle, index);
+    if (childHandle === undefined) {
+      throw createOperationFailedForOutOfRangeIndex(index);
+    }
     nativeDeselectChildAt(handle, index);
   },
   selectAllChildren: async (): Promise<void> => {
@@ -691,6 +900,43 @@ const createToggleOperation =
     nativeClick(handle);
   };
 
+const createIsSelectedOperation =
+  (handle: NativeElementHandle): (() => Promise<boolean>) =>
+  async (): Promise<boolean> =>
+    hasState(nativeElementInfo(handle), 'selected');
+
+const createSelectOperation =
+  (handle: NativeElementHandle): (() => Promise<void>) =>
+  async (): Promise<void> => {
+    nativeClick(handle);
+  };
+
+const createIsExpandedOperation =
+  (handle: NativeElementHandle): (() => Promise<boolean>) =>
+  async (): Promise<boolean> =>
+    hasState(nativeElementInfo(handle), 'expanded');
+
+const createExpandOperation =
+  (handle: NativeElementHandle): (() => Promise<void>) =>
+  async (): Promise<void> => {
+    if (!hasState(nativeElementInfo(handle), 'expanded')) {
+      nativeClick(handle);
+    }
+  };
+
+const createCollapseOperation =
+  (handle: NativeElementHandle): (() => Promise<void>) =>
+  async (): Promise<void> => {
+    if (hasState(nativeElementInfo(handle), 'expanded')) {
+      nativeClick(handle);
+    }
+  };
+
+const createIsVisitedOperation =
+  (handle: NativeElementHandle): (() => Promise<boolean>) =>
+  async (): Promise<boolean> =>
+    hasState(nativeElementInfo(handle), 'visited');
+
 const createValueInfoOperation =
   (handle: NativeElementHandle): (() => Promise<GtkValueInfo>) =>
   async (): Promise<GtkValueInfo> =>
@@ -932,7 +1178,7 @@ const createTableCellAtOperation =
     );
   };
 
-const createTableOperations = (
+const createTableNavigationOperations = (
   handle: NativeElementHandle
 ): {
   readonly getRowCount: () => Promise<number>;
@@ -941,15 +1187,6 @@ const createTableOperations = (
     row: number,
     column: number
   ) => Promise<GtkTableCellElement | undefined>;
-  readonly selectedRows: () => Promise<readonly number[]>;
-  readonly selectedColumns: () => Promise<readonly number[]>;
-  readonly isRowSelected: (row: number) => Promise<boolean>;
-  readonly isColumnSelected: (column: number) => Promise<boolean>;
-  readonly isCellSelected: (row: number, column: number) => Promise<boolean>;
-  readonly selectRow: (row: number) => Promise<void>;
-  readonly deselectRow: (row: number) => Promise<void>;
-  readonly selectColumn: (column: number) => Promise<void>;
-  readonly deselectColumn: (column: number) => Promise<void>;
 } => ({
   getRowCount: async (): Promise<number> => {
     try {
@@ -972,6 +1209,21 @@ const createTableOperations = (
     }
   },
   cellAt: createTableCellAtOperation(handle),
+});
+
+const createTableSelectionOperations = (
+  handle: NativeElementHandle
+): {
+  readonly selectedRows: () => Promise<readonly number[]>;
+  readonly selectedColumns: () => Promise<readonly number[]>;
+  readonly isRowSelected: (row: number) => Promise<boolean>;
+  readonly isColumnSelected: (column: number) => Promise<boolean>;
+  readonly isCellSelected: (row: number, column: number) => Promise<boolean>;
+  readonly selectRow: (row: number) => Promise<void>;
+  readonly deselectRow: (row: number) => Promise<void>;
+  readonly selectColumn: (column: number) => Promise<void>;
+  readonly deselectColumn: (column: number) => Promise<void>;
+} => ({
   selectedRows: async (): Promise<readonly number[]> =>
     nativeTableSelectedRows(handle),
   selectedColumns: async (): Promise<readonly number[]> =>
@@ -1005,6 +1257,14 @@ const createTableOperations = (
     assertNonNegativeIndex('column', column);
     nativeTableDeselectColumn(handle, column);
   },
+});
+
+const createTableOperations = (
+  handle: NativeElementHandle
+): ReturnType<typeof createTableNavigationOperations> &
+  ReturnType<typeof createTableSelectionOperations> => ({
+  ...createTableNavigationOperations(handle),
+  ...createTableSelectionOperations(handle),
 });
 
 /** Creates an element bound to an opaque native accessible handle. */
@@ -1111,6 +1371,40 @@ export const createGtkElement = (
         click: createComboBoxClickOperation(handle),
         ...createComboBoxOperations(handle),
       };
+    case 'tabList':
+      return {
+        ...common,
+        kind: 'tabList',
+        ...createStateSelectableChildContainerOperations<GtkTabElement>(
+          handle,
+          ['tab']
+        ),
+      };
+    case 'tab':
+      return {
+        ...common,
+        kind: 'tab',
+        click: createClickOperation(handle),
+        isSelected: createIsSelectedOperation(handle),
+        select: createSelectOperation(handle),
+      };
+    case 'tabPanel':
+      return {
+        ...common,
+        kind: 'tabPanel',
+        ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
+      };
+    case 'expander':
+      return {
+        ...common,
+        kind: 'expander',
+        click: createClickOperation(handle),
+        isExpanded: createIsExpandedOperation(handle),
+        expand: createExpandOperation(handle),
+        collapse: createCollapseOperation(handle),
+        toggle: createToggleOperation(handle),
+        ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
+      };
     case 'list':
       return {
         ...common,
@@ -1149,6 +1443,72 @@ export const createGtkElement = (
         ...common,
         kind: 'menuItem',
         click: createClickOperation(handle),
+      };
+    case 'scrollbar':
+      return {
+        ...common,
+        kind: 'scrollbar',
+        value: createValueOperation(handle),
+        valueInfo: createValueInfoOperation(handle),
+        setValue: createSetValueOperation(handle),
+      };
+    case 'link':
+      return {
+        ...common,
+        kind: 'link',
+        click: createClickOperation(handle),
+        isVisited: createIsVisitedOperation(handle),
+      };
+    case 'calendar':
+      return {
+        ...common,
+        kind: 'calendar',
+        ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
+        ...(hasInterface(nativeElementInfo(handle), 'Table')
+          ? createTableNavigationOperations(handle)
+          : {}),
+      };
+    case 'toolbar':
+      return {
+        ...common,
+        kind: 'toolbar',
+        ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
+      };
+    case 'statusBar':
+      return {
+        ...common,
+        kind: 'statusBar',
+        ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
+      };
+    case 'infoBar':
+      return {
+        ...common,
+        kind: 'infoBar',
+        ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
+      };
+    case 'separator':
+      return { ...common, kind: 'separator' };
+    case 'tree':
+      return {
+        ...common,
+        kind: 'tree',
+        ...createStateSelectableChildContainerOperations<GtkTreeItemElement>(
+          handle,
+          ['treeItem']
+        ),
+      };
+    case 'treeItem':
+      return {
+        ...common,
+        kind: 'treeItem',
+        click: createClickOperation(handle),
+        isSelected: createIsSelectedOperation(handle),
+        select: createSelectOperation(handle),
+        isExpanded: createIsExpandedOperation(handle),
+        expand: createExpandOperation(handle),
+        collapse: createCollapseOperation(handle),
+        toggle: createToggleOperation(handle),
+        ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
       };
     case 'unknown':
       return { ...common, kind: 'unknown' };
