@@ -769,6 +769,8 @@ const handleElementCommand = async (
       return null;
     case 'window.x11Info':
       return callElementMethod(entry, 'x11Info');
+    case 'window.debugDiagnostics':
+      return callElementMethod(entry, 'debugDiagnostics');
     case 'element.childAt': {
       const { index } = payload as DriverElementPayload & DriverIndexPayload;
       return optionalElementRef(

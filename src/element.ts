@@ -41,6 +41,14 @@ import {
   nativeText,
   nativeValueInfo,
   nativeX11Info,
+  nativeActivateX11Window,
+  nativeMoveX11Window,
+  nativeResizeX11Window,
+  nativeSetX11WindowBounds,
+  nativeX11WindowBounds,
+  nativeX11WindowInfo,
+  nativeX11WindowResizeHints,
+  nativeX11WindowSnapshot,
   type NativeElementInfo,
   type NativeElementHandle,
   type NativeImageInfo,
@@ -65,9 +73,12 @@ import type {
   GtkValueInfo,
   GtkWidgetElement,
   GtkWidgetKind,
+  GtkWindowDebugDiagnostics,
+  GtkWindowElement,
   GtkWindowResizeHints,
   GtkX11WindowInfo,
 } from './types';
+import type { UnifiedNativeWindow } from './windowDiscovery';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1009,6 +1020,128 @@ const createX11InfoOperation =
   async (): Promise<GtkX11WindowInfo> =>
     nativeX11Info(handle);
 
+const createAtspiWindowDebugDiagnosticsOperation =
+  (handle: NativeElementHandle): (() => Promise<GtkWindowDebugDiagnostics>) =>
+  async (): Promise<GtkWindowDebugDiagnostics> => {
+    const info = nativeElementInfo(handle);
+    return {
+      seenBy: ['at-spi'],
+      missingFrom: [],
+      mergeConfidence: 0.6,
+      matchedBy: 'at-spi-only',
+      backendStatus: [],
+      rawIds: {
+        atspi: info.accessibleId.length === 0 ? null : info.accessibleId,
+        x11: null,
+      },
+    };
+  };
+
+const createStaticWindowDebugDiagnosticsOperation =
+  (
+    debugDiagnostics: GtkWindowDebugDiagnostics
+  ): (() => Promise<GtkWindowDebugDiagnostics>) =>
+  async (): Promise<GtkWindowDebugDiagnostics> =>
+    debugDiagnostics;
+
+const createX11UnsupportedSemanticOperation =
+  (operation: string): (() => Promise<never>) =>
+  async (): Promise<never> => {
+    throw createGtkUnsupportedInterfaceError(
+      `${operation} requires an AT-SPI semantic window source.`
+    );
+  };
+
+const createX11ChildAtOperation =
+  (): ((index: number) => Promise<GtkWidgetElement | undefined>) =>
+  async (index: number): Promise<GtkWidgetElement | undefined> => {
+    assertNonNegativeIndex('index', index);
+    throw createGtkUnsupportedInterfaceError(
+      'childAt() requires an AT-SPI semantic window source.'
+    );
+  };
+
+const createX11WindowInfoOperation =
+  (windowId: string): (() => Promise<GtkElementInfo>) =>
+  async (): Promise<GtkElementInfo> => {
+    const snapshot = nativeX11WindowSnapshot(windowId);
+    return {
+      kind: 'window',
+      roleName: 'window',
+      localizedRoleName: 'window',
+      accessibleId: '',
+      name: snapshot.title,
+      description: '',
+      interfaces: [],
+      states: snapshot.active ? ['active', 'visible'] : ['visible'],
+    };
+  };
+
+const createX11WindowCaptureOperation =
+  (windowId: string): (() => Promise<GtkCapture>) =>
+  async (): Promise<GtkCapture> =>
+    nativeCaptureBounds(nativeX11WindowBounds(windowId));
+
+const createX11WindowBoundsOperation =
+  (windowId: string): (() => Promise<GtkCaptureBounds>) =>
+  async (): Promise<GtkCaptureBounds> =>
+    nativeX11WindowBounds(windowId);
+
+const createX11MoveToOperation =
+  (windowId: string): ((x: number, y: number) => Promise<GtkCaptureBounds>) =>
+  async (x: number, y: number): Promise<GtkCaptureBounds> => {
+    assertInt32('x', x);
+    assertInt32('y', y);
+    return nativeMoveX11Window(windowId, x, y);
+  };
+
+const createX11ResizeToOperation =
+  (
+    windowId: string
+  ): ((width: number, height: number) => Promise<GtkCaptureBounds>) =>
+  async (width: number, height: number): Promise<GtkCaptureBounds> => {
+    assertPositiveInt32('width', width);
+    assertPositiveInt32('height', height);
+    return nativeResizeX11Window(windowId, width, height);
+  };
+
+const createX11SetBoundsOperation =
+  (
+    windowId: string
+  ): ((bounds: GtkCaptureBounds) => Promise<GtkCaptureBounds>) =>
+  async (bounds: GtkCaptureBounds): Promise<GtkCaptureBounds> => {
+    if (typeof bounds !== 'object' || bounds === null) {
+      throw createGtkInvalidArgumentError('bounds must be an object.');
+    }
+    assertInt32('bounds.x', bounds.x);
+    assertInt32('bounds.y', bounds.y);
+    assertPositiveInt32('bounds.width', bounds.width);
+    assertPositiveInt32('bounds.height', bounds.height);
+    return nativeSetX11WindowBounds(
+      windowId,
+      bounds.x,
+      bounds.y,
+      bounds.width,
+      bounds.height
+    );
+  };
+
+const createX11ActivateOperation =
+  (windowId: string): (() => Promise<void>) =>
+  async (): Promise<void> => {
+    nativeActivateX11Window(windowId);
+  };
+
+const createX11ResizeHintsOperation =
+  (windowId: string): (() => Promise<GtkWindowResizeHints>) =>
+  async (): Promise<GtkWindowResizeHints> =>
+    nativeX11WindowResizeHints(windowId);
+
+const createX11WindowX11InfoOperation =
+  (windowId: string): (() => Promise<GtkX11WindowInfo>) =>
+  async (): Promise<GtkX11WindowInfo> =>
+    nativeX11WindowInfo(windowId);
+
 const createValueOperation =
   (handle: NativeElementHandle): (() => Promise<number>) =>
   async (): Promise<number> =>
@@ -1287,6 +1420,7 @@ export const createGtkElement = (
         activate: createActivateWindowOperation(handle),
         resizeHints: createResizeHintsOperation(handle),
         x11Info: createX11InfoOperation(handle),
+        debugDiagnostics: createAtspiWindowDebugDiagnosticsOperation(handle),
       };
     case 'button':
       return { ...common, kind: 'button', click: createClickOperation(handle) };
@@ -1513,4 +1647,68 @@ export const createGtkElement = (
     case 'unknown':
       return { ...common, kind: 'unknown' };
   }
+};
+
+const createX11OnlyGtkWindowElement = (
+  window: UnifiedNativeWindow
+): GtkWindowElement => {
+  const x11 = window.x11;
+  if (x11 === null) {
+    throw createGtkOperationFailedError('Unified window has no X11 source.');
+  }
+
+  return {
+    kind: 'window',
+    info: createX11WindowInfoOperation(x11.windowId),
+    capture: createX11WindowCaptureOperation(x11.windowId),
+    bounds: createX11WindowBoundsOperation(x11.windowId),
+    moveTo: createX11MoveToOperation(x11.windowId),
+    childAt: createX11ChildAtOperation(),
+    getChildCount: createX11UnsupportedSemanticOperation('getChildCount()'),
+    resizeTo: createX11ResizeToOperation(x11.windowId),
+    setBounds: createX11SetBoundsOperation(x11.windowId),
+    activate: createX11ActivateOperation(x11.windowId),
+    resizeHints: createX11ResizeHintsOperation(x11.windowId),
+    x11Info: createX11WindowX11InfoOperation(x11.windowId),
+    debugDiagnostics: createStaticWindowDebugDiagnosticsOperation(
+      window.debugDiagnostics
+    ),
+  };
+};
+
+/** Creates a window element from unified native window discovery. */
+export const createGtkWindowElement = (
+  window: UnifiedNativeWindow
+): GtkWindowElement => {
+  if (window.atspi !== null) {
+    const element = assertExpectedKind<GtkWindowElement>(
+      createGtkElement(window.atspi.handle),
+      ['window'],
+      'window discovery'
+    );
+    if (window.x11 !== null) {
+      return {
+        ...element,
+        capture: createX11WindowCaptureOperation(window.x11.windowId),
+        bounds: createX11WindowBoundsOperation(window.x11.windowId),
+        moveTo: createX11MoveToOperation(window.x11.windowId),
+        resizeTo: createX11ResizeToOperation(window.x11.windowId),
+        setBounds: createX11SetBoundsOperation(window.x11.windowId),
+        activate: createX11ActivateOperation(window.x11.windowId),
+        resizeHints: createX11ResizeHintsOperation(window.x11.windowId),
+        x11Info: createX11WindowX11InfoOperation(window.x11.windowId),
+        debugDiagnostics: createStaticWindowDebugDiagnosticsOperation(
+          window.debugDiagnostics
+        ),
+      };
+    }
+    return {
+      ...element,
+      debugDiagnostics: createStaticWindowDebugDiagnosticsOperation(
+        window.debugDiagnostics
+      ),
+    };
+  }
+
+  return createX11OnlyGtkWindowElement(window);
 };

@@ -460,6 +460,17 @@ bool set_int32_property(napi_env env, napi_value target, const char *name,
   return set_value_property(env, target, name, property_value);
 }
 
+bool set_uint32_property(napi_env env, napi_value target, const char *name,
+                         guint value) {
+  napi_value property_value = nullptr;
+  if (napi_create_uint32(env, value, &property_value) != napi_ok) {
+    napi_throw_error(env, nullptr, "Failed to create native uint32 value.");
+    return false;
+  }
+
+  return set_value_property(env, target, name, property_value);
+}
+
 bool set_double_property(napi_env env, napi_value target, const char *name,
                          gdouble value) {
   napi_value property_value = nullptr;
@@ -476,6 +487,16 @@ bool set_bool_property(napi_env env, napi_value target, const char *name,
   napi_value property_value = nullptr;
   if (napi_get_boolean(env, value, &property_value) != napi_ok) {
     napi_throw_error(env, nullptr, "Failed to create native boolean value.");
+    return false;
+  }
+
+  return set_value_property(env, target, name, property_value);
+}
+
+bool set_null_property(napi_env env, napi_value target, const char *name) {
+  napi_value property_value = nullptr;
+  if (napi_get_null(env, &property_value) != napi_ok) {
+    napi_throw_error(env, nullptr, "Failed to create native null value.");
     return false;
   }
 
@@ -607,6 +628,52 @@ bool create_x11_window_info_object(napi_env env,
          set_string_property(env, *result, "instanceName",
                              info.instance_name.c_str()) &&
          set_value_property(env, *result, "normalHints", normal_hints);
+}
+
+bool create_x11_window_snapshot_object(
+    napi_env env, const gestament::X11WindowSnapshot &snapshot,
+    napi_value *result) {
+  if (napi_create_object(env, result) != napi_ok) {
+    napi_throw_error(env, nullptr,
+                     "Failed to create X11 window snapshot object.");
+    return false;
+  }
+
+  napi_value bounds = nullptr;
+  napi_value normal_hints = nullptr;
+  if (!create_bounds_object(env, snapshot.bounds, &bounds) ||
+      !create_resize_hints_object(env, snapshot.normal_hints, &normal_hints) ||
+      !set_string_property(env, *result, "windowId",
+                           snapshot.window_id.c_str()) ||
+      !set_string_property(env, *result, "title", snapshot.title.c_str()) ||
+      !set_string_property(env, *result, "className",
+                           snapshot.class_name.c_str()) ||
+      !set_string_property(env, *result, "instanceName",
+                           snapshot.instance_name.c_str()) ||
+      !set_value_property(env, *result, "bounds", bounds) ||
+      !set_value_property(env, *result, "normalHints", normal_hints) ||
+      !set_bool_property(env, *result, "hasNormalHints",
+                         snapshot.has_normal_hints) ||
+      !set_int32_property(env, *result, "stackingOrder",
+                          snapshot.stacking_order) ||
+      !set_bool_property(env, *result, "active", snapshot.active)) {
+    return false;
+  }
+
+  if (snapshot.has_process_id) {
+    if (!set_uint32_property(env, *result, "processId",
+                             snapshot.process_id)) {
+      return false;
+    }
+  } else if (!set_null_property(env, *result, "processId")) {
+    return false;
+  }
+
+  if (!snapshot.transient_for.empty()) {
+    return set_string_property(env, *result, "transientFor",
+                               snapshot.transient_for.c_str());
+  }
+  return set_null_property(env, *result, "transientFor");
 }
 
 bool create_string_array(napi_env env, const std::vector<std::string> &values,
@@ -1978,6 +2045,259 @@ napi_value mapped_x11_window_count(napi_env env, napi_callback_info) {
   return result;
 }
 
+napi_value x11_window_snapshots(napi_env env, napi_callback_info info) {
+  napi_value args[2] = {};
+  if (!read_arguments(env, info, 2, args)) {
+    return make_undefined(env);
+  }
+
+  guint process_id = 0;
+  bool filter_by_process = false;
+  if (!read_process_id(env, args[0], &process_id) ||
+      !read_bool_argument(env, args[1], "filterByProcess",
+                          &filter_by_process)) {
+    return make_undefined(env);
+  }
+
+  std::vector<gestament::X11WindowSnapshot> snapshots;
+  gestament::NativeError error = {};
+  if (!gestament::read_x11_window_snapshots(process_id, filter_by_process,
+                                            &snapshots, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (napi_create_array_with_length(env, snapshots.size(), &result) !=
+      napi_ok) {
+    napi_throw_error(env, nullptr, "Failed to create X11 snapshot array.");
+    return make_undefined(env);
+  }
+
+  for (std::size_t index = 0; index < snapshots.size(); index += 1) {
+    napi_value snapshot = nullptr;
+    if (!create_x11_window_snapshot_object(env, snapshots[index], &snapshot) ||
+        napi_set_element(env, result, index, snapshot) != napi_ok) {
+      napi_throw_error(env, nullptr, "Failed to set X11 snapshot array item.");
+      return make_undefined(env);
+    }
+  }
+
+  return result;
+}
+
+napi_value x11_window_snapshot(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  std::string window_id;
+  if (!read_string_argument(env, args[0], "windowId", &window_id)) {
+    return make_undefined(env);
+  }
+
+  gestament::X11WindowSnapshot snapshot = {};
+  gestament::NativeError error = {};
+  if (!gestament::read_x11_window_snapshot(window_id, &snapshot, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_x11_window_snapshot_object(env, snapshot, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value x11_window_bounds(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  std::string window_id;
+  if (!read_string_argument(env, args[0], "windowId", &window_id)) {
+    return make_undefined(env);
+  }
+
+  gestament::CaptureBounds bounds = {};
+  gestament::NativeError error = {};
+  if (!gestament::read_x11_window_bounds_by_id(window_id, &bounds, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_bounds_object(env, bounds, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value move_x11_window(napi_env env, napi_callback_info info) {
+  napi_value args[3] = {};
+  if (!read_arguments(env, info, 3, args)) {
+    return make_undefined(env);
+  }
+
+  std::string window_id;
+  gint x = 0;
+  gint y = 0;
+  if (!read_string_argument(env, args[0], "windowId", &window_id) ||
+      !read_int32_argument(env, args[1], "x", &x) ||
+      !read_int32_argument(env, args[2], "y", &y)) {
+    return make_undefined(env);
+  }
+
+  gestament::CaptureBounds bounds = {};
+  gestament::NativeError error = {};
+  if (!gestament::move_x11_window_by_id(window_id, x, y, &bounds, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_bounds_object(env, bounds, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value resize_x11_window(napi_env env, napi_callback_info info) {
+  napi_value args[3] = {};
+  if (!read_arguments(env, info, 3, args)) {
+    return make_undefined(env);
+  }
+
+  std::string window_id;
+  gint width = 0;
+  gint height = 0;
+  if (!read_string_argument(env, args[0], "windowId", &window_id) ||
+      !read_positive_int32_argument(env, args[1], "width", &width) ||
+      !read_positive_int32_argument(env, args[2], "height", &height)) {
+    return make_undefined(env);
+  }
+
+  gestament::CaptureBounds bounds = {};
+  gestament::NativeError error = {};
+  if (!gestament::resize_x11_window_by_id(window_id, width, height, &bounds,
+                                          &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_bounds_object(env, bounds, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value set_x11_window_bounds(napi_env env, napi_callback_info info) {
+  napi_value args[5] = {};
+  if (!read_arguments(env, info, 5, args)) {
+    return make_undefined(env);
+  }
+
+  std::string window_id;
+  gestament::CaptureBounds requested_bounds = {};
+  if (!read_string_argument(env, args[0], "windowId", &window_id) ||
+      !read_int32_argument(env, args[1], "x", &requested_bounds.x) ||
+      !read_int32_argument(env, args[2], "y", &requested_bounds.y) ||
+      !read_positive_int32_argument(env, args[3], "width",
+                                    &requested_bounds.width) ||
+      !read_positive_int32_argument(env, args[4], "height",
+                                    &requested_bounds.height)) {
+    return make_undefined(env);
+  }
+
+  gestament::CaptureBounds bounds = {};
+  gestament::NativeError error = {};
+  if (!gestament::set_x11_window_bounds_by_id(window_id, requested_bounds,
+                                              &bounds, &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_bounds_object(env, bounds, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value activate_x11_window(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  std::string window_id;
+  if (!read_string_argument(env, args[0], "windowId", &window_id)) {
+    return make_undefined(env);
+  }
+
+  gestament::NativeError error = {};
+  if (!gestament::activate_x11_window_by_id(window_id, &error)) {
+    throw_native_error(env, error);
+  }
+  return make_undefined(env);
+}
+
+napi_value x11_window_resize_hints(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  std::string window_id;
+  if (!read_string_argument(env, args[0], "windowId", &window_id)) {
+    return make_undefined(env);
+  }
+
+  gestament::WindowResizeHints hints = {};
+  gestament::NativeError error = {};
+  if (!gestament::read_x11_window_resize_hints_by_id(window_id, &hints,
+                                                     &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_resize_hints_object(env, hints, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value x11_window_info(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  std::string window_id;
+  if (!read_string_argument(env, args[0], "windowId", &window_id)) {
+    return make_undefined(env);
+  }
+
+  gestament::X11WindowInfo window_info = {};
+  gestament::NativeError error = {};
+  if (!gestament::read_x11_window_info_by_id(window_id, &window_info,
+                                             &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_x11_window_info_object(env, window_info, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
 napi_value element_info(napi_env env, napi_callback_info info) {
   napi_value args[1] = {};
   if (!read_arguments(env, info, 1, args)) {
@@ -2105,6 +2425,15 @@ napi_value initialize(napi_env env, napi_value exports) {
   set_function(env, exports, "captureScreen", capture_screen);
   set_function(env, exports, "captureBounds", capture_bounds);
   set_function(env, exports, "mappedX11WindowCount", mapped_x11_window_count);
+  set_function(env, exports, "x11WindowSnapshots", x11_window_snapshots);
+  set_function(env, exports, "x11WindowSnapshot", x11_window_snapshot);
+  set_function(env, exports, "x11WindowBounds", x11_window_bounds);
+  set_function(env, exports, "moveX11Window", move_x11_window);
+  set_function(env, exports, "resizeX11Window", resize_x11_window);
+  set_function(env, exports, "setX11WindowBounds", set_x11_window_bounds);
+  set_function(env, exports, "activateX11Window", activate_x11_window);
+  set_function(env, exports, "x11WindowResizeHints", x11_window_resize_hints);
+  set_function(env, exports, "x11WindowInfo", x11_window_info);
   set_function(env, exports, "elementInfo", element_info);
   set_function(env, exports, "trayItems", tray_items);
   set_function(env, exports, "runTrayHost", run_tray_host);

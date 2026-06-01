@@ -449,8 +449,8 @@ expect(systemOutput.sources).toEqual(
 | `GtkApp.getById()`          | Waits for an element matching the accessible ID and returns a `GtkWidgetElement`. Throws an exception if not found.                               |
 | `GtkApp.findByPath()`       | Waits for an accessible ID plus child indexes separated by `.`, `:`, `;`, or `,`. Returns `undefined` if not found.                               |
 | `GtkApp.getByPath()`        | Waits for an accessible ID plus child indexes separated by `.`, `:`, `;`, or `,`. Throws an exception if not found.                               |
-| `GtkApp.windowAt()`         | Gets a top-level window by AT-SPI traversal order and returns a `GtkWidgetElement` if it exists.                                                  |
-| `GtkApp.getWindowCount()`   | Returns the number of top-level windows exposed by the application.                                                                               |
+| `GtkApp.windowAt()`         | Gets a top-level window by unified native discovery and returns a `GtkWidgetElement` if it exists.                                                |
+| `GtkApp.getWindowCount()`   | Returns the number of top-level windows discovered for the application.                                                                           |
 | `GtkApp.findTrayItem()`     | Waits for a tray item matching a StatusNotifierItem ID, title, or DBus information and returns a `GtkTrayItem` if found.                          |
 | `GtkApp.getTrayItem()`      | Waits for a tray item matching a StatusNotifierItem ID, title, or DBus information and returns a `GtkTrayItem`. Throws an exception if not found. |
 | `GtkApp.trayItemAt()`       | Gets a StatusNotifierItem by current registration order and returns a `GtkTrayItem` if it exists.                                                 |
@@ -485,6 +485,9 @@ expect(secondWindow).toBeUndefined();
 - Using `getByPath()` and `findByPath()` can reduce the tedious waiting involved in locating child elements.
   `getByPath(‘main_window.0.2’)` is roughly equivalent to `getById(‘main_window’).childAt(0).childAt(2)`, but
   when combining `getById()` and `childAt()`, you need to use `await` for each step.
+- `windowAt()` and `getWindowCount()` are the top-level window enumeration APIs.
+  They merge AT-SPI windows with X11 top-level windows when both sources describe the same window, and they can also return X11-only native windows such as GTK file chooser dialogs.
+- `findById()`, `getById()`, `findByPath()`, and `getByPath()` remain semantic AT-SPI lookups. They do not assign synthetic accessible IDs to X11-only windows.
 
 ### Operating GTK widgets
 
@@ -506,7 +509,7 @@ expect(secondWindow).toBeUndefined();
 | `GtkSliderElement`                                                                    | `value()` / `valueInfo()` / `setValue()`                                                                                                                                                    |
 | `GtkProgressBarElement`                                                               | `value()` / `valueInfo()`                                                                                                                                                                   |
 | `GtkImageElement`                                                                     | `imageInfo()` / `GtkImageInfo.capture()`                                                                                                                                                    |
-| `GtkWindowElement`                                                                    | `activate()` / `bounds()` / `moveTo()` / `resizeTo()` / `setBounds()` / `resizeHints()` / `x11Info()` / `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`. |
+| `GtkWindowElement`                                                                    | `activate()` / `bounds()` / `moveTo()` / `resizeTo()` / `setBounds()` / `resizeHints()` / `x11Info()` / `debugDiagnostics()` / `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`. |
 | `GtkContainerElement`                                                                 | `childAt()` / `getChildCount()`. Child elements are returned as `GtkWidgetElement`.                                                                                                         |
 | `GtkComboBoxElement`                                                                  | `click()` / `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `clearSelection()`                                |
 | `GtkTabListElement`                                                                   | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()`                                                                 |
@@ -594,9 +597,15 @@ expect(x11Info.normalHints.widthIncrement).toBeGreaterThanOrEqual(0);
 - Taking a PNG screenshot will give you the window size, but if you only need the window geometry, use `bounds()`.
 - `moveTo()`, `resizeTo()`, and `setBounds()` return the actual bounds observed after the operation. GTK, the display backend, or window constraints may adjust the requested size.
 - Window geometry changes use the resolved native window first and fall back to AT-SPI Component operations when available.
+- Windows returned by `windowAt()` may come from AT-SPI, X11, or both.
+  When both backends expose the same top-level window, gestament merges them by process, title/name, and screen bounds so the window is not listed twice.
+- X11-only windows support native window operations such as `bounds()`, `capture()`, `moveTo()`, `resizeTo()`, `setBounds()`, `activate()`, `resizeHints()`, and `x11Info()`.
+  Semantic child traversal such as `childAt()` and `getChildCount()` requires an AT-SPI source and rejects with `UNSUPPORTED_INTERFACE` for X11-only windows.
 - Use `resizeHints()` for GTK/X11 size constraints such as base size, minimum size, and resize increments.
 - `x11Info()` exposes X11-specific metadata and `WM_NORMAL_HINTS`; prefer the high-level APIs above unless you need an X11 escape hatch.
 - On non-X11 backends or when the X11 window cannot be resolved, `x11Info()` rejects with `UNSUPPORTED_INTERFACE`.
+- `debugDiagnostics()` exposes backend visibility and merge details for troubleshooting.
+  Do not branch normal tests on this data, because AT-SPI/X11 availability and future Wayland support can change those details.
 
 Low-level input control is exposed separately from widget-level operations:
 

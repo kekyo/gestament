@@ -72,6 +72,7 @@ import type {
   GtkTrayItemSelector,
   GtkValueInfo,
   GtkWidgetElement,
+  GtkWindowDebugDiagnostics,
   GtkWindowResizeHints,
   GtkX11WindowInfo,
   GtkXvfbPool,
@@ -2402,6 +2403,10 @@ const createProxyGtkElement = (
           .then(() => undefined);
       target.x11Info = (): Promise<GtkX11WindowInfo> =>
         session.request<GtkX11WindowInfo>('window.x11Info', { elementId });
+      target.debugDiagnostics = (): Promise<GtkWindowDebugDiagnostics> =>
+        session.request<GtkWindowDebugDiagnostics>('window.debugDiagnostics', {
+          elementId,
+        });
       addChildContainerProxyOperations(session, elementId, target);
       break;
     case 'container':

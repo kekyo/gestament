@@ -14,7 +14,7 @@ import {
   normalizeNativeError,
 } from './errors';
 import { createDriverBackedGtkAppLauncher } from './displaySession';
-import { createGtkElement } from './element';
+import { createGtkElement, createGtkWindowElement } from './element';
 import { createGtkInputController } from './input';
 import {
   createGtkAppOutputRecorder,
@@ -25,7 +25,9 @@ import { appendPrerequisiteInstallHint } from './prerequisites';
 import { effectiveWaitTimeoutMs } from './wait';
 import {
   nativeFindById,
+  nativeBounds,
   nativeCaptureScreen,
+  nativeElementInfo,
   nativeProcessAtspiReadiness,
   nativeInputMoveMouse,
   nativeInputPressKeyName,
@@ -34,11 +36,13 @@ import {
   nativeInputSetModifier,
   nativeInputSetMouseButton,
   nativeTrayItems,
-  nativeWindowAt,
-  nativeWindowCount,
   type NativeAtspiReadiness,
 } from './native';
 import { createGtkTrayItem, nativeTrayItemMatchesSelector } from './tray';
+import {
+  collectNativeWindowDiscovery,
+  collectUnifiedNativeWindows,
+} from './windowDiscovery';
 import type {
   GtkApp,
   GtkAppEnvironment,
@@ -82,6 +86,39 @@ interface ParsedElementPath {
 interface GtkPathChildContainer {
   readonly childAt: (index: number) => Promise<GtkWidgetElement | undefined>;
 }
+
+const boundsEqual = (
+  first: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  },
+  second: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  }
+): boolean =>
+  first.x === second.x &&
+  first.y === second.y &&
+  first.width === second.width &&
+  first.height === second.height;
+
+const roleCanRepresentWindow = (roleName: string): boolean => {
+  const normalized = roleName
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  return (
+    normalized === 'frame' ||
+    normalized === 'window' ||
+    normalized === 'dialog' ||
+    normalized === 'alert dialog'
+  );
+};
 
 const formatProcessOutput = (state: ProcessState): string => {
   const stdout = state.stdout.join('').trim();
@@ -325,6 +362,48 @@ export const launchGtkApp = (
     }
   };
 
+  const createElementForHandle = (
+    processId: number,
+    handle: Parameters<typeof createGtkElement>[0]
+  ): GtkWidgetElement => {
+    const info = nativeElementInfo(handle);
+    if (!roleCanRepresentWindow(info.roleName)) {
+      return createGtkElement(handle);
+    }
+
+    let bounds: ReturnType<typeof nativeBounds> | null = null;
+    try {
+      bounds = nativeBounds(handle);
+    } catch {
+      bounds = null;
+    }
+
+    const window = collectUnifiedNativeWindows(processId).find((candidate) => {
+      const atspi = candidate.atspi;
+      if (atspi === null) {
+        return false;
+      }
+
+      if (
+        info.accessibleId.length > 0 &&
+        atspi.accessibleId === info.accessibleId
+      ) {
+        return true;
+      }
+
+      return (
+        bounds !== null &&
+        atspi.bounds !== null &&
+        atspi.name === info.name &&
+        boundsEqual(atspi.bounds, bounds)
+      );
+    });
+
+    return window === undefined
+      ? createGtkElement(handle)
+      : createGtkWindowElement(window);
+  };
+
   const findById = async (
     id: string
   ): Promise<GtkWidgetElement | undefined> => {
@@ -338,7 +417,7 @@ export const launchGtkApp = (
       try {
         const handle = nativeFindById(processId, id);
         if (handle !== undefined) {
-          return createGtkElement(handle);
+          return createElementForHandle(processId, handle);
         }
       } catch (error) {
         throw normalizeNativeError(error);
@@ -374,7 +453,7 @@ export const launchGtkApp = (
       try {
         const handle = nativeFindById(processId, parsedPath.id);
         if (handle !== undefined) {
-          let element = createGtkElement(handle);
+          let element = createElementForHandle(processId, handle);
           let resolved = true;
 
           for (const childIndex of parsedPath.childIndexes) {
@@ -536,34 +615,38 @@ export const launchGtkApp = (
     windowAt: async (index: number): Promise<GtkWidgetElement | undefined> => {
       assertNonNegativeIndex('index', index);
       const startedAt = Date.now();
-      const processId = await waitForAtspiReady(
-        state,
-        appPath,
-        effectiveWaitTimeoutMs(_timeoutMs),
-        startedAt
-      );
+      const timeoutMs = effectiveWaitTimeoutMs(_timeoutMs);
 
-      try {
-        const handle = nativeWindowAt(processId, index);
-        return handle === undefined ? undefined : createGtkElement(handle);
-      } catch (error) {
-        throw normalizeNativeError(error);
+      while (true) {
+        const processId = assertProcessRunning(state, appPath);
+        const window = collectUnifiedNativeWindows(processId)[index];
+        if (window !== undefined) {
+          return createGtkWindowElement(window);
+        }
+
+        if (index !== 0 || Date.now() - startedAt > timeoutMs) {
+          return undefined;
+        }
+
+        await delay(50);
       }
     },
     getWindowCount: async (): Promise<number> => {
       const startedAt = Date.now();
-      const processId = await waitForAtspiReady(
-        state,
-        appPath,
-        effectiveWaitTimeoutMs(_timeoutMs),
-        startedAt
-      );
+      const timeoutMs = effectiveWaitTimeoutMs(_timeoutMs);
 
-      try {
-        return nativeWindowCount(processId);
-      } catch (error) {
-        throw normalizeNativeError(error);
+      while (Date.now() - startedAt <= timeoutMs) {
+        const processId = assertProcessRunning(state, appPath);
+        const discovery = collectNativeWindowDiscovery(processId);
+        if (discovery.windows.length > 0) {
+          return discovery.windows.length;
+        }
+
+        await delay(50);
       }
+
+      assertProcessRunning(state, appPath);
+      return 0;
     },
     findTrayItem,
     getTrayItem,

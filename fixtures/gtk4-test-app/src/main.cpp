@@ -819,6 +819,9 @@ int main(int argc, char **argv) {
 
   const std::filesystem::path image_file = asset_path("sp_mon.png");
   gtk_image_set_from_file(GTK_IMAGE(image_control), image_file.c_str());
+  GDateTime *calendar_date = g_date_time_new_local(2026, 5, 25, 0, 0, 0);
+  gtk_calendar_select_day(GTK_CALENDAR(standard_calendar), calendar_date);
+  g_date_time_unref(calendar_date);
 
   AppWidgets widgets = {
       window,

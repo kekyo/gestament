@@ -444,8 +444,8 @@ expect(systemOutput.sources).toEqual(
 | `GtkApp.getById()`          | accessible IDに一致する要素を待機し、`GtkWidgetElement` を返します。見つからない場合は例外を送出します                                         |
 | `GtkApp.findByPath()`       | accessible IDと `.`, `:`, `;`, `,` 区切りの子要素インデックス列に一致する要素を待機します。見つからない場合は `undefined` を返します           |
 | `GtkApp.getByPath()`        | accessible IDと `.`, `:`, `;`, `,` 区切りの子要素インデックス列に一致する要素を待機します。見つからない場合は例外を送出します                  |
-| `GtkApp.windowAt()`         | トップレベルウインドウをAT-SPIの走査順で取得し、存在する場合は `GtkWidgetElement` を返します                                                   |
-| `GtkApp.getWindowCount()`   | アプリケーションが公開しているトップレベルウインドウ数を返します                                                                               |
+| `GtkApp.windowAt()`         | 統合native discoveryでトップレベルウインドウを取得し、存在する場合は `GtkWidgetElement` を返します                                             |
+| `GtkApp.getWindowCount()`   | アプリケーションについて検出されたトップレベルウインドウ数を返します                                                                           |
 | `GtkApp.findTrayItem()`     | StatusNotifierItemのID、タイトル、またはDBus情報に一致するトレイアイテムを待機し、見つかった場合は `GtkTrayItem` を返します                    |
 | `GtkApp.getTrayItem()`      | StatusNotifierItemのID、タイトル、またはDBus情報に一致するトレイアイテムを待機し、`GtkTrayItem` を返します。見つからない場合は例外を送出します |
 | `GtkApp.trayItemAt()`       | StatusNotifierItemを現在の登録順で取得し、存在する場合は `GtkTrayItem` を返します                                                              |
@@ -480,6 +480,9 @@ expect(secondWindow).toBeUndefined();
 - `getByPath()`, `findByPath()` を使用すると、子要素の特定で煩雑な待機を削減できます。
   `getByPath('main_window.0.2')` は、おおよそ `getById('main_window').childAt(0).childAt(2)` に相当しますが、
   `getById()`, `childAt()` を組み合わせる場合は、それぞれで `await` による待機が必要です。
+- `windowAt()` と `getWindowCount()` は、トップレベルウインドウ列挙用のAPIです。
+  同じウインドウがAT-SPIとX11の両方から見える場合は統合し、GTK file chooser dialogのようなX11-onlyのnative windowも列挙できます。
+- `findById()`, `getById()`, `findByPath()`, `getByPath()` は、semanticなAT-SPI探索のままです。X11-only windowに合成accessible IDを付けることはありません。
 
 ### GTKウィジェットの操作
 
@@ -501,7 +504,7 @@ expect(secondWindow).toBeUndefined();
 | `GtkSliderElement`                                                                    | `value()` / `valueInfo()` / `setValue()`                                                                                                                                            |
 | `GtkProgressBarElement`                                                               | `value()` / `valueInfo()`                                                                                                                                                           |
 | `GtkImageElement`                                                                     | `imageInfo()` / `GtkImageInfo.capture()`                                                                                                                                            |
-| `GtkWindowElement`                                                                    | `activate()` / `bounds()` / `moveTo()` / `resizeTo()` / `setBounds()` / `resizeHints()` / `x11Info()` / `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります |
+| `GtkWindowElement`                                                                    | `activate()` / `bounds()` / `moveTo()` / `resizeTo()` / `setBounds()` / `resizeHints()` / `x11Info()` / `debugDiagnostics()` / `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります |
 | `GtkContainerElement`                                                                 | `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります                                                                                                         |
 | `GtkComboBoxElement`                                                                  | `click()` / `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `clearSelection()`                        |
 | `GtkTabListElement`                                                                   | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()`                                                         |
@@ -589,9 +592,15 @@ expect(x11Info.normalHints.widthIncrement).toBeGreaterThanOrEqual(0);
 - PNGキャプチャを行えばウインドウサイズが得られますが、ウインドウジオメトリだけが必要な場合は `bounds()` を使用してください。
 - `moveTo()`、`resizeTo()`、`setBounds()` は操作後に観測された実際のboundsを返します。GTK、表示バックエンド、ウインドウ制約により、要求したサイズが補正されることがあります。
 - ウインドウジオメトリの変更は、解決されたnative windowを優先し、利用可能な場合はAT-SPI Component操作へfallbackします。
+- `windowAt()` が返すウインドウは、AT-SPI由来、X11由来、またはその両方に由来します。
+  同じトップレベルウインドウが両backendから見える場合、gestamentはprocess、title/name、screen boundsを使って統合し、二重列挙を避けます。
+- X11-only windowでは、`bounds()`, `capture()`, `moveTo()`, `resizeTo()`, `setBounds()`, `activate()`, `resizeHints()`, `x11Info()` などのnative window操作を使用できます。
+  `childAt()` や `getChildCount()` のようなsemanticな子要素走査はAT-SPI sourceが必要なため、X11-only windowでは `UNSUPPORTED_INTERFACE` で失敗します。
 - GTK/X11の基準サイズ、最小サイズ、リサイズ単位などのサイズ制約は `resizeHints()` で取得できます。
 - `x11Info()` はX11固有のメタデータと `WM_NORMAL_HINTS` を公開します。通常は上記の高水準APIを優先し、X11固有情報が必要な場合だけ使用してください。
 - X11以外のバックエンドやX11 windowを解決できない場合、`x11Info()` は `UNSUPPORTED_INTERFACE` で失敗します。
+- `debugDiagnostics()` はbackend visibilityやmerge detailsを調査するためのdebug情報を公開します。
+  AT-SPI/X11の可用性や将来のWayland対応で内容が変わる可能性があるため、通常のテスト分岐には使用しないでください。
 
 低水準入力制御は、ウィジェット単位の高水準操作とは別レイヤーとして提供されます:
 

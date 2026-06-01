@@ -14,10 +14,13 @@
 #include <X11/Xutil.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -37,6 +40,8 @@ constexpr gint64 kWindowActivationTimeoutUsec = 2000000;
 constexpr gulong kWindowActivationPollUsec = 50000;
 
 bool is_window_role(AtspiAccessible *accessible);
+NativeError operation_failed_error(const std::string &message);
+NativeError invalid_argument_error(const std::string &message);
 
 const char *state_type_name(AtspiStateType state) {
   switch (state) {
@@ -778,6 +783,240 @@ void read_x11_class_hint(Display *display, Window window,
     *instance_name = class_hint.res_name;
     XFree(class_hint.res_name);
   }
+}
+
+std::string x11_window_id_string(Window window) {
+  std::ostringstream stream;
+  stream << "0x" << std::hex << window;
+  return stream.str();
+}
+
+bool parse_x11_window_id(const std::string &window_id, Window *window) {
+  if (window == nullptr || window_id.empty()) {
+    return false;
+  }
+
+  errno = 0;
+  char *end = nullptr;
+  const unsigned long parsed = std::strtoul(window_id.c_str(), &end, 0);
+  if (errno != 0 || end == window_id.c_str() || end == nullptr ||
+      *end != '\0' || parsed == 0) {
+    return false;
+  }
+
+  *window = static_cast<Window>(parsed);
+  return true;
+}
+
+bool read_x11_window_process_id(Display *display, Window window,
+                                guint *process_id) {
+  if (process_id == nullptr) {
+    return false;
+  }
+
+  const Atom pid_atom = XInternAtom(display, "_NET_WM_PID", True);
+  if (pid_atom == None) {
+    return false;
+  }
+
+  Atom actual_type = None;
+  int actual_format = 0;
+  unsigned long item_count = 0;
+  unsigned long bytes_after = 0;
+  unsigned char *data = nullptr;
+  const int status =
+      XGetWindowProperty(display, window, pid_atom, 0, 1, False,
+                         AnyPropertyType, &actual_type, &actual_format,
+                         &item_count, &bytes_after, &data);
+  if (status != Success || data == nullptr) {
+    return false;
+  }
+
+  bool found = false;
+  if (actual_format == 32 && item_count >= 1) {
+    const auto *values = reinterpret_cast<unsigned long *>(data);
+    *process_id = static_cast<guint>(values[0]);
+    found = true;
+  }
+  XFree(data);
+  return found;
+}
+
+std::string read_x11_transient_for(Display *display, Window window) {
+  Window transient_for = 0;
+  if (XGetTransientForHint(display, window, &transient_for) == 0 ||
+      transient_for == 0) {
+    return "";
+  }
+  return x11_window_id_string(transient_for);
+}
+
+bool read_x11_window_property(Display *display, Window root, const char *name,
+                              std::vector<Window> *windows) {
+  if (windows == nullptr) {
+    return false;
+  }
+
+  const Atom atom = XInternAtom(display, name, True);
+  if (atom == None) {
+    return false;
+  }
+
+  Atom actual_type = None;
+  int actual_format = 0;
+  unsigned long item_count = 0;
+  unsigned long bytes_after = 0;
+  unsigned char *data = nullptr;
+  const int status =
+      XGetWindowProperty(display, root, atom, 0, 4096, False, AnyPropertyType,
+                         &actual_type, &actual_format, &item_count,
+                         &bytes_after, &data);
+  if (status != Success || data == nullptr) {
+    return false;
+  }
+
+  bool found = false;
+  if (actual_format == 32 && item_count > 0) {
+    const auto *values = reinterpret_cast<unsigned long *>(data);
+    for (unsigned long index = 0; index < item_count; index += 1) {
+      windows->push_back(static_cast<Window>(values[index]));
+    }
+    found = true;
+  }
+  XFree(data);
+  return found;
+}
+
+bool query_x11_root_children(Display *display, Window root,
+                             std::vector<Window> *windows,
+                             NativeError *error) {
+  if (windows == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window list result must not be null.");
+    }
+    return false;
+  }
+
+  Window root_return = 0;
+  Window parent_return = 0;
+  Window *children = nullptr;
+  unsigned int child_count = 0;
+  if (XQueryTree(display, root, &root_return, &parent_return, &children,
+                 &child_count) == 0) {
+    if (error != nullptr) {
+      *error = operation_failed_error("Failed to query X11 root window children.");
+    }
+    return false;
+  }
+
+  for (unsigned int index = 0; index < child_count; index += 1) {
+    windows->push_back(children[index]);
+  }
+
+  if (children != nullptr) {
+    XFree(children);
+  }
+  return true;
+}
+
+bool read_x11_toplevel_windows(Display *display, Window root,
+                               std::vector<Window> *windows,
+                               NativeError *error) {
+  if (windows == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window list result must not be null.");
+    }
+    return false;
+  }
+
+  if (read_x11_window_property(display, root, "_NET_CLIENT_LIST_STACKING",
+                               windows) ||
+      read_x11_window_property(display, root, "_NET_CLIENT_LIST", windows)) {
+    return true;
+  }
+
+  return query_x11_root_children(display, root, windows, error);
+}
+
+Window read_x11_active_window(Display *display, Window root) {
+  const Atom atom = XInternAtom(display, "_NET_ACTIVE_WINDOW", True);
+  if (atom == None) {
+    return 0;
+  }
+
+  Atom actual_type = None;
+  int actual_format = 0;
+  unsigned long item_count = 0;
+  unsigned long bytes_after = 0;
+  unsigned char *data = nullptr;
+  const int status =
+      XGetWindowProperty(display, root, atom, 0, 1, False, AnyPropertyType,
+                         &actual_type, &actual_format, &item_count,
+                         &bytes_after, &data);
+  if (status != Success || data == nullptr) {
+    return 0;
+  }
+
+  Window active_window = 0;
+  if (actual_format == 32 && item_count >= 1) {
+    const auto *values = reinterpret_cast<unsigned long *>(data);
+    active_window = static_cast<Window>(values[0]);
+  }
+  XFree(data);
+  return active_window;
+}
+
+bool read_x11_snapshot_from_display(Display *display, Window root,
+                                    Window active_window, Window window,
+                                    gint stacking_order,
+                                    X11WindowSnapshot *snapshot) {
+  if (snapshot == nullptr) {
+    return false;
+  }
+
+  CaptureBounds bounds = {};
+  if (!read_x11_window_bounds(display, root, window, &bounds)) {
+    return false;
+  }
+
+  X11WindowSnapshot next = {};
+  next.window_id = x11_window_id_string(window);
+  next.title = read_x11_window_title(display, window);
+  read_x11_class_hint(display, window, &next.class_name, &next.instance_name);
+  next.transient_for = read_x11_transient_for(display, window);
+  next.has_process_id =
+      read_x11_window_process_id(display, window, &next.process_id);
+  next.bounds = bounds;
+  next.has_normal_hints =
+      read_x11_resize_hints(display, window, &next.normal_hints);
+  next.stacking_order = stacking_order;
+  next.active = active_window != 0 && active_window == window;
+  *snapshot = next;
+  return true;
+}
+
+std::vector<X11WindowSnapshot> filter_x11_snapshots_by_process(
+    const std::vector<X11WindowSnapshot> &snapshots, guint process_id) {
+  std::set<std::string> accepted_window_ids;
+  for (const auto &snapshot : snapshots) {
+    if (snapshot.has_process_id && snapshot.process_id == process_id) {
+      accepted_window_ids.insert(snapshot.window_id);
+    }
+  }
+
+  std::vector<X11WindowSnapshot> filtered;
+  for (const auto &snapshot : snapshots) {
+    const bool process_matches =
+        snapshot.has_process_id && snapshot.process_id == process_id;
+    const bool transient_matches =
+        !snapshot.transient_for.empty() &&
+        accepted_window_ids.find(snapshot.transient_for) !=
+            accepted_window_ids.end();
+    if (process_matches || transient_matches) {
+      filtered.push_back(snapshot);
+    }
+  }
+  return filtered;
 }
 
 bool resolve_capture_screen_bounds(guint process_id,
@@ -4280,6 +4519,407 @@ bool count_mapped_x11_windows(guint *count, NativeError *error) {
   }
 
   *count = mapped_count;
+  return true;
+}
+
+bool read_x11_window_snapshots(guint process_id, bool filter_by_process,
+                               std::vector<X11WindowSnapshot> *snapshots,
+                               NativeError *error) {
+  if (snapshots == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window snapshots result must not be null.");
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  const Window root = DefaultRootWindow(display.get());
+  std::vector<Window> windows;
+  if (!read_x11_toplevel_windows(display.get(), root, &windows, error)) {
+    return false;
+  }
+
+  const Window active_window = read_x11_active_window(display.get(), root);
+  std::vector<X11WindowSnapshot> all_snapshots;
+  for (std::size_t index = 0; index < windows.size(); index += 1) {
+    X11WindowSnapshot snapshot = {};
+    if (read_x11_snapshot_from_display(
+            display.get(), root, active_window, windows[index],
+            static_cast<gint>(index), &snapshot)) {
+      all_snapshots.push_back(snapshot);
+    }
+  }
+
+  *snapshots = filter_by_process
+                   ? filter_x11_snapshots_by_process(all_snapshots, process_id)
+                   : all_snapshots;
+  return true;
+}
+
+bool read_x11_window_snapshot(const std::string &window_id,
+                              X11WindowSnapshot *snapshot,
+                              NativeError *error) {
+  if (snapshot == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window snapshot result must not be null.");
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  const Window root = DefaultRootWindow(display.get());
+  const Window active_window = read_x11_active_window(display.get(), root);
+  if (!read_x11_snapshot_from_display(display.get(), root, active_window,
+                                      window, 0, snapshot)) {
+    if (error != nullptr) {
+      *error = {NativeErrorCode::element_not_found,
+                "X11 window was not found: " + window_id};
+    }
+    return false;
+  }
+  return true;
+}
+
+bool read_x11_window_bounds_by_id(const std::string &window_id,
+                                  CaptureBounds *bounds, NativeError *error) {
+  if (bounds == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window bounds result must not be null.");
+    }
+    return false;
+  }
+
+  X11WindowSnapshot snapshot = {};
+  if (!read_x11_window_snapshot(window_id, &snapshot, error)) {
+    return false;
+  }
+
+  *bounds = snapshot.bounds;
+  return true;
+}
+
+bool wait_x11_window_geometry_by_id(Display *display, Window root,
+                                    Window window,
+                                    const CaptureBounds &before,
+                                    const WindowGeometryRequest &request,
+                                    CaptureBounds *bounds) {
+  const gint64 deadline = g_get_monotonic_time() + kWindowGeometryTimeoutUsec;
+  do {
+    CaptureBounds actual = {};
+    if (read_x11_window_bounds(display, root, window, &actual) &&
+        geometry_request_observed(before, actual, request)) {
+      *bounds = actual;
+      return true;
+    }
+    g_usleep(kWindowGeometryPollUsec);
+  } while (g_get_monotonic_time() < deadline);
+
+  return false;
+}
+
+bool change_x11_window_geometry_by_id(const std::string &window_id,
+                                      const WindowGeometryRequest &request,
+                                      CaptureBounds *bounds,
+                                      NativeError *error) {
+  if (bounds == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window bounds result must not be null.");
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  const Window root = DefaultRootWindow(display.get());
+  CaptureBounds before = {};
+  if (!read_x11_window_bounds(display.get(), root, window, &before)) {
+    if (error != nullptr) {
+      *error = {NativeErrorCode::element_not_found,
+                "X11 window was not found: " + window_id};
+    }
+    return false;
+  }
+
+  int status = 0;
+  if (request.update_position && request.update_size) {
+    status = XMoveResizeWindow(
+        display.get(), window, request.bounds.x, request.bounds.y,
+        static_cast<unsigned int>(request.bounds.width),
+        static_cast<unsigned int>(request.bounds.height));
+  } else if (request.update_position) {
+    status =
+        XMoveWindow(display.get(), window, request.bounds.x, request.bounds.y);
+  } else {
+    status = XResizeWindow(display.get(), window,
+                           static_cast<unsigned int>(request.bounds.width),
+                           static_cast<unsigned int>(request.bounds.height));
+  }
+  XSync(display.get(), False);
+
+  if (status == 0) {
+    if (error != nullptr) {
+      *error = operation_failed_error("Failed to " + request.operation +
+                                      " the X11 window.");
+    }
+    return false;
+  }
+
+  if (!wait_x11_window_geometry_by_id(display.get(), root, window, before,
+                                      request, bounds)) {
+    if (error != nullptr) {
+      *error = operation_failed_error("X11 window geometry change was not "
+                                      "observed on the screen.");
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool move_x11_window_by_id(const std::string &window_id, gint x, gint y,
+                           CaptureBounds *bounds, NativeError *error) {
+  WindowGeometryRequest request = {
+      {x, y, 1, 1},
+      true,
+      false,
+      "move",
+  };
+  return change_x11_window_geometry_by_id(window_id, request, bounds, error);
+}
+
+bool resize_x11_window_by_id(const std::string &window_id, gint width,
+                             gint height, CaptureBounds *bounds,
+                             NativeError *error) {
+  WindowGeometryRequest request = {
+      {0, 0, width, height},
+      false,
+      true,
+      "resize",
+  };
+  return change_x11_window_geometry_by_id(window_id, request, bounds, error);
+}
+
+bool set_x11_window_bounds_by_id(const std::string &window_id,
+                                 const CaptureBounds &requested_bounds,
+                                 CaptureBounds *bounds, NativeError *error) {
+  WindowGeometryRequest request = {
+      requested_bounds,
+      true,
+      true,
+      "move and resize",
+  };
+  return change_x11_window_geometry_by_id(window_id, request, bounds, error);
+}
+
+bool x11_window_activation_observed(Display *display, Window window) {
+  const Window root = DefaultRootWindow(display);
+  if (read_x11_active_window(display, root) == window) {
+    return true;
+  }
+
+  Window focus = 0;
+  int revert_to = 0;
+  XGetInputFocus(display, &focus, &revert_to);
+  return focus != None && focus != PointerRoot &&
+         window_contains_x11_window(display, window, focus);
+}
+
+bool wait_x11_window_activation_observed(Display *display, Window window) {
+  const gint64 deadline = g_get_monotonic_time() + kWindowActivationTimeoutUsec;
+  do {
+    if (x11_window_activation_observed(display, window)) {
+      return true;
+    }
+    g_usleep(kWindowActivationPollUsec);
+  } while (g_get_monotonic_time() < deadline);
+
+  return false;
+}
+
+bool activate_x11_window_by_id(const std::string &window_id,
+                               NativeError *error) {
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  const Window root = DefaultRootWindow(display.get());
+  CaptureBounds ignored_bounds = {};
+  if (!read_x11_window_bounds(display.get(), root, window, &ignored_bounds)) {
+    if (error != nullptr) {
+      *error = {NativeErrorCode::element_not_found,
+                "X11 window was not found: " + window_id};
+    }
+    return false;
+  }
+
+  const Atom active_window_atom =
+      XInternAtom(display.get(), "_NET_ACTIVE_WINDOW", False);
+  XEvent event = {};
+  event.xclient.type = ClientMessage;
+  event.xclient.window = window;
+  event.xclient.message_type = active_window_atom;
+  event.xclient.format = 32;
+  event.xclient.data.l[0] = 1;
+  event.xclient.data.l[1] = CurrentTime;
+  XSendEvent(display.get(), root, False,
+             SubstructureRedirectMask | SubstructureNotifyMask, &event);
+  XSetInputFocus(display.get(), window, RevertToParent, CurrentTime);
+  XRaiseWindow(display.get(), window);
+  XSync(display.get(), False);
+
+  if (!wait_x11_window_activation_observed(display.get(), window)) {
+    if (error != nullptr) {
+      *error = operation_failed_error("X11 window activation was not observed.");
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool read_x11_window_resize_hints_by_id(const std::string &window_id,
+                                        WindowResizeHints *hints,
+                                        NativeError *error) {
+  if (hints == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window resize hints result must not be null.");
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  if (!read_x11_resize_hints(display.get(), window, hints)) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Failed to read X11 WM_NORMAL_HINTS for the window.");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool read_x11_window_info_by_id(const std::string &window_id,
+                                X11WindowInfo *info, NativeError *error) {
+  if (info == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window info result must not be null.");
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  WindowResizeHints normal_hints = {};
+  if (!read_x11_resize_hints(display.get(), window, &normal_hints)) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Failed to read X11 WM_NORMAL_HINTS for the window.");
+    }
+    return false;
+  }
+
+  X11WindowInfo next = {};
+  next.window_id = x11_window_id_string(window);
+  next.title = read_x11_window_title(display.get(), window);
+  read_x11_class_hint(display.get(), window, &next.class_name,
+                      &next.instance_name);
+  next.normal_hints = normal_hints;
+  *info = next;
   return true;
 }
 

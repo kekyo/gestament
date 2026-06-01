@@ -53,6 +53,20 @@ export interface NativeX11WindowInfo {
   readonly normalHints: NativeWindowResizeHints;
 }
 
+export interface NativeX11WindowSnapshot {
+  readonly windowId: string;
+  readonly title: string;
+  readonly className: string;
+  readonly instanceName: string;
+  readonly transientFor: string | null;
+  readonly processId: number | null;
+  readonly bounds: NativeCaptureBounds;
+  readonly normalHints: NativeWindowResizeHints;
+  readonly hasNormalHints: boolean;
+  readonly stackingOrder: number;
+  readonly active: boolean;
+}
+
 export interface NativeElementInfo {
   readonly roleName: string;
   readonly localizedRoleName: string;
@@ -254,6 +268,32 @@ interface NativeAddon {
   readonly inputSetMouseButton: (button: string, pressed: boolean) => void;
   readonly inputScrollWheel: (xSteps: number, ySteps: number) => void;
   readonly mappedX11WindowCount: () => number;
+  readonly x11WindowSnapshots: (
+    processId: number,
+    filterByProcess: boolean
+  ) => NativeX11WindowSnapshot[];
+  readonly x11WindowSnapshot: (windowId: string) => NativeX11WindowSnapshot;
+  readonly x11WindowBounds: (windowId: string) => NativeCaptureBounds;
+  readonly moveX11Window: (
+    windowId: string,
+    x: number,
+    y: number
+  ) => NativeCaptureBounds;
+  readonly resizeX11Window: (
+    windowId: string,
+    width: number,
+    height: number
+  ) => NativeCaptureBounds;
+  readonly setX11WindowBounds: (
+    windowId: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+  ) => NativeCaptureBounds;
+  readonly activateX11Window: (windowId: string) => void;
+  readonly x11WindowResizeHints: (windowId: string) => NativeWindowResizeHints;
+  readonly x11WindowInfo: (windowId: string) => NativeX11WindowInfo;
   readonly elementInfo: (element: NativeElementHandle) => NativeElementInfo;
   readonly trayItems: (processId: number) => NativeTrayItem[];
   readonly runTrayHost: () => void;
@@ -736,6 +776,68 @@ export const nativeInputScrollWheel = (
 /** Counts mapped top-level X11 windows currently addressed by DISPLAY. */
 export const nativeMappedX11WindowCount = (): number =>
   callNative(() => loadNativeAddon().mappedX11WindowCount());
+
+/** Reads mapped top-level X11 windows currently addressed by DISPLAY. */
+export const nativeX11WindowSnapshots = (
+  processId: number,
+  filterByProcess: boolean
+): NativeX11WindowSnapshot[] =>
+  callNative(() =>
+    loadNativeAddon().x11WindowSnapshots(processId, filterByProcess)
+  );
+
+/** Reads one mapped top-level X11 window by id. */
+export const nativeX11WindowSnapshot = (
+  windowId: string
+): NativeX11WindowSnapshot =>
+  callNative(() => loadNativeAddon().x11WindowSnapshot(windowId));
+
+/** Reads screen-relative bounds for an X11 window by id. */
+export const nativeX11WindowBounds = (windowId: string): NativeCaptureBounds =>
+  callNative(() => loadNativeAddon().x11WindowBounds(windowId));
+
+/** Moves an X11 window by id. */
+export const nativeMoveX11Window = (
+  windowId: string,
+  x: number,
+  y: number
+): NativeCaptureBounds =>
+  callNative(() => loadNativeAddon().moveX11Window(windowId, x, y));
+
+/** Resizes an X11 window by id. */
+export const nativeResizeX11Window = (
+  windowId: string,
+  width: number,
+  height: number
+): NativeCaptureBounds =>
+  callNative(() => loadNativeAddon().resizeX11Window(windowId, width, height));
+
+/** Moves and resizes an X11 window by id. */
+export const nativeSetX11WindowBounds = (
+  windowId: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): NativeCaptureBounds =>
+  callNative(() =>
+    loadNativeAddon().setX11WindowBounds(windowId, x, y, width, height)
+  );
+
+/** Activates an X11 window by id. */
+export const nativeActivateX11Window = (windowId: string): void => {
+  callNative(() => loadNativeAddon().activateX11Window(windowId));
+};
+
+/** Reads X11 WM_NORMAL_HINTS for a window id. */
+export const nativeX11WindowResizeHints = (
+  windowId: string
+): NativeWindowResizeHints =>
+  callNative(() => loadNativeAddon().x11WindowResizeHints(windowId));
+
+/** Reads X11 window metadata for a window id. */
+export const nativeX11WindowInfo = (windowId: string): NativeX11WindowInfo =>
+  callNative(() => loadNativeAddon().x11WindowInfo(windowId));
 
 /** Reads AT-SPI metadata for the accessible resolved by an element handle. */
 export const nativeElementInfo = (

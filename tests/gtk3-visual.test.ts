@@ -465,6 +465,10 @@ describeGtk3('GTK3 AT-SPI automation', () => {
       title: 'Gestament GTK3 Fixture',
     });
     expect(x11Info.windowId).toMatch(/^0x[0-9a-f]+$/u);
+    await expect(mainWindow.debugDiagnostics()).resolves.toMatchObject({
+      rawIds: { x11: x11Info.windowId },
+      seenBy: expect.arrayContaining(['x11']),
+    });
     const submitButton = await app.getById('submit_button');
     const submitButtonCapture = await submitButton.capture();
     expectCaptureBoundsWithin(submitButtonCapture, capture);
