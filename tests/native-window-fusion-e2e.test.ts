@@ -11,8 +11,8 @@ import { describe, expect, it } from 'vitest';
 import { createGtkAppLauncher } from '../src/launchGtkApp';
 import type { GtkApp, GtkWidgetElement, GtkWindowElement } from '../src/types';
 import {
-  gtk4MissingLookupTimeoutMs as windowCountTimeoutMs,
-  gtk4VisualTestTimeoutMs as testTimeoutMs,
+  fixtureWindowDiscoveryTimeoutMs as windowDiscoveryTimeoutMs,
+  visualE2eTestTimeoutMs,
 } from './support/testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -53,7 +53,7 @@ const waitForWindowCount = async (
   const startedAt = Date.now();
   let lastCount = 0;
 
-  while (Date.now() - startedAt <= windowCountTimeoutMs) {
+  while (Date.now() - startedAt <= windowDiscoveryTimeoutMs) {
     lastCount = await app.getWindowCount();
     if (lastCount === expectedCount) {
       return;
@@ -87,7 +87,7 @@ const withProbeApp = async (
   ensureProbesBuilt();
   const launcher = createGtkAppLauncher({
     appPath: join(probeBuildDirectory, probeName),
-    timeoutMs: testTimeoutMs,
+    timeoutMs: visualE2eTestTimeoutMs,
     xvfbScreen: '900x700x24',
   });
   const app = await launcher.launch(args);
@@ -135,7 +135,7 @@ describeGtk3('native window fusion e2e', () => {
         ]);
       });
     },
-    testTimeoutMs
+    visualE2eTestTimeoutMs
   );
 
   it(
@@ -154,7 +154,7 @@ describeGtk3('native window fusion e2e', () => {
         });
       });
     },
-    testTimeoutMs
+    visualE2eTestTimeoutMs
   );
 
   it(
@@ -182,7 +182,7 @@ describeGtk3('native window fusion e2e', () => {
         ).toBeLessThanOrEqual(dialogBounds.y + dialogBounds.height);
       });
     },
-    testTimeoutMs
+    visualE2eTestTimeoutMs
   );
 
   it(
@@ -200,7 +200,7 @@ describeGtk3('native window fusion e2e', () => {
         expect(button?.kind).toBe('button');
       });
     },
-    testTimeoutMs
+    visualE2eTestTimeoutMs
   );
 
   it(
@@ -235,6 +235,6 @@ describeGtk3('native window fusion e2e', () => {
         expect(parent?.x11Info.windowId).not.toBe(dialog?.x11Info.windowId);
       });
     },
-    testTimeoutMs
+    visualE2eTestTimeoutMs
   );
 });

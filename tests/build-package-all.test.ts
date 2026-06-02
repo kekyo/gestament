@@ -4,7 +4,14 @@
 // https://github.com/kekyo/gestament
 
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +22,26 @@ import { describe, expect, it } from 'vitest';
 const buildPackageAllScript = fileURLToPath(
   new URL('../build_package_all.sh', import.meta.url)
 );
+const buildPackageScript = fileURLToPath(
+  new URL('../build_package.sh', import.meta.url)
+);
+
+const canonicalCurrentArch = (): string => {
+  switch (process.arch) {
+    case 'x64':
+      return 'amd64';
+    case 'ia32':
+      return 'i686';
+    case 'arm64':
+      return 'arm64';
+    case 'arm':
+      return 'armv7l';
+    case 'riscv64':
+      return 'riscv64';
+    default:
+      throw new Error(`Unsupported test host architecture: ${process.arch}`);
+  }
+};
 
 describe('build_package_all.sh', () => {
   it('runs the complete package build with container tests enabled', async () => {
@@ -65,6 +92,171 @@ writeFileSync(argsPath, JSON.stringify(process.argv.slice(2)));
         '--test-backend',
         'all',
       ]);
+    } finally {
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+});
+
+describe('build_package.sh platform test profiles', () => {
+  it('passes native and cross execution profiles to platform test containers', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'gestament-package-'));
+    const binRoot = join(tempRoot, 'bin');
+    const recordsPath = join(tempRoot, 'container-records.jsonl');
+    const containerEnginePath = join(binRoot, 'container-engine-stub.mjs');
+    const npmPath = join(binRoot, 'npm');
+    const readelfPath = join(binRoot, 'readelf');
+    const hostArch = canonicalCurrentArch();
+    const crossArch = hostArch === 'amd64' ? 'arm64' : 'amd64';
+
+    try {
+      await mkdir(binRoot, { recursive: true });
+      await writeFile(
+        containerEnginePath,
+        `#!/usr/bin/env node
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+const args = process.argv.slice(2);
+const env = {};
+let workspace = '';
+
+for (let index = 0; index < args.length; index += 1) {
+  if (args[index] === '-e') {
+    const value = args[index + 1] ?? '';
+    const separatorIndex = value.indexOf('=');
+    if (separatorIndex >= 0) {
+      env[value.slice(0, separatorIndex)] = value.slice(separatorIndex + 1);
+    }
+    index += 1;
+    continue;
+  }
+
+  if (args[index] === '-v') {
+    const value = args[index + 1] ?? '';
+    const match = /^(.*):\\/workspace(?::|$)/u.exec(value);
+    if (match !== null) {
+      workspace = match[1];
+    }
+    index += 1;
+  }
+}
+
+if (workspace.length === 0) {
+  console.error('workspace volume was not passed to the container stub.');
+  process.exit(2);
+}
+
+if (env.GESTAMENT_PREBUILD_DIR !== undefined) {
+  const prebuildPath = join(
+    workspace,
+    'prebuilds',
+    env.GESTAMENT_PREBUILD_DIR,
+    env.GESTAMENT_PREBUILD_FILE
+  );
+  mkdirSync(dirname(prebuildPath), { recursive: true });
+  writeFileSync(prebuildPath, 'native-prebuild-stub\\n');
+}
+
+if (env.GESTAMENT_TEST_EXECUTION_PROFILE !== undefined) {
+  appendFileSync(
+    process.env.GESTAMENT_CONTAINER_STUB_RECORDS,
+    JSON.stringify({
+      arch: env.GESTAMENT_ARCH,
+      backend: env.GESTAMENT_GTK_BACKEND,
+      hostArch: env.GESTAMENT_TEST_HOST_ARCH,
+      profile: env.GESTAMENT_TEST_EXECUTION_PROFILE,
+      targetArch: env.GESTAMENT_TEST_TARGET_ARCH,
+    }) + '\\n'
+  );
+}
+`
+      );
+      await writeFile(
+        npmPath,
+        `#!/usr/bin/env node
+process.exit(0);
+`
+      );
+      await writeFile(
+        readelfPath,
+        `#!/usr/bin/env node
+console.log('Class: ELF64');
+console.log('Class: ELF32');
+console.log('Machine: Advanced Micro Devices X86-64');
+console.log('Machine: Intel 80386');
+console.log('Machine: AArch64');
+console.log('Machine: ARM');
+console.log('Machine: RISC-V');
+`
+      );
+      await Promise.all([
+        chmod(containerEnginePath, 0o755),
+        chmod(npmPath, 0o755),
+        chmod(readelfPath, 0o755),
+      ]);
+
+      const result = spawnSync(
+        buildPackageScript,
+        [
+          '--target',
+          'native',
+          '--with-tests',
+          '--test-backend',
+          'gtk3',
+          '--arch',
+          `${hostArch},${crossArch}`,
+          '--jobs',
+          '20',
+        ],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            BUILD_PACKAGE_PROJECT_ROOT: tempRoot,
+            CONTAINER_ENGINE: containerEnginePath,
+            GESTAMENT_CONTAINER_STUB_RECORDS: recordsPath,
+            PATH: `${binRoot}:${process.env.PATH ?? ''}`,
+          },
+          timeout: 60_000,
+        }
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+
+      const records = (await readFile(recordsPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              readonly arch: string;
+              readonly backend: string;
+              readonly hostArch: string;
+              readonly profile: string;
+              readonly targetArch: string;
+            }
+        );
+
+      expect(records).toHaveLength(2);
+      expect(records).toEqual(
+        expect.arrayContaining([
+          {
+            arch: hostArch,
+            backend: 'gtk3',
+            hostArch,
+            profile: 'native',
+            targetArch: hostArch,
+          },
+          {
+            arch: crossArch,
+            backend: 'gtk3',
+            hostArch,
+            profile: 'cross',
+            targetArch: crossArch,
+          },
+        ])
+      );
     } finally {
       await rm(tempRoot, { force: true, recursive: true });
     }

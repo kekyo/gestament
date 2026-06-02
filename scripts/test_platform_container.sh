@@ -119,12 +119,25 @@ expected_dpkg_architecture() {
 
 require_env GESTAMENT_ARCH
 require_env GESTAMENT_GTK_BACKEND
+export GESTAMENT_TEST_EXECUTION_PROFILE="${GESTAMENT_TEST_EXECUTION_PROFILE:-native}"
+export GESTAMENT_TEST_HOST_ARCH="${GESTAMENT_TEST_HOST_ARCH:-$GESTAMENT_ARCH}"
 export GESTAMENT_TEST_RESULTS_ARCH="${GESTAMENT_TEST_RESULTS_ARCH:-$GESTAMENT_ARCH}"
 export GESTAMENT_TEST_RUN_TIMESTAMP="${GESTAMENT_TEST_RUN_TIMESTAMP:-$(format_test_run_timestamp)}"
 export GESTAMENT_TEST_RESULTS_GROUP="${GESTAMENT_TEST_RESULTS_GROUP:-platform-$GESTAMENT_GTK_BACKEND}"
+export GESTAMENT_TEST_TARGET_ARCH="${GESTAMENT_TEST_TARGET_ARCH:-$GESTAMENT_ARCH}"
 if [ -n "${GESTAMENT_TEST_RESULTS_ROOT:-}" ]; then
   mkdir -p "$GESTAMENT_TEST_RESULTS_ROOT"
 fi
+
+case "$GESTAMENT_TEST_EXECUTION_PROFILE" in
+  native | cross)
+    ;;
+  *)
+    printf '%s\n' \
+      "Unsupported GESTAMENT_TEST_EXECUTION_PROFILE: $GESTAMENT_TEST_EXECUTION_PROFILE" >&2
+    exit 2
+    ;;
+esac
 
 actual_dpkg_architecture=$(dpkg --print-architecture)
 expected_dpkg_architecture=$(expected_dpkg_architecture "$GESTAMENT_ARCH")

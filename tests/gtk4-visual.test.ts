@@ -32,9 +32,9 @@ import {
 import { spawnText } from './support/process';
 import { saveCaptureArtifact } from './support/testArtifacts';
 import {
-  gtk4FixtureTimeoutMs as fixtureTimeoutMs,
-  gtk4MissingLookupTimeoutMs as missingLookupTimeoutMs,
-  gtk4VisualTestTimeoutMs as testTimeoutMs,
+  fixtureWindowDiscoveryTimeoutMs as fixtureTimeoutMs,
+  missingLookupTimeoutMs,
+  visualE2eTestTimeoutMs as testTimeoutMs,
 } from './support/testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -255,7 +255,7 @@ const waitForRejectedCode = async (
   const startedAt = Date.now();
   let lastCode: unknown;
 
-  while (Date.now() - startedAt <= 5_000) {
+  while (Date.now() - startedAt <= missingLookupTimeoutMs) {
     try {
       await operation();
     } catch (error) {

@@ -4,7 +4,16 @@
 // https://github.com/kekyo/gestament
 
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
 import {
   createConnection,
   createServer,
@@ -121,12 +130,20 @@ interface PooledXvfb {
   readonly child: ChildProcessByStdio<null, Readable, Readable>;
   readonly display: string;
   readonly displayNumber: number;
+  readonly displayLock: XvfbDisplayLock;
   readonly key: string;
   readonly screen: string;
   readonly stderr: string[];
   readonly stdout: string[];
   lastUsedAt: number;
   systemOutputSink: SystemOutputSink | undefined;
+}
+
+interface XvfbDisplayLock {
+  readonly displayNumber: number;
+  readonly fd: number;
+  readonly path: string;
+  released: boolean;
 }
 
 interface PooledAllSession {
@@ -380,6 +397,94 @@ const resolveDisplay = (display: GtkAppDisplay | undefined): GtkAppDisplay => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const errorCode = (error: unknown): string | undefined =>
+  isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
+
+const xvfbDisplayLockPath = (displayNumber: number): string =>
+  join(tmpdir(), `gestament-xvfb-display-${displayNumber}.lock`);
+
+const readXvfbDisplayLockPid = (path: string): number | undefined => {
+  try {
+    const pid = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const processExists = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return errorCode(error) === 'EPERM';
+  }
+};
+
+const removeStaleXvfbDisplayLock = (path: string): void => {
+  const pid = readXvfbDisplayLockPid(path);
+  if (pid === undefined || processExists(pid)) {
+    return;
+  }
+
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+  }
+};
+
+const openXvfbDisplayLock = (
+  displayNumber: number,
+  path: string
+): XvfbDisplayLock | undefined => {
+  try {
+    const fd = openSync(path, 'wx');
+    writeSync(fd, `${process.pid}\n`);
+    return { displayNumber, fd, path, released: false };
+  } catch (error) {
+    if (errorCode(error) === 'EEXIST') {
+      return undefined;
+    }
+    throw error;
+  }
+};
+
+const tryAcquireXvfbDisplayLock = (
+  displayNumber: number
+): XvfbDisplayLock | undefined => {
+  if (leasedDisplayNumbers.has(displayNumber)) {
+    return undefined;
+  }
+
+  const path = xvfbDisplayLockPath(displayNumber);
+  const lock = openXvfbDisplayLock(displayNumber, path);
+  if (lock !== undefined) {
+    return lock;
+  }
+
+  removeStaleXvfbDisplayLock(path);
+  return openXvfbDisplayLock(displayNumber, path);
+};
+
+const releaseXvfbDisplayLock = (lock: XvfbDisplayLock): void => {
+  if (lock.released) {
+    return;
+  }
+
+  lock.released = true;
+  closeSync(lock.fd);
+  try {
+    unlinkSync(lock.path);
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+  }
+};
 
 const createDriverEventKey = (
   channel: DriverEventChannel,
@@ -959,6 +1064,8 @@ const killXvfbNow = (xvfb: PooledXvfb): void => {
   if (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
     xvfb.child.kill('SIGTERM');
   }
+  leasedDisplayNumbers.delete(xvfb.displayNumber);
+  releaseXvfbDisplayLock(xvfb.displayLock);
 };
 
 const installPoolCleanup = (): void => {
@@ -983,7 +1090,13 @@ const spawnDirectXvfb = async (
     displayNumber <= lastPooledDisplayNumber;
     displayNumber += 1
   ) {
+    const displayLock = tryAcquireXvfbDisplayLock(displayNumber);
+    if (displayLock === undefined) {
+      continue;
+    }
+
     if (!isDisplayNumberAvailable(displayNumber)) {
+      releaseXvfbDisplayLock(displayLock);
       continue;
     }
 
@@ -1002,6 +1115,7 @@ const spawnDirectXvfb = async (
       child,
       display: `:${displayNumber}`,
       displayNumber,
+      displayLock,
       key: screen,
       lastUsedAt: Date.now(),
       screen,
@@ -1080,6 +1194,7 @@ const terminateXvfb = async (xvfb: PooledXvfb): Promise<void> => {
   }
   xvfb.systemOutputSink = undefined;
   leasedDisplayNumbers.delete(xvfb.displayNumber);
+  releaseXvfbDisplayLock(xvfb.displayLock);
 };
 
 const leaseXvfb = async (

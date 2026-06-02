@@ -124,6 +124,10 @@ canonical_arch() {
   esac
 }
 
+detect_host_arch() {
+  canonical_arch "$(node -p "process.arch")"
+}
+
 normalize_arch_filter() {
   local filter_value=$1
   if [[ -z "${filter_value}" ]]; then
@@ -435,11 +439,18 @@ run_platform_test() {
   local platform=$4
   local image=$5
   local backend=$6
+  local execution_profile
   local log_dir
   local log_path
 
   image="$(test_container_image_for_backend "${backend}" "${arch}" "${image}")"
-  printf '%s\n' "[test:${backend}] ${arch} (${platform}, ${image})"
+  if [[ "${arch}" = "${HOST_ARCH}" ]]; then
+    execution_profile='native'
+  else
+    execution_profile='cross'
+  fi
+
+  printf '%s\n' "[test:${backend}] ${arch} (${platform}, ${image}, ${execution_profile})"
 
   log_dir="${TEST_RESULT_ROOT}/${TEST_RUN_TIMESTAMP}/${arch}/platform-${backend}"
   log_path="${log_dir}/container.log"
@@ -453,10 +464,13 @@ run_platform_test() {
     -e GESTAMENT_ARCH="${arch}" \
     -e GESTAMENT_GTK_BACKEND="${backend}" \
     -e GESTAMENT_USE_EXISTING_DIST=1 \
+    -e GESTAMENT_TEST_EXECUTION_PROFILE="${execution_profile}" \
+    -e GESTAMENT_TEST_HOST_ARCH="${HOST_ARCH}" \
     -e GESTAMENT_TEST_RESULTS_ARCH="${arch}" \
     -e GESTAMENT_TEST_RESULTS_GROUP="platform-${backend}" \
     -e GESTAMENT_TEST_RESULTS_ROOT="/workspace/test-results" \
     -e GESTAMENT_TEST_RUN_TIMESTAMP="${TEST_RUN_TIMESTAMP}" \
+    -e GESTAMENT_TEST_TARGET_ARCH="${arch}" \
     "${image}" \
     ./scripts/test_platform_container.sh 2>&1 | tee "${log_path}"
 }
@@ -829,6 +843,7 @@ main() {
     "${ARTIFACT_ROOT}/npm-package-json.json"
 
   CPU_COUNT="$(detect_processor_count)"
+  HOST_ARCH="$(detect_host_arch)"
   TEST_RUN_TIMESTAMP="${GESTAMENT_TEST_RUN_TIMESTAMP:-$(format_test_run_timestamp)}"
   export TEST_RUN_TIMESTAMP
   export GESTAMENT_TEST_RUN_TIMESTAMP="${TEST_RUN_TIMESTAMP}"
@@ -858,6 +873,7 @@ main() {
   JOB_FAILURE=0
 
   printf '%s\n' "Using up to ${PARALLEL_JOBS} native package jobs with make -j${MAKE_JOBS}"
+  printf '%s\n' "Host architecture: ${HOST_ARCH}"
 
   if [[ "${TARGET}" = 'all' || "${TARGET}" = 'native' || "${WITH_TESTS}" -eq 1 ]]; then
     CONTAINER_ENGINE_BIN="$(choose_container_engine)"

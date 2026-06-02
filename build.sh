@@ -234,6 +234,7 @@ test_backends="$(normalize_test_backends)"
 GESTAMENT_TEST_RUN_TIMESTAMP="${GESTAMENT_TEST_RUN_TIMESTAMP:-$(format_test_run_timestamp)}"
 export GESTAMENT_TEST_RUN_TIMESTAMP
 export GESTAMENT_TEST_RESULTS_ARCH=host
+export GESTAMENT_TEST_EXECUTION_PROFILE="${GESTAMENT_TEST_EXECUTION_PROFILE:-native}"
 
 for backend in ${test_backends}; do
   build_native_backend "${backend}"

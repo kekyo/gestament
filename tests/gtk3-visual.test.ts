@@ -29,6 +29,10 @@ import {
   expectCaptureSurfaceText,
 } from './support/captureAssertions';
 import { saveCaptureArtifact } from './support/testArtifacts';
+import {
+  fixtureWindowDiscoveryTimeoutMs as fixtureTimeoutMs,
+  missingLookupTimeoutMs,
+} from './support/testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -37,7 +41,6 @@ const appPath = fileURLToPath(
 );
 const testBackend = process.env.GESTAMENT_TEST_BACKEND;
 const describeGtk3 = testBackend === 'gtk3' ? describe : describe.skip;
-const missingLookupTimeoutMs = 10_000;
 const spMonImageUrl = new URL('./images/sp_mon.png', import.meta.url);
 const dawnCatImageUrl = new URL('./images/dawn_cat.png', import.meta.url);
 const spMonImageSize = {
@@ -68,6 +71,7 @@ const directLaunchEnvironmentKeys = [
 
 const launcher = createGtkAppLauncher({
   appPath,
+  timeoutMs: fixtureTimeoutMs,
 });
 const shortLauncher = createGtkAppLauncher({
   appPath,
@@ -75,6 +79,7 @@ const shortLauncher = createGtkAppLauncher({
 });
 const geometryLauncher = createGtkAppLauncher({
   appPath,
+  timeoutMs: fixtureTimeoutMs,
   xvfbScreen: '800x600x24',
 });
 
@@ -85,7 +90,7 @@ const waitForWindowCount = async (
   const startedAt = Date.now();
   let lastCount = 0;
 
-  while (Date.now() - startedAt <= 5_000) {
+  while (Date.now() - startedAt <= fixtureTimeoutMs) {
     lastCount = await app.getWindowCount();
     if (lastCount === expectedCount) {
       return;
@@ -183,7 +188,7 @@ const waitForRejectedCode = async (
   const startedAt = Date.now();
   let lastCode: unknown;
 
-  while (Date.now() - startedAt <= 5_000) {
+  while (Date.now() - startedAt <= missingLookupTimeoutMs) {
     try {
       await operation();
     } catch (error) {
