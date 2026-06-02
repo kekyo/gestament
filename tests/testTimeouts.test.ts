@@ -12,77 +12,65 @@ import {
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-const env = (
-  values: Record<string, string | undefined>
+const groupedEnv = (
+  executionProfile: string | undefined
 ): NodeJS.ProcessEnv => ({
-  ...values,
+  GESTAMENT_TEST_RESULTS_GROUP: 'platform-gtk3',
+  GESTAMENT_TEST_EXECUTION_PROFILE: executionProfile,
 });
 
-describe('test timeout profiles', () => {
-  it('uses the local profile outside grouped platform runs', () => {
-    const testEnv = env({
-      GESTAMENT_TEST_EXECUTION_PROFILE: 'cross',
-    });
+describe.concurrent('test timeout profiles', () => {
+  it('uses local timeouts when no grouped result run is active', () => {
+    const env: NodeJS.ProcessEnv = {};
 
-    expect(resolveTestExecutionProfile(testEnv)).toBe('local');
-    expect(resolveTestTimeoutProfile(testEnv)).toMatchObject({
-      fixtureWindowDiscoveryTimeoutMs: 90_000,
-      missingLookupTimeoutMs: 10_000,
-      visualE2eTestTimeoutMs: 240_000,
-      vitestPollTimeoutMs: 1_000,
-      vitestTestTimeoutMs: 20_000,
-      xvfbLauncherScriptTimeoutMs: 60_000,
-      xvfbPoolScriptTimeoutMs: 120_000,
-    });
-  });
-
-  it('uses the platform native profile for grouped native runs', () => {
-    const testEnv = env({
-      GESTAMENT_TEST_EXECUTION_PROFILE: 'native',
-      GESTAMENT_TEST_RESULTS_GROUP: 'platform-gtk3',
-    });
-
-    expect(resolveTestExecutionProfile(testEnv)).toBe('platformNative');
-    expect(resolveTestTimeoutProfile(testEnv)).toMatchObject({
-      fixtureWindowDiscoveryTimeoutMs: 240_000,
-      missingLookupTimeoutMs: 10_000,
-      visualE2eTestTimeoutMs: 540_000,
-      vitestPollTimeoutMs: 180_000,
-      vitestTestTimeoutMs: 900_000,
-      xvfbLauncherScriptTimeoutMs: 240_000,
-      xvfbPoolScriptTimeoutMs: 540_000,
+    expect(resolveTestExecutionProfile(env)).toBe('local');
+    expect(resolveTestTimeoutProfile(env)).toMatchObject({
+      appOutputExitTimeoutMs: 5_000,
+      buildPackageAllScriptTimeoutMs: 10_000,
+      buildPackageScriptTimeoutMs: 60_000,
+      cliScriptTimeoutMs: 20_000,
+      headerCompileScriptTimeoutMs: 20_000,
+      launcherScriptTimeoutMs: 45_000,
+      packageConfigCommandTimeoutMs: 60_000,
+      platformSmokeScriptTimeoutMs: 10_000,
+      vitestHookTimeoutMs: 20_000,
+      vitestTeardownTimeoutMs: 20_000,
     });
   });
 
-  it('uses the platform cross profile for grouped cross runs', () => {
-    const testEnv = env({
-      GESTAMENT_TEST_EXECUTION_PROFILE: 'cross',
-      GESTAMENT_TEST_RESULTS_GROUP: 'platform-gtk4',
-    });
+  it('uses native platform timeouts for grouped native runs', () => {
+    const env = groupedEnv(undefined);
 
-    expect(resolveTestExecutionProfile(testEnv)).toBe('platformCross');
-    expect(resolveTestTimeoutProfile(testEnv)).toMatchObject({
-      fixtureWindowDiscoveryTimeoutMs: 900_000,
-      missingLookupTimeoutMs: 90_000,
-      visualE2eTestTimeoutMs: 1_800_000,
-      vitestPollTimeoutMs: 600_000,
-      vitestTestTimeoutMs: 1_800_000,
-      xvfbLauncherChildEnvironmentTimeoutMs: 120_000,
-      xvfbLauncherScriptTimeoutMs: 1_200_000,
-      xvfbPoolChildEnvironmentTimeoutMs: 120_000,
-      xvfbPoolFixtureTimeoutMs: 600_000,
-      xvfbPoolScriptTimeoutMs: 2_400_000,
+    expect(resolveTestExecutionProfile(env)).toBe('platformNative');
+    expect(resolveTestTimeoutProfile(env)).toMatchObject({
+      appOutputExitTimeoutMs: 30_000,
+      buildPackageAllScriptTimeoutMs: 60_000,
+      buildPackageScriptTimeoutMs: 240_000,
+      cliScriptTimeoutMs: 120_000,
+      headerCompileScriptTimeoutMs: 120_000,
+      launcherScriptTimeoutMs: 240_000,
+      packageConfigCommandTimeoutMs: 120_000,
+      platformSmokeScriptTimeoutMs: 60_000,
+      vitestHookTimeoutMs: 900_000,
+      vitestTeardownTimeoutMs: 900_000,
     });
   });
 
-  it('rejects unsupported grouped execution profiles', () => {
-    const testEnv = env({
-      GESTAMENT_TEST_EXECUTION_PROFILE: 'serialized',
-      GESTAMENT_TEST_RESULTS_GROUP: 'platform-gtk3',
-    });
+  it('uses cross platform timeouts when grouped runs opt in', () => {
+    const env = groupedEnv('cross');
 
-    expect(() => resolveTestExecutionProfile(testEnv)).toThrow(
-      'Unsupported GESTAMENT_TEST_EXECUTION_PROFILE: serialized'
-    );
+    expect(resolveTestExecutionProfile(env)).toBe('platformCross');
+    expect(resolveTestTimeoutProfile(env)).toMatchObject({
+      appOutputExitTimeoutMs: 120_000,
+      buildPackageAllScriptTimeoutMs: 120_000,
+      buildPackageScriptTimeoutMs: 1_200_000,
+      cliScriptTimeoutMs: 300_000,
+      headerCompileScriptTimeoutMs: 300_000,
+      launcherScriptTimeoutMs: 600_000,
+      packageConfigCommandTimeoutMs: 300_000,
+      platformSmokeScriptTimeoutMs: 120_000,
+      vitestHookTimeoutMs: 1_800_000,
+      vitestTeardownTimeoutMs: 1_800_000,
+    });
   });
 });

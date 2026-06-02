@@ -91,7 +91,7 @@ const x11Window = (
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-describe('native window discovery fusion', () => {
+describe.concurrent('native window discovery fusion', () => {
   it('merges AT-SPI and X11 snapshots by pid, title, and near bounds', () => {
     const [window] = mergeNativeWindowSnapshots(
       [atspiWindow()],

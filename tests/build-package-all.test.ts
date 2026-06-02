@@ -17,6 +17,12 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import {
+  buildPackageAllScriptTimeoutMs,
+  buildPackageScriptTimeoutMs,
+  packageConfigCommandTimeoutMs,
+} from './support/testTimeouts';
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 const buildPackageAllScript = fileURLToPath(
@@ -74,7 +80,7 @@ writeFileSync(argsPath, JSON.stringify(process.argv.slice(2)));
             BUILD_PACKAGE_SCRIPT: stubScript,
             GESTAMENT_BUILD_PACKAGE_ARGS_PATH: argsPath,
           },
-          timeout: 10_000,
+          timeout: buildPackageAllScriptTimeoutMs,
         }
       );
 
@@ -215,10 +221,13 @@ console.log('Machine: RISC-V');
             ...process.env,
             BUILD_PACKAGE_PROJECT_ROOT: tempRoot,
             CONTAINER_ENGINE: containerEnginePath,
+            GESTAMENT_CONFIG_COMMAND_TIMEOUT_MS: String(
+              packageConfigCommandTimeoutMs
+            ),
             GESTAMENT_CONTAINER_STUB_RECORDS: recordsPath,
             PATH: `${binRoot}:${process.env.PATH ?? ''}`,
           },
-          timeout: 60_000,
+          timeout: buildPackageScriptTimeoutMs,
         }
       );
 

@@ -237,13 +237,13 @@ const screenPattern = /^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$/;
 const sessionStartupTimeoutMs = 30_000;
 const sessionReleaseTimeoutMs = 5_000;
 const xvfbStartupTimeoutMs = 10_000;
-const xvfbPoolProbeTimeoutMs = 5_000;
+const xvfbPoolProbeTimeoutMs = 30_000;
 const xvfbPoolProbeRetryIntervalMs = 50;
 const xvfbPoolProbePrefix = 'gestament-xvfb-pool-probe: ';
 const x11DisplayOpenFailureMessage =
   'Failed to open the X11 display. Ensure DISPLAY points to an X11 display.';
-const firstPooledDisplayNumber = 90;
-const lastPooledDisplayNumber = 590;
+const firstPooledDisplayNumber = 600;
+const lastPooledDisplayNumber = 1099;
 const sessionOwnedEnvironmentKeys = [
   'DISPLAY',
   'WAYLAND_DISPLAY',
@@ -826,6 +826,16 @@ const emptyDriverSessionPoolOptions = (): DriverSessionPoolOptions => ({
   xvfb: undefined,
 });
 
+const unpooledXvfbSessionPoolOptions = (
+  xvfb: PooledXvfb
+): DriverSessionPoolOptions => ({
+  allKey: undefined,
+  allowedMappedWindowCount: 0,
+  limits: nonePoolLimits(),
+  mode: 'none',
+  xvfb,
+});
+
 const resolveXvfbOptions = (
   options: GtkAppLauncherOptions
 ): XvfbSessionOptions => {
@@ -1003,8 +1013,12 @@ const createDriverEnvironment = (
 const xvfbSocketPath = (displayNumber: number): string =>
   `/tmp/.X11-unix/X${displayNumber}`;
 
+const xvfbServerLockPath = (displayNumber: number): string =>
+  `/tmp/.X${displayNumber}-lock`;
+
 const isDisplayNumberAvailable = (displayNumber: number): boolean =>
   !leasedDisplayNumbers.has(displayNumber) &&
+  !existsSync(xvfbServerLockPath(displayNumber)) &&
   !existsSync(xvfbSocketPath(displayNumber));
 
 const connectUnixSocket = (path: string, timeoutMs: number): Promise<void> =>
@@ -1399,30 +1413,15 @@ const spawnDriverProcess = (
   const stderr: string[] = [];
 
   const command =
-    effective.kind === 'xvfb' && xvfb === undefined
+    effective.kind === 'xvfb'
       ? {
-          args: [
-            '-a',
-            '-s',
-            `-screen 0 ${effective.xvfb?.screen ?? defaultXvfbScreen}`,
-            '--',
-            'dbus-run-session',
-            '--',
-            process.execPath,
-            driverPath,
-            ...driverArgs,
-          ],
-          bin: 'xvfb-run',
+          args: ['--', process.execPath, driverPath, ...driverArgs],
+          bin: 'dbus-run-session',
         }
-      : effective.kind === 'xvfb'
-        ? {
-            args: ['--', process.execPath, driverPath, ...driverArgs],
-            bin: 'dbus-run-session',
-          }
-        : {
-            args: [driverPath, ...driverArgs],
-            bin: process.execPath,
-          };
+      : {
+          args: [driverPath, ...driverArgs],
+          bin: process.execPath,
+        };
 
   const child = spawn(command.bin, command.args, {
     env,
@@ -1905,7 +1904,13 @@ const createDriverSession = (
 
   const release = async (): Promise<void> => {
     if (poolOptions.mode === 'none') {
-      await closeDriver();
+      try {
+        await closeDriver();
+      } finally {
+        if (poolOptions.xvfb !== undefined) {
+          await terminateXvfb(poolOptions.xvfb);
+        }
+      }
       return;
     }
 
@@ -2047,10 +2052,11 @@ const startDriverSession = async (
 
   const pool = effective.xvfb.pool;
   if (pool === undefined) {
+    const xvfb = await spawnDirectXvfb(effective.xvfb.screen, systemOutputSink);
     return startFreshDriverSession(
       effective,
-      undefined,
-      emptyDriverSessionPoolOptions(),
+      xvfb,
+      unpooledXvfbSessionPoolOptions(xvfb),
       systemOutputSink
     );
   }

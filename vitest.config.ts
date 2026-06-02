@@ -8,7 +8,9 @@ import { defineConfig } from 'vitest/config';
 import { createTestArtifactsReporter } from './tests/support/artifactReporter';
 import { initializeTestRunTimestamp } from './tests/support/testArtifacts';
 import {
+  vitestHookTimeoutMs,
   vitestPollTimeoutMs,
+  vitestTeardownTimeoutMs,
   vitestTestTimeoutMs,
 } from './tests/support/testTimeouts';
 
@@ -19,14 +21,17 @@ export default defineConfig({
     environment: 'node',
     exclude: ['**/node_modules/**', '**/dist/**'],
     fileParallelism: true,
+    maxConcurrency: 8,
     expect: {
       poll: {
         timeout: vitestPollTimeoutMs,
       },
     },
     globals: true,
+    hookTimeout: vitestHookTimeoutMs,
     reporters: ['default', createTestArtifactsReporter()],
     setupFiles: ['./tests/support/setupArtifacts.ts'],
+    teardownTimeout: vitestTeardownTimeoutMs,
     testTimeout: vitestTestTimeoutMs,
   },
   esbuild: {

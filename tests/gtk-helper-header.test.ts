@@ -10,6 +10,8 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
+import { headerCompileScriptTimeoutMs } from './support/testTimeouts';
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 const execFileAsync = promisify(execFile);
@@ -17,7 +19,9 @@ const includeDir = resolve('include');
 
 const pkgConfigExists = async (name: string): Promise<boolean> => {
   try {
-    await execFileAsync('pkg-config', ['--exists', name]);
+    await execFileAsync('pkg-config', ['--exists', name], {
+      timeout: headerCompileScriptTimeoutMs,
+    });
     return true;
   } catch {
     return false;
@@ -25,7 +29,9 @@ const pkgConfigExists = async (name: string): Promise<boolean> => {
 };
 
 const pkgConfigCflags = async (name: string): Promise<string[]> => {
-  const { stdout } = await execFileAsync('pkg-config', ['--cflags', name]);
+  const { stdout } = await execFileAsync('pkg-config', ['--cflags', name], {
+    timeout: headerCompileScriptTimeoutMs,
+  });
   return stdout.trim().length === 0 ? [] : stdout.trim().split(/\s+/);
 };
 
@@ -61,16 +67,22 @@ const compileHeader = async (
     const standard = language === 'c' ? '-std=c11' : '-std=c++17';
     const cflags = await pkgConfigCflags(pkgConfigName);
 
-    await execFileAsync(compiler, [
-      '-x',
-      language,
-      standard,
-      '-fsyntax-only',
-      '-I',
-      includeDir,
-      ...cflags,
-      sourcePath,
-    ]);
+    await execFileAsync(
+      compiler,
+      [
+        '-x',
+        language,
+        standard,
+        '-fsyntax-only',
+        '-I',
+        includeDir,
+        ...cflags,
+        sourcePath,
+      ],
+      {
+        timeout: headerCompileScriptTimeoutMs,
+      }
+    );
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -78,7 +90,7 @@ const compileHeader = async (
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-describe('gestament GTK helper header', () => {
+describe.concurrent('gestament GTK helper header', () => {
   it('compiles as C and C++ against GTK3', async () => {
     if (!(await pkgConfigExists('gtk+-3.0'))) {
       return;

@@ -161,7 +161,7 @@ build_native_backend() {
 
   require_gtk_backend "${backend}"
   make -C native clean
-  make -C native \
+  make -j -C native \
     NODE_INCLUDE_DIR="${node_include_dir}" \
     GESTAMENT_PACKAGE_VERSION="${package_version}" \
     GESTAMENT_NATIVE_ARCH="${node_arch}" \

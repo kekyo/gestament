@@ -15,7 +15,7 @@ const sourceSnapshot = (
   source: 'xvfb' | 'launcher-driver' | 'tray-host'
 ) => output.sources.find((entry) => entry.source === source);
 
-describe('system output recorder', () => {
+describe.concurrent('system output recorder', () => {
   it('retains source-separated output with cross-source sequences', () => {
     const recorder = createGtkSystemOutputRecorder(undefined);
     const events = [

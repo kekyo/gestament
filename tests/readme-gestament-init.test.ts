@@ -13,6 +13,7 @@ import {
   ensureTestArtifactDirectory,
   getTaskFullName,
 } from './support/testArtifacts';
+import { cliScriptTimeoutMs } from './support/testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -35,7 +36,7 @@ interface ScaffoldedPackageJson {
   };
 }
 
-describe('README gestament init example', () => {
+describe.concurrent('README gestament init example', () => {
   it('generates the documented minimal gestament test project', async (context) => {
     const readme = await readFile('README.md', 'utf8');
     expect(readme).toContain(readmeInitCommand);
@@ -52,7 +53,7 @@ describe('README gestament init example', () => {
       cwd: initRoot,
       encoding: 'utf8',
       env: process.env,
-      timeout: 20_000,
+      timeout: cliScriptTimeoutMs,
     });
     await writeFile(join(initRoot, 'gestament-init.stdout.log'), result.stdout);
     await writeFile(join(initRoot, 'gestament-init.stderr.log'), result.stderr);

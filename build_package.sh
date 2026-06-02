@@ -7,7 +7,7 @@ PACKAGE_BUILD_ROOT="${PROJECT_ROOT}/.build/package"
 REPORT_ROOT="${PACKAGE_BUILD_ROOT}/reports"
 TMP_ROOT="${PACKAGE_BUILD_ROOT}/tmp"
 TEST_RESULT_ROOT="${PROJECT_ROOT}/test-results"
-DEFAULT_PARALLEL_JOB_CAP=30
+DEFAULT_PARALLEL_JOB_CAP=16
 
 ARCH_MATRIX=$(cat <<'EOF'
 amd64 debian bookworm linux/amd64 docker.io/amd64/debian:bookworm
@@ -649,9 +649,19 @@ if (!configBinSource.startsWith("#!/usr/bin/env node")) {
 }
 
 const configCommand = resolve("node_modules/.bin/gestament-config");
+const configCommandTimeoutValue =
+  process.env.GESTAMENT_CONFIG_COMMAND_TIMEOUT_MS ?? "60000";
+if (!/^[1-9][0-9]*$/.test(configCommandTimeoutValue)) {
+  console.error(
+    `GESTAMENT_CONFIG_COMMAND_TIMEOUT_MS must be a positive integer: ${configCommandTimeoutValue}.`
+  );
+  process.exit(1);
+}
+const configCommandTimeoutMs = Number(configCommandTimeoutValue);
 const expectedIncludeDir = resolve(packageRoot, "include");
 const includeDir = execFileSync(configCommand, ["--includedir"], {
   encoding: "utf8",
+  timeout: configCommandTimeoutMs,
 }).trim();
 if (includeDir !== expectedIncludeDir) {
   console.error(`gestament-config --includedir returned ${includeDir}.`);
@@ -659,13 +669,17 @@ if (includeDir !== expectedIncludeDir) {
 }
 const cflags = execFileSync(configCommand, ["--cflags"], {
   encoding: "utf8",
+  timeout: configCommandTimeoutMs,
 }).trim();
 if (cflags !== `-I${expectedIncludeDir}`) {
   console.error(`gestament-config --cflags returned ${cflags}.`);
   process.exit(1);
 }
 try {
-  execFileSync(configCommand, ["--unknown"], { stdio: "pipe" });
+  execFileSync(configCommand, ["--unknown"], {
+    stdio: "pipe",
+    timeout: configCommandTimeoutMs,
+  });
   console.error("gestament-config accepted an unknown option.");
   process.exit(1);
 } catch (error) {

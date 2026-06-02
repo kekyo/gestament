@@ -3,7 +3,7 @@
 // Under MIT.
 // https://github.com/kekyo/gestament
 
-#include "accessible.hpp"
+#include "accessible.h"
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glib-object.h>

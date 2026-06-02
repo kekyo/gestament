@@ -3,9 +3,9 @@
 // Under MIT.
 // https://github.com/kekyo/gestament
 
-#include "accessible.hpp"
-#include "atspi_client.hpp"
-#include "tray.hpp"
+#include "accessible.h"
+#include "atspi_client.h"
+#include "tray.h"
 
 #include <node_api.h>
 

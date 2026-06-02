@@ -10,18 +10,20 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { platformSmokeScriptTimeoutMs } from './support/testTimeouts';
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 const platformContainerSmokeScript = fileURLToPath(
   new URL('../scripts/platform_container_smoke.mjs', import.meta.url)
 );
 
-describe('platform_container_smoke.mjs', () => {
+describe.concurrent('platform_container_smoke.mjs', () => {
   it('requires the platform environment', () => {
     const result = spawnSync(process.execPath, [platformContainerSmokeScript], {
       encoding: 'utf8',
       env: {},
-      timeout: 10_000,
+      timeout: platformSmokeScriptTimeoutMs,
     });
 
     expect(result.status).toBe(2);
@@ -37,7 +39,7 @@ describe('platform_container_smoke.mjs', () => {
         GESTAMENT_ARCH: 'amd64',
         GESTAMENT_GTK_BACKEND: 'gtk3',
       },
-      timeout: 10_000,
+      timeout: platformSmokeScriptTimeoutMs,
     });
 
     expect(result.status).toBe(2);
@@ -74,7 +76,7 @@ describe('platform_container_smoke.mjs', () => {
             GESTAMENT_GTK_BACKEND: 'gtk3',
             GESTAMENT_PACKAGE_VERSION: '0.0.36',
           },
-          timeout: 10_000,
+          timeout: platformSmokeScriptTimeoutMs,
         }
       );
 
@@ -103,7 +105,7 @@ describe('platform_container_smoke.mjs', () => {
             GESTAMENT_PACKAGE_VERSION: '0.0.36',
             GESTAMENT_PLATFORM_SMOKE_TIMEOUT_MS: '0',
           },
-          timeout: 10_000,
+          timeout: platformSmokeScriptTimeoutMs,
         }
       );
 

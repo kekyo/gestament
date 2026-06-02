@@ -40,8 +40,8 @@ const ensureProbesBuilt = (): void => {
 
   execFileSync(
     'make',
-    ['-C', probeSourceDirectory, `OUT_DIR=${probeBuildDirectory}`],
-    { stdio: 'inherit' }
+    ['-j', '-C', probeSourceDirectory, `OUT_DIR=${probeBuildDirectory}`],
+    { stdio: 'inherit', timeout: visualE2eTestTimeoutMs }
   );
   probesBuilt = true;
 };
@@ -89,6 +89,7 @@ const withProbeApp = async (
     appPath: join(probeBuildDirectory, probeName),
     timeoutMs: visualE2eTestTimeoutMs,
     xvfbScreen: '900x700x24',
+    xvfbTrayHost: false,
   });
   const app = await launcher.launch(args);
   try {
@@ -101,7 +102,7 @@ const withProbeApp = async (
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-describeGtk3('native window fusion e2e', () => {
+describeGtk3.concurrent('native window fusion e2e', () => {
   it(
     'deduplicates same-title AT-SPI and X11 top-level windows by bounds',
     async () => {

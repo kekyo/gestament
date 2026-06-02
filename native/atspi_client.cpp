@@ -3,7 +3,7 @@
 // Under MIT.
 // https://github.com/kekyo/gestament
 
-#include "atspi_client.hpp"
+#include "atspi_client.h"
 
 #include <atspi/atspi.h>
 #include <dbus/dbus.h>

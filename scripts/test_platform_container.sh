@@ -276,7 +276,7 @@ build_native_backend() {
   out_dir="out/$prebuild_directory/$GESTAMENT_GTK_BACKEND"
 
   make -C native clean OUT_DIR="$out_dir"
-  make -C native \
+  make -C native -j \
     NODE_INCLUDE_DIR="$node_include_dir" \
     GESTAMENT_PACKAGE_VERSION="$package_version" \
     GESTAMENT_NATIVE_ARCH="$GESTAMENT_ARCH" \

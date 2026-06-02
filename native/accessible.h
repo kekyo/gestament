@@ -6,7 +6,7 @@
 #ifndef GESTAMENT_ACCESSIBLE_HPP
 #define GESTAMENT_ACCESSIBLE_HPP
 
-#include "atspi_client.hpp"
+#include "atspi_client.h"
 
 #include <atspi/atspi.h>
 

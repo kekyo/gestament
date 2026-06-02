@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import { spawnText } from './support/process';
 import {
+  appOutputExitTimeoutMs,
   xvfbLauncherChildEnvironmentTimeoutMs,
   xvfbLauncherScriptTimeoutMs,
   xvfbPoolChildEnvironmentTimeoutMs,
@@ -85,7 +86,7 @@ const atSpiBusNumber = (address: string): string => {
   return match[1] as string;
 };
 
-describe('gestament-xvfb', () => {
+describe.concurrent('gestament-xvfb', () => {
   it('prints a prerequisite installation hint when xvfb-run cannot start', () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), 'gestament-empty-path-'));
     try {
@@ -98,7 +99,7 @@ describe('gestament-xvfb', () => {
             ...process.env,
             PATH: tempDirectory,
           },
-          timeout: 30_000,
+          timeout: xvfbLauncherScriptTimeoutMs,
         }
       );
 
@@ -137,7 +138,7 @@ describe('gestament-xvfb', () => {
           XAUTHORITY: '/tmp/gestament-host-xauthority',
           XDG_SESSION_TYPE: 'wayland',
         },
-        timeout: 30_000,
+        timeout: xvfbLauncherScriptTimeoutMs,
       }
     );
 
@@ -578,7 +579,7 @@ const secondLauncher = createGtkAppLauncher({
 
       try {
         const script = `
-const { existsSync, readFileSync } = require('node:fs');
+const { closeSync, existsSync, openSync, readFileSync, rmSync, writeSync } = require('node:fs');
 const { join } = require('node:path');
 const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
 const tempDirectory = ${JSON.stringify(tempDirectory)};
@@ -661,6 +662,30 @@ const invalidPoolCode = async (xvfbPool) => {
 };
 const displaySet = (launched) =>
   launched.map((entry) => entry.env.display).sort().join('|');
+const displayNumber = (display) => {
+  const match = /^:([0-9]+)(?:\\.|$)/.exec(display ?? '');
+  if (match === null) {
+    throw new Error('Unexpected DISPLAY value: ' + String(display));
+  }
+  return match[1];
+};
+const reserveDisplayNumberIfFree = (display) => {
+  const lockPath = '/tmp/.X' + displayNumber(display) + '-lock';
+  try {
+    const fd = openSync(lockPath, 'wx');
+    try {
+      writeSync(fd, String(process.pid));
+    } finally {
+      closeSync(fd);
+    }
+    return () => rmSync(lockPath, { force: true });
+  } catch (error) {
+    if (error && error.code === 'EEXIST') {
+      return () => undefined;
+    }
+    throw error;
+  }
+};
 const outputChildScript = (label) => [
   "process.stdout.write(" + JSON.stringify("stdout:" + label + "\\n") + ", () => {",
   "  process.stderr.write(" + JSON.stringify("stderr:" + label + "\\n") + ", () => {",
@@ -670,7 +695,7 @@ const outputChildScript = (label) => [
 ].join("\\n");
 const waitForExitedOutput = async (app) => {
   const startedAt = Date.now();
-  while (Date.now() - startedAt <= ${JSON.stringify(xvfbPoolChildEnvironmentTimeoutMs)}) {
+  while (Date.now() - startedAt <= ${JSON.stringify(appOutputExitTimeoutMs)}) {
     const output = await app.output();
     if (output.exitCode !== null || output.exitSignal !== null) {
       return output;
@@ -786,10 +811,16 @@ const launchOutputApp = async (label) => {
     xvfbPool: { type: 'xvfb', maxIdleTotal: 1 },
     xvfbScreen: '530x320x24',
   });
-  const totalFirstAgain = await launchNodeApp({
-    xvfbPool: { type: 'xvfb', maxIdleTotal: 1 },
-    xvfbScreen: '520x310x24',
-  });
+  const releaseTotalFirstReservation = reserveDisplayNumberIfFree(totalFirst.env.display);
+  let totalFirstAgain;
+  try {
+    totalFirstAgain = await launchNodeApp({
+      xvfbPool: { type: 'xvfb', maxIdleTotal: 1 },
+      xvfbScreen: '520x310x24',
+    });
+  } finally {
+    releaseTotalFirstReservation();
+  }
   const totalSecondAgain = await launchNodeApp({
     xvfbPool: { type: 'xvfb', maxIdleTotal: 1 },
     xvfbScreen: '530x320x24',

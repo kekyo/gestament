@@ -15,6 +15,10 @@ try {
   if (stderr !== undefined) {
     process.stderr.write(stderr);
   }
+  const startupError = process.env.GESTAMENT_TEST_TRAY_HOST_STARTUP_ERROR;
+  if (startupError !== undefined) {
+    throw new Error(startupError);
+  }
   nativeRunTrayHost();
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);

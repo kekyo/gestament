@@ -149,7 +149,7 @@ out_dir="/workspace/native/out/$GESTAMENT_PREBUILD_DIR"
 
 rm -rf "$out_dir" "$prebuild_root"
 make -C /workspace/native clean OUT_DIR="$out_dir"
-make -C /workspace/native -j"$GESTAMENT_MAKE_JOBS" \
+make -C /workspace/native -j \
   NODE_INCLUDE_DIR="$node_include_dir" \
   GESTAMENT_PACKAGE_VERSION="$package_version" \
   GESTAMENT_NATIVE_ARCH="$GESTAMENT_ARCH" \

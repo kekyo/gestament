@@ -6,7 +6,7 @@
 #ifndef GESTAMENT_TRAY_HPP
 #define GESTAMENT_TRAY_HPP
 
-#include "atspi_client.hpp"
+#include "atspi_client.h"
 
 #include <glib.h>
 
