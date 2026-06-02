@@ -1207,9 +1207,9 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     await expect(tabB.isSelected()).resolves.toBe(false);
     await notebook.selectChildAt(1);
     await expect.poll(() => tabB.isSelected()).toBe(true);
+    await expectCaptureArtifact(await notebook.capture(), 'standard-notebook');
     await tabA.select();
     await expect.poll(() => tabA.isSelected()).toBe(true);
-    await expectCaptureArtifact(await notebook.capture(), 'standard-notebook');
     await expect(notebook.childAt(-1)).rejects.toMatchObject({
       code: 'INVALID_ARGUMENT',
     });

@@ -4,7 +4,7 @@ TypeScriptベースの、GTKテストドライバライブラリ
 
 ![gestament](./images/gestament-120.png)
 
-[![Project Status: WIP – Initial development is in progress, but there has not yet been a stable, usable release suitable for the public.](https://www.repostatus.org/badges/latest/wip.svg)](https://www.repostatus.org/#wip)
+[![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![npm version](https://img.shields.io/npm/v/gestament.svg)](https://www.npmjs.com/package/gestament)
 
@@ -482,7 +482,9 @@ expect(secondWindow).toBeUndefined();
   `getById()`, `childAt()` を組み合わせる場合は、それぞれで `await` による待機が必要です。
 - `windowAt()` と `getWindowCount()` は、トップレベルウインドウ列挙用のAPIです。
   同じウインドウがAT-SPIとX11の両方から見える場合は統合し、GTK file chooser dialogのようなX11-onlyのnative windowも列挙できます。
-- `findById()`, `getById()`, `findByPath()`, `getByPath()` は、semanticなAT-SPI探索のままです。X11-only windowに合成accessible IDを付けることはありません。
+  列挙対象は、起動プロセスをrootとし、その子孫プロセスが所有するウインドウも含みます。
+- `findById()`, `getById()`, `findByPath()`, `getByPath()` は、accessible IDをAT-SPIで解決する前提を維持します。X11-only windowに合成accessible IDを付けることはありません。
+  ただし、X11でしか発見できないウインドウについては、X11 boundsとdirect child windowを補助的に使い、対応するAT-SPI elementが一意に見つかる場合はsemantic elementとして返し、見つからない場合はX11-backed containerとして走査できます。
 
 ### GTKウィジェットの操作
 
@@ -494,31 +496,31 @@ expect(secondWindow).toBeUndefined();
 
 `GtkElement` は共通操作のみを提供します。ウィジェット固有の操作は、`GtkWidgetElement` の `kind` で型を絞り込んでから使用します。
 
-| 特殊化型                                                                              | 操作                                                                                                                                                                                |
-| :------------------------------------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GtkEntryElement`                                                                     | `setText()` / `text()`                                                                                                                                                              |
-| `GtkLabelElement`, `GtkTextElement`                                                   | `text()`                                                                                                                                                                            |
-| `GtkButtonElement`, `GtkListItemElement`, `GtkMenuItemElement`                        | `click()`                                                                                                                                                                           |
-| `GtkCheckboxElement`, `GtkSwitchElement`, `GtkRadioElement`, `GtkToggleButtonElement` | `click()` / `isChecked()` / `toggle()`                                                                                                                                              |
-| `GtkSpinButtonElement`                                                                | `value()` / `valueInfo()` / `setValue()` / `increment()` / `decrement()`                                                                                                            |
-| `GtkSliderElement`                                                                    | `value()` / `valueInfo()` / `setValue()`                                                                                                                                            |
-| `GtkProgressBarElement`                                                               | `value()` / `valueInfo()`                                                                                                                                                           |
-| `GtkImageElement`                                                                     | `imageInfo()` / `GtkImageInfo.capture()`                                                                                                                                            |
+| 特殊化型                                                                              | 操作                                                                                                                                                                                                       |
+| :------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GtkEntryElement`                                                                     | `setText()` / `text()`                                                                                                                                                                                     |
+| `GtkLabelElement`, `GtkTextElement`                                                   | `text()`                                                                                                                                                                                                   |
+| `GtkButtonElement`, `GtkListItemElement`, `GtkMenuItemElement`                        | `click()`                                                                                                                                                                                                  |
+| `GtkCheckboxElement`, `GtkSwitchElement`, `GtkRadioElement`, `GtkToggleButtonElement` | `click()` / `isChecked()` / `toggle()`                                                                                                                                                                     |
+| `GtkSpinButtonElement`                                                                | `value()` / `valueInfo()` / `setValue()` / `increment()` / `decrement()`                                                                                                                                   |
+| `GtkSliderElement`                                                                    | `value()` / `valueInfo()` / `setValue()`                                                                                                                                                                   |
+| `GtkProgressBarElement`                                                               | `value()` / `valueInfo()`                                                                                                                                                                                  |
+| `GtkImageElement`                                                                     | `imageInfo()` / `GtkImageInfo.capture()`                                                                                                                                                                   |
 | `GtkWindowElement`                                                                    | `activate()` / `bounds()` / `moveTo()` / `resizeTo()` / `setBounds()` / `resizeHints()` / `x11Info()` / `debugDiagnostics()` / `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります |
-| `GtkContainerElement`                                                                 | `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります                                                                                                         |
-| `GtkComboBoxElement`                                                                  | `click()` / `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `clearSelection()`                        |
-| `GtkTabListElement`                                                                   | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()`                                                         |
-| `GtkTabElement`                                                                       | `click()` / `isSelected()` / `select()`                                                                                                                                             |
-| `GtkTabPanelElement`, `GtkToolbarElement`, `GtkStatusBarElement`, `GtkInfoBarElement` | `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります                                                                                                         |
-| `GtkExpanderElement`, `GtkTreeItemElement`                                            | `click()` / `isExpanded()` / `expand()` / `collapse()` / `toggle()` / `childAt()` / `getChildCount()`                                                                               |
-| `GtkScrollbarElement`                                                                 | `value()` / `valueInfo()` / `setValue()`                                                                                                                                            |
-| `GtkLinkElement`                                                                      | `click()` / `isVisited()`                                                                                                                                                           |
-| `GtkCalendarElement`                                                                  | `childAt()` / `getChildCount()`。backendによっては任意の `getRowCount()` / `getColumnCount()` / `cellAt()` によるtable navigationも公開されます                                     |
-| `GtkListElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `deselectChildAt()` など                              |
-| `GtkMenuElement`                                                                      | `childAt()` / `getChildCount()`。子要素は `GtkMenuItemElement` として返ります                                                                                                       |
-| `GtkTableElement`                                                                     | `getRowCount()` / `getColumnCount()` / `cellAt()` / `selectedRows()` / `selectedColumns()` / `selectRow()` / `selectColumn()` / `isCellSelected()` など                             |
-| `GtkTreeElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()`                                                         |
-| `GtkSeparatorElement`                                                                 | `info()` / `capture()`                                                                                                                                                              |
+| `GtkContainerElement`                                                                 | `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります                                                                                                                                |
+| `GtkComboBoxElement`                                                                  | `click()` / `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `clearSelection()`                                               |
+| `GtkTabListElement`                                                                   | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()`                                                                                |
+| `GtkTabElement`                                                                       | `click()` / `isSelected()` / `select()`                                                                                                                                                                    |
+| `GtkTabPanelElement`, `GtkToolbarElement`, `GtkStatusBarElement`, `GtkInfoBarElement` | `childAt()` / `getChildCount()`。子要素は `GtkWidgetElement` として返ります                                                                                                                                |
+| `GtkExpanderElement`, `GtkTreeItemElement`                                            | `click()` / `isExpanded()` / `expand()` / `collapse()` / `toggle()` / `childAt()` / `getChildCount()`                                                                                                      |
+| `GtkScrollbarElement`                                                                 | `value()` / `valueInfo()` / `setValue()`                                                                                                                                                                   |
+| `GtkLinkElement`                                                                      | `click()` / `isVisited()`                                                                                                                                                                                  |
+| `GtkCalendarElement`                                                                  | `childAt()` / `getChildCount()`。backendによっては任意の `getRowCount()` / `getColumnCount()` / `cellAt()` によるtable navigationも公開されます                                                            |
+| `GtkListElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()` / `deselectChildAt()` など                                                     |
+| `GtkMenuElement`                                                                      | `childAt()` / `getChildCount()`。子要素は `GtkMenuItemElement` として返ります                                                                                                                              |
+| `GtkTableElement`                                                                     | `getRowCount()` / `getColumnCount()` / `cellAt()` / `selectedRows()` / `selectedColumns()` / `selectRow()` / `selectColumn()` / `isCellSelected()` など                                                    |
+| `GtkTreeElement`                                                                      | `childAt()` / `getChildCount()` / `getSelectedChildCount()` / `selectedChildAt()` / `isChildSelected()` / `selectChildAt()`                                                                                |
+| `GtkSeparatorElement`                                                                 | `info()` / `capture()`                                                                                                                                                                                     |
 
 コード例:
 
@@ -595,11 +597,11 @@ expect(x11Info.normalHints.widthIncrement).toBeGreaterThanOrEqual(0);
 - `windowAt()` が返すウインドウは、AT-SPI由来、X11由来、またはその両方に由来します。
   同じトップレベルウインドウが両backendから見える場合、gestamentはprocess、title/name、screen boundsを使って統合し、二重列挙を避けます。
 - X11-only windowでは、`bounds()`, `capture()`, `moveTo()`, `resizeTo()`, `setBounds()`, `activate()`, `resizeHints()`, `x11Info()` などのnative window操作を使用できます。
-  `childAt()` や `getChildCount()` のようなsemanticな子要素走査はAT-SPI sourceが必要なため、X11-only windowでは `UNSUPPORTED_INTERFACE` で失敗します。
+  `childAt()` と `getChildCount()` はdirect X11 child windowを列挙します。child windowがboundsによって一意のAT-SPI elementに対応する場合はsemantic elementを返し、対応が見つからない場合はcapture、info、さらに子要素走査を持つX11-backed containerを返します。
 - GTK/X11の基準サイズ、最小サイズ、リサイズ単位などのサイズ制約は `resizeHints()` で取得できます。
 - `x11Info()` はX11固有のメタデータと `WM_NORMAL_HINTS` を公開します。通常は上記の高水準APIを優先し、X11固有情報が必要な場合だけ使用してください。
 - X11以外のバックエンドやX11 windowを解決できない場合、`x11Info()` は `UNSUPPORTED_INTERFACE` で失敗します。
-- `debugDiagnostics()` はbackend visibilityやmerge detailsを調査するためのdebug情報を公開します。
+- `debugDiagnostics()` は、gestamentによるバックエンドの認識状態を調査するためのデバッグ診断情報を取得します。
   AT-SPI/X11の可用性や将来のWayland対応で内容が変わる可能性があるため、通常のテスト分岐には使用しないでください。
 
 低水準入力制御は、ウィジェット単位の高水準操作とは別レイヤーとして提供されます:

@@ -435,10 +435,14 @@ export interface GtkElement extends GtkCapturable {
  */
 export interface GtkChildContainer<Child extends GtkWidgetElement> {
   /**
-   * Resolves a direct child by AT-SPI child order.
+   * Resolves a direct child by backend child order.
    *
-   * @param index - Zero-based AT-SPI child index.
+   * @param index - Zero-based child index.
    * @returns A promise that resolves to the child element, or undefined when no child exists at the index.
+   * @remarks
+   * AT-SPI-backed elements use AT-SPI child order. X11-backed elements use
+   * direct X11 child-window order and return a semantic AT-SPI element when
+   * the native child window can be matched uniquely by bounds.
    */
   readonly childAt: (index: number) => Promise<Child | undefined>;
 
@@ -1850,6 +1854,9 @@ export interface GtkApp extends Releasable, GtkCapturable {
    * Counts top-level windows currently hosted by the application process.
    *
    * @returns A promise that resolves to the current top-level window count.
+   * @remarks
+   * The process is interpreted as the launched root process plus its descendant
+   * processes, so helper processes can expose windows owned by the same app.
    */
   readonly getWindowCount: () => Promise<number>;
 

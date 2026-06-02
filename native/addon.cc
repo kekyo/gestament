@@ -727,6 +727,7 @@ bool create_element_info_object(napi_env env,
   napi_value states = nullptr;
   return create_string_array(env, info.interfaces, &interfaces) &&
          create_string_array(env, info.states, &states) &&
+         set_uint32_property(env, *result, "processId", info.process_id) &&
          set_string_property(env, *result, "roleName",
                              info.role_name.c_str()) &&
          set_string_property(env, *result, "localizedRoleName",
@@ -776,6 +777,103 @@ bool create_image_info_object(napi_env env,
          set_value_property(env, *result, "position", position) &&
          set_value_property(env, *result, "size", size) &&
          set_value_property(env, *result, "bounds", bounds);
+}
+
+napi_value find_by_id_in_subtree(napi_env env, napi_callback_info info) {
+  napi_value args[2] = {};
+  if (!read_arguments(env, info, 2, args)) {
+    return make_undefined(env);
+  }
+
+  NativeElement *element = nullptr;
+  std::string id;
+  if (!read_native_element(env, args[0], "element", &element) ||
+      !read_string_argument(env, args[1], "id", &id)) {
+    return make_undefined(env);
+  }
+
+  gestament::AccessibleLookupResult lookup =
+      gestament::find_accessible_by_id_in_subtree(
+          element->process_id, element->accessible, id);
+  if (lookup.accessible == nullptr) {
+    if (lookup.error.code != gestament::NativeErrorCode::element_not_found) {
+      throw_native_error(env, lookup.error);
+    }
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_element_external(env, element->process_id, lookup.accessible,
+                               &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value find_by_id_in_bounds(napi_env env, napi_callback_info info) {
+  napi_value args[6] = {};
+  if (!read_arguments(env, info, 6, args)) {
+    return make_undefined(env);
+  }
+
+  guint process_id = 0;
+  std::string id;
+  gestament::CaptureBounds bounds = {};
+  if (!read_process_id(env, args[0], &process_id) ||
+      !read_string_argument(env, args[1], "id", &id) ||
+      !read_int32_argument(env, args[2], "x", &bounds.x) ||
+      !read_int32_argument(env, args[3], "y", &bounds.y) ||
+      !read_positive_int32_argument(env, args[4], "width", &bounds.width) ||
+      !read_positive_int32_argument(env, args[5], "height", &bounds.height)) {
+    return make_undefined(env);
+  }
+
+  gestament::AccessibleLookupResult lookup =
+      gestament::find_accessible_by_id_in_bounds(process_id, id, bounds);
+  if (lookup.accessible == nullptr) {
+    if (lookup.error.code != gestament::NativeErrorCode::element_not_found) {
+      throw_native_error(env, lookup.error);
+    }
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_element_external(env, process_id, lookup.accessible, &result)) {
+    return make_undefined(env);
+  }
+  return result;
+}
+
+napi_value find_by_bounds(napi_env env, napi_callback_info info) {
+  napi_value args[5] = {};
+  if (!read_arguments(env, info, 5, args)) {
+    return make_undefined(env);
+  }
+
+  guint process_id = 0;
+  gestament::CaptureBounds bounds = {};
+  if (!read_process_id(env, args[0], &process_id) ||
+      !read_int32_argument(env, args[1], "x", &bounds.x) ||
+      !read_int32_argument(env, args[2], "y", &bounds.y) ||
+      !read_positive_int32_argument(env, args[3], "width", &bounds.width) ||
+      !read_positive_int32_argument(env, args[4], "height", &bounds.height)) {
+    return make_undefined(env);
+  }
+
+  gestament::AccessibleLookupResult lookup =
+      gestament::find_accessible_by_bounds(process_id, bounds);
+  if (lookup.accessible == nullptr) {
+    if (lookup.error.code != gestament::NativeErrorCode::element_not_found) {
+      throw_native_error(env, lookup.error);
+    }
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (!create_element_external(env, process_id, lookup.accessible, &result)) {
+    return make_undefined(env);
+  }
+  return result;
 }
 
 napi_value find_any_by_id(napi_env env, napi_callback_info info) {
@@ -2111,6 +2209,46 @@ napi_value x11_window_snapshot(napi_env env, napi_callback_info info) {
   return result;
 }
 
+napi_value x11_child_window_snapshots(napi_env env, napi_callback_info info) {
+  napi_value args[1] = {};
+  if (!read_arguments(env, info, 1, args)) {
+    return make_undefined(env);
+  }
+
+  std::string window_id;
+  if (!read_string_argument(env, args[0], "windowId", &window_id)) {
+    return make_undefined(env);
+  }
+
+  std::vector<gestament::X11WindowSnapshot> snapshots;
+  gestament::NativeError error = {};
+  if (!gestament::read_x11_child_window_snapshots(window_id, &snapshots,
+                                                  &error)) {
+    throw_native_error(env, error);
+    return make_undefined(env);
+  }
+
+  napi_value result = nullptr;
+  if (napi_create_array_with_length(env, snapshots.size(), &result) !=
+      napi_ok) {
+    napi_throw_error(env, nullptr,
+                     "Failed to create X11 child snapshot array.");
+    return make_undefined(env);
+  }
+
+  for (std::size_t index = 0; index < snapshots.size(); index += 1) {
+    napi_value snapshot = nullptr;
+    if (!create_x11_window_snapshot_object(env, snapshots[index], &snapshot) ||
+        napi_set_element(env, result, index, snapshot) != napi_ok) {
+      napi_throw_error(env, nullptr,
+                       "Failed to set X11 child snapshot array item.");
+      return make_undefined(env);
+    }
+  }
+
+  return result;
+}
+
 napi_value x11_window_bounds(napi_env env, napi_callback_info info) {
   napi_value args[1] = {};
   if (!read_arguments(env, info, 1, args)) {
@@ -2372,6 +2510,9 @@ bool set_function(napi_env env, napi_value exports, const char *name,
 
 napi_value initialize(napi_env env, napi_value exports) {
   set_function(env, exports, "findById", find_by_id);
+  set_function(env, exports, "findByIdInSubtree", find_by_id_in_subtree);
+  set_function(env, exports, "findByIdInBounds", find_by_id_in_bounds);
+  set_function(env, exports, "findByBounds", find_by_bounds);
   set_function(env, exports, "processAtspiReadiness", process_atspi_readiness);
   set_function(env, exports, "findAnyById", find_any_by_id);
   set_function(env, exports, "setTextById", set_text_by_id);
@@ -2427,6 +2568,8 @@ napi_value initialize(napi_env env, napi_value exports) {
   set_function(env, exports, "mappedX11WindowCount", mapped_x11_window_count);
   set_function(env, exports, "x11WindowSnapshots", x11_window_snapshots);
   set_function(env, exports, "x11WindowSnapshot", x11_window_snapshot);
+  set_function(env, exports, "x11ChildWindowSnapshots",
+               x11_child_window_snapshots);
   set_function(env, exports, "x11WindowBounds", x11_window_bounds);
   set_function(env, exports, "moveX11Window", move_x11_window);
   set_function(env, exports, "resizeX11Window", resize_x11_window);

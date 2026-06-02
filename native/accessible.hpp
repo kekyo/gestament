@@ -70,6 +70,7 @@ struct X11WindowSnapshot {
 
 /** AT-SPI metadata exposed for an accessible element. */
 struct AccessibleInfo {
+  guint process_id;
   std::string role_name;
   std::string localized_role_name;
   std::string accessible_id;
@@ -118,6 +119,18 @@ struct AccessibleLookupResult {
 /** Finds an accessible by process id and AT-SPI accessible id. */
 AccessibleLookupResult find_accessible_by_id(guint process_id,
                                              const std::string &id);
+
+/** Finds an accessible by id under a known accessible subtree. */
+AccessibleLookupResult find_accessible_by_id_in_subtree(
+    guint process_id, AtspiAccessible *root, const std::string &id);
+
+/** Finds an accessible by id whose component bounds are inside screen bounds. */
+AccessibleLookupResult find_accessible_by_id_in_bounds(
+    guint process_id, const std::string &id, const CaptureBounds &bounds);
+
+/** Finds the best accessible whose component bounds match screen bounds. */
+AccessibleLookupResult find_accessible_by_bounds(guint process_id,
+                                                 const CaptureBounds &bounds);
 
 /** Finds an accessible by AT-SPI accessible id across all exposed processes. */
 AccessibleLookupResult find_accessible_by_id_any_process(const std::string &id);
@@ -363,6 +376,11 @@ bool read_x11_window_snapshots(guint process_id, bool filter_by_process,
 bool read_x11_window_snapshot(const std::string &window_id,
                               X11WindowSnapshot *snapshot,
                               NativeError *error);
+
+/** Reads direct mapped X11 child window snapshots by parent window id. */
+bool read_x11_child_window_snapshots(
+    const std::string &window_id, std::vector<X11WindowSnapshot> *snapshots,
+    NativeError *error);
 
 /** Reads screen-relative bounds for an X11 window by window id. */
 bool read_x11_window_bounds_by_id(const std::string &window_id,

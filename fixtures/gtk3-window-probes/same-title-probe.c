@@ -1,6 +1,8 @@
 #include <atk/atk.h>
 #include <gtk/gtk.h>
 
+#define PROBE_TIMEOUT_SECONDS 180
+
 static gboolean quit_later(gpointer user_data) {
   (void)user_data;
   gtk_main_quit();
@@ -27,7 +29,7 @@ int main(int argc, char **argv) {
     gtk_main_iteration();
   }
 
-  g_timeout_add_seconds(20, quit_later, NULL);
+  g_timeout_add_seconds(PROBE_TIMEOUT_SECONDS, quit_later, NULL);
   gtk_main();
   return 0;
 }

@@ -4,9 +4,9 @@ PKG_CONFIG ?= pkg-config
 
 GTK_CFLAGS := $(shell $(PKG_CONFIG) --cflags gtk+-3.0)
 GTK_LIBS := $(shell $(PKG_CONFIG) --libs gtk+-3.0)
-CFLAGS += -std=c99 -Wall -Wextra -O2 $(GTK_CFLAGS)
+CFLAGS += -std=c99 -Wall -Wextra -O2 -I../../include $(GTK_CFLAGS)
 
-TARGETS := file-dialog-probe same-title-probe
+TARGETS := file-dialog-probe same-title-probe child-process-probe
 
 .PHONY: all clean
 

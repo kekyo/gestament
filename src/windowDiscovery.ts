@@ -452,7 +452,7 @@ export const collectAtspiWindowSnapshots = (
         source: 'at-spi',
         handle,
         index,
-        processId,
+        processId: info.processId,
         roleName: info.roleName,
         name: info.name,
         accessibleId: info.accessibleId,

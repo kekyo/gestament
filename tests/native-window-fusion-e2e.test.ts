@@ -10,6 +10,10 @@ import { describe, expect, it } from 'vitest';
 
 import { createGtkAppLauncher } from '../src/launchGtkApp';
 import type { GtkApp, GtkWidgetElement, GtkWindowElement } from '../src/types';
+import {
+  gtk4MissingLookupTimeoutMs as windowCountTimeoutMs,
+  gtk4VisualTestTimeoutMs as testTimeoutMs,
+} from './support/testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -21,7 +25,6 @@ const probeSourceDirectory = fileURLToPath(
 const probeBuildDirectory = fileURLToPath(
   new URL('../.build/gtk3-window-probes', import.meta.url)
 );
-const testTimeoutMs = 60_000;
 
 let probesBuilt = false;
 
@@ -50,7 +53,7 @@ const waitForWindowCount = async (
   const startedAt = Date.now();
   let lastCount = 0;
 
-  while (Date.now() - startedAt <= 10_000) {
+  while (Date.now() - startedAt <= windowCountTimeoutMs) {
     lastCount = await app.getWindowCount();
     if (lastCount === expectedCount) {
       return;
@@ -67,6 +70,13 @@ const expectWindow = (
   expect(element).toBeDefined();
   expect(element?.kind).toBe('window');
   return element as GtkWindowElement;
+};
+
+const expectElement = (
+  element: GtkWidgetElement | undefined
+): GtkWidgetElement => {
+  expect(element).toBeDefined();
+  return element as GtkWidgetElement;
 };
 
 const withProbeApp = async (
@@ -142,6 +152,52 @@ describeGtk3('native window fusion e2e', () => {
           matchedBy: 'x11-only',
           seenBy: ['x11'],
         });
+      });
+    },
+    testTimeoutMs
+  );
+
+  it(
+    'traverses direct X11 children for X11-only windows',
+    async () => {
+      await withProbeApp('file-dialog-probe', [], async (app) => {
+        await waitForWindowCount(app, 1);
+
+        const dialog = expectWindow(await app.windowAt(0));
+        const childCount = await dialog.getChildCount();
+        expect(childCount).toBeGreaterThan(0);
+
+        const child = await dialog.childAt(0);
+        expect(child).toBeDefined();
+
+        const dialogBounds = await dialog.bounds();
+        const childCapture = await expectElement(child).capture();
+        expect(childCapture.bounds.x).toBeGreaterThanOrEqual(dialogBounds.x);
+        expect(childCapture.bounds.y).toBeGreaterThanOrEqual(dialogBounds.y);
+        expect(
+          childCapture.bounds.x + childCapture.bounds.width
+        ).toBeLessThanOrEqual(dialogBounds.x + dialogBounds.width);
+        expect(
+          childCapture.bounds.y + childCapture.bounds.height
+        ).toBeLessThanOrEqual(dialogBounds.y + dialogBounds.height);
+      });
+    },
+    testTimeoutMs
+  );
+
+  it(
+    'discovers windows and accessible ids from child processes',
+    async () => {
+      await withProbeApp('child-process-probe', [], async (app) => {
+        await waitForWindowCount(app, 1);
+
+        const window = expectWindow(await app.windowAt(0));
+        await expect(window.info()).resolves.toMatchObject({
+          name: 'Gestament Child Process Window',
+        });
+
+        const button = await app.getById('child_process_button');
+        expect(button?.kind).toBe('button');
       });
     },
     testTimeoutMs

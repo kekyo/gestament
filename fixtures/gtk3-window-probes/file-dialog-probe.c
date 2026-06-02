@@ -2,6 +2,8 @@
 #include <gtk/gtk.h>
 #include <string.h>
 
+#define PROBE_TIMEOUT_SECONDS 180
+
 static gboolean quit_later(gpointer user_data) {
   (void)user_data;
   gtk_main_quit();
@@ -33,7 +35,7 @@ int main(int argc, char **argv) {
                       "Gestament Merge Probe File Dialog");
   gtk_widget_show_all(dialog);
 
-  g_timeout_add_seconds(20, quit_later, NULL);
+  g_timeout_add_seconds(PROBE_TIMEOUT_SECONDS, quit_later, NULL);
   gtk_main();
   return 0;
 }

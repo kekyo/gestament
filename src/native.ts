@@ -68,6 +68,7 @@ export interface NativeX11WindowSnapshot {
 }
 
 export interface NativeElementInfo {
+  readonly processId: number;
   readonly roleName: string;
   readonly localizedRoleName: string;
   readonly accessibleId: string;
@@ -156,6 +157,25 @@ interface NativeAddon {
   readonly findById: (
     processId: number,
     id: string
+  ) => NativeElementHandle | undefined;
+  readonly findByIdInSubtree: (
+    element: NativeElementHandle,
+    id: string
+  ) => NativeElementHandle | undefined;
+  readonly findByIdInBounds: (
+    processId: number,
+    id: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+  ) => NativeElementHandle | undefined;
+  readonly findByBounds: (
+    processId: number,
+    x: number,
+    y: number,
+    width: number,
+    height: number
   ) => NativeElementHandle | undefined;
   readonly processAtspiReadiness: (processId: number) => NativeAtspiReadiness;
   readonly findAnyById: (id: string) => NativeElementHandle | undefined;
@@ -273,6 +293,9 @@ interface NativeAddon {
     filterByProcess: boolean
   ) => NativeX11WindowSnapshot[];
   readonly x11WindowSnapshot: (windowId: string) => NativeX11WindowSnapshot;
+  readonly x11ChildWindowSnapshots: (
+    windowId: string
+  ) => NativeX11WindowSnapshot[];
   readonly x11WindowBounds: (windowId: string) => NativeCaptureBounds;
   readonly moveX11Window: (
     windowId: string,
@@ -440,6 +463,45 @@ export const nativeFindById = (
   id: string
 ): NativeElementHandle | undefined =>
   callNative(() => loadNativeAddon().findById(processId, id));
+
+/** Resolves an accessible id under an existing native element subtree. */
+export const nativeFindByIdInSubtree = (
+  element: NativeElementHandle,
+  id: string
+): NativeElementHandle | undefined =>
+  callNative(() => loadNativeAddon().findByIdInSubtree(element, id));
+
+/** Resolves an accessible id inside screen-relative bounds. */
+export const nativeFindByIdInBounds = (
+  processId: number,
+  id: string,
+  bounds: NativeCaptureBounds
+): NativeElementHandle | undefined =>
+  callNative(() =>
+    loadNativeAddon().findByIdInBounds(
+      processId,
+      id,
+      bounds.x,
+      bounds.y,
+      bounds.width,
+      bounds.height
+    )
+  );
+
+/** Resolves the best accessible element inside screen-relative bounds. */
+export const nativeFindByBounds = (
+  processId: number,
+  bounds: NativeCaptureBounds
+): NativeElementHandle | undefined =>
+  callNative(() =>
+    loadNativeAddon().findByBounds(
+      processId,
+      bounds.x,
+      bounds.y,
+      bounds.width,
+      bounds.height
+    )
+  );
 
 /** Checks whether a GTK process has completed AT-SPI root/cache registration. */
 export const nativeProcessAtspiReadiness = (
@@ -791,6 +853,12 @@ export const nativeX11WindowSnapshot = (
   windowId: string
 ): NativeX11WindowSnapshot =>
   callNative(() => loadNativeAddon().x11WindowSnapshot(windowId));
+
+/** Reads direct mapped X11 child windows by parent window id. */
+export const nativeX11ChildWindowSnapshots = (
+  windowId: string
+): NativeX11WindowSnapshot[] =>
+  callNative(() => loadNativeAddon().x11ChildWindowSnapshots(windowId));
 
 /** Reads screen-relative bounds for an X11 window by id. */
 export const nativeX11WindowBounds = (windowId: string): NativeCaptureBounds =>

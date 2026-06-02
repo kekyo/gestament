@@ -25,6 +25,8 @@ import { appendPrerequisiteInstallHint } from './prerequisites';
 import { effectiveWaitTimeoutMs } from './wait';
 import {
   nativeFindById,
+  nativeFindByIdInBounds,
+  nativeFindByIdInSubtree,
   nativeBounds,
   nativeCaptureScreen,
   nativeElementInfo,
@@ -401,7 +403,34 @@ export const launchGtkApp = (
 
     return window === undefined
       ? createGtkElement(handle)
-      : createGtkWindowElement(window);
+      : createGtkWindowElement(window, processId);
+  };
+
+  const findElementByIdOnce = (
+    processId: number,
+    id: string
+  ): GtkWidgetElement | undefined => {
+    const windows = collectUnifiedNativeWindows(processId);
+    for (const window of windows) {
+      if (window.atspi !== null) {
+        const handle = nativeFindByIdInSubtree(window.atspi.handle, id);
+        if (handle !== undefined) {
+          return createElementForHandle(processId, handle);
+        }
+      }
+
+      if (window.x11 !== null) {
+        const handle = nativeFindByIdInBounds(processId, id, window.x11.bounds);
+        if (handle !== undefined) {
+          return createElementForHandle(processId, handle);
+        }
+      }
+    }
+
+    const handle = nativeFindById(processId, id);
+    return handle === undefined
+      ? undefined
+      : createElementForHandle(processId, handle);
   };
 
   const findById = async (
@@ -415,9 +444,9 @@ export const launchGtkApp = (
       const processId = assertProcessRunning(state, appPath);
 
       try {
-        const handle = nativeFindById(processId, id);
-        if (handle !== undefined) {
-          return createElementForHandle(processId, handle);
+        const element = findElementByIdOnce(processId, id);
+        if (element !== undefined) {
+          return element;
         }
       } catch (error) {
         throw normalizeNativeError(error);
@@ -451,9 +480,9 @@ export const launchGtkApp = (
       const processId = assertProcessRunning(state, appPath);
 
       try {
-        const handle = nativeFindById(processId, parsedPath.id);
-        if (handle !== undefined) {
-          let element = createElementForHandle(processId, handle);
+        const rootElement = findElementByIdOnce(processId, parsedPath.id);
+        if (rootElement !== undefined) {
+          let element = rootElement;
           let resolved = true;
 
           for (const childIndex of parsedPath.childIndexes) {
@@ -621,7 +650,7 @@ export const launchGtkApp = (
         const processId = assertProcessRunning(state, appPath);
         const window = collectUnifiedNativeWindows(processId)[index];
         if (window !== undefined) {
-          return createGtkWindowElement(window);
+          return createGtkWindowElement(window, processId);
         }
 
         if (index !== 0 || Date.now() - startedAt > timeoutMs) {

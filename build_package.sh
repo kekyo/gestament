@@ -7,7 +7,7 @@ PACKAGE_BUILD_ROOT="${PROJECT_ROOT}/.build/package"
 REPORT_ROOT="${PACKAGE_BUILD_ROOT}/reports"
 TMP_ROOT="${PACKAGE_BUILD_ROOT}/tmp"
 TEST_RESULT_ROOT="${PROJECT_ROOT}/test-results"
-DEFAULT_PARALLEL_JOB_CAP=24
+DEFAULT_PARALLEL_JOB_CAP=30
 
 ARCH_MATRIX=$(cat <<'EOF'
 amd64 debian bookworm linux/amd64 docker.io/amd64/debian:bookworm

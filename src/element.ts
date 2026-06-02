@@ -14,6 +14,7 @@ import {
   nativeDeselectChildAt,
   nativeIsChildSelected,
   nativeElementInfo,
+  nativeFindByBounds,
   nativeImageInfo,
   nativeMoveWindow,
   nativeResizeWindow,
@@ -49,6 +50,7 @@ import {
   nativeX11WindowInfo,
   nativeX11WindowResizeHints,
   nativeX11WindowSnapshot,
+  nativeX11ChildWindowSnapshots,
   type NativeElementInfo,
   type NativeElementHandle,
   type NativeImageInfo,
@@ -336,8 +338,14 @@ const widgetKindFromInfo = (info: NativeElementInfo): GtkWidgetKind => {
 };
 
 const toGtkElementInfo = (info: NativeElementInfo): GtkElementInfo => ({
-  ...info,
+  accessibleId: info.accessibleId,
+  description: info.description,
+  interfaces: info.interfaces,
   kind: widgetKindFromInfo(info),
+  localizedRoleName: info.localizedRoleName,
+  name: info.name,
+  roleName: info.roleName,
+  states: info.states,
 });
 
 const toGtkElementInfoForHandle = (
@@ -345,8 +353,14 @@ const toGtkElementInfoForHandle = (
 ): GtkElementInfo => {
   const nativeInfo = nativeElementInfo(handle);
   const info: GtkElementInfo = {
-    ...nativeInfo,
+    accessibleId: nativeInfo.accessibleId,
+    description: nativeInfo.description,
+    interfaces: nativeInfo.interfaces,
     kind: widgetKindFromHandleInfo(handle, nativeInfo),
+    localizedRoleName: nativeInfo.localizedRoleName,
+    name: nativeInfo.name,
+    roleName: nativeInfo.roleName,
+    states: nativeInfo.states,
   };
   const override = elementInfoOverrides.get(handle);
   return override === undefined ? info : { ...info, ...override };
@@ -1044,21 +1058,91 @@ const createStaticWindowDebugDiagnosticsOperation =
   async (): Promise<GtkWindowDebugDiagnostics> =>
     debugDiagnostics;
 
-const createX11UnsupportedSemanticOperation =
-  (operation: string): (() => Promise<never>) =>
-  async (): Promise<never> => {
-    throw createGtkUnsupportedInterfaceError(
-      `${operation} requires an AT-SPI semantic window source.`
-    );
+const intersectCaptureBounds = (
+  first: GtkCaptureBounds,
+  second: GtkCaptureBounds
+): GtkCaptureBounds => {
+  const left = Math.max(first.x, second.x);
+  const top = Math.max(first.y, second.y);
+  const right = Math.min(first.x + first.width, second.x + second.width);
+  const bottom = Math.min(first.y + first.height, second.y + second.height);
+  return {
+    x: left,
+    y: top,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top),
   };
+};
 
 const createX11ChildAtOperation =
-  (): ((index: number) => Promise<GtkWidgetElement | undefined>) =>
+  (
+    processId: number,
+    windowId: string
+  ): ((index: number) => Promise<GtkWidgetElement | undefined>) =>
   async (index: number): Promise<GtkWidgetElement | undefined> => {
     assertNonNegativeIndex('index', index);
-    throw createGtkUnsupportedInterfaceError(
-      'childAt() requires an AT-SPI semantic window source.'
+    const children = nativeX11ChildWindowSnapshots(windowId);
+    const child = children[index];
+    if (child === undefined) {
+      if (children.length === 0 && index === 0) {
+        const semanticHandle = nativeFindByBounds(
+          processId,
+          nativeX11WindowBounds(windowId)
+        );
+        return semanticHandle === undefined
+          ? undefined
+          : createGtkElement(semanticHandle);
+      }
+      return undefined;
+    }
+
+    const bounds = intersectCaptureBounds(
+      nativeX11WindowBounds(windowId),
+      child.bounds
     );
+    const semanticHandle = nativeFindByBounds(processId, bounds);
+    return semanticHandle === undefined
+      ? createX11GtkContainerElement(processId, child.windowId, bounds)
+      : createGtkElement(semanticHandle);
+  };
+
+const createX11GetChildCountOperation =
+  (processId: number, windowId: string): (() => Promise<number>) =>
+  async (): Promise<number> => {
+    const childCount = nativeX11ChildWindowSnapshots(windowId).length;
+    if (childCount > 0) {
+      return childCount;
+    }
+    return nativeFindByBounds(processId, nativeX11WindowBounds(windowId)) ===
+      undefined
+      ? 0
+      : 1;
+  };
+
+const createX11ChildContainerOperations = (
+  processId: number,
+  windowId: string
+): {
+  readonly childAt: (index: number) => Promise<GtkWidgetElement | undefined>;
+  readonly getChildCount: () => Promise<number>;
+} => ({
+  childAt: createX11ChildAtOperation(processId, windowId),
+  getChildCount: createX11GetChildCountOperation(processId, windowId),
+});
+
+const createHybridChildAtOperation =
+  (
+    handle: NativeElementHandle,
+    processId: number,
+    windowId: string
+  ): ((index: number) => Promise<GtkWidgetElement | undefined>) =>
+  async (index: number): Promise<GtkWidgetElement | undefined> => {
+    assertNonNegativeIndex('index', index);
+    const childHandle = nativeChildAt(handle, index);
+    if (childHandle !== undefined) {
+      return createGtkElement(childHandle);
+    }
+    return createX11ChildAtOperation(processId, windowId)(index);
   };
 
 const createX11WindowInfoOperation =
@@ -1077,10 +1161,29 @@ const createX11WindowInfoOperation =
     };
   };
 
+const createX11ContainerInfoOperation =
+  (windowId: string): (() => Promise<GtkElementInfo>) =>
+  async (): Promise<GtkElementInfo> => {
+    const snapshot = nativeX11WindowSnapshot(windowId);
+    return {
+      kind: 'container',
+      roleName: 'window',
+      localizedRoleName: 'window',
+      accessibleId: '',
+      name: snapshot.title,
+      description: '',
+      interfaces: [],
+      states: snapshot.active ? ['active', 'visible'] : ['visible'],
+    };
+  };
+
 const createX11WindowCaptureOperation =
-  (windowId: string): (() => Promise<GtkCapture>) =>
+  (
+    windowId: string,
+    bounds: GtkCaptureBounds | undefined
+  ): (() => Promise<GtkCapture>) =>
   async (): Promise<GtkCapture> =>
-    nativeCaptureBounds(nativeX11WindowBounds(windowId));
+    nativeCaptureBounds(bounds ?? nativeX11WindowBounds(windowId));
 
 const createX11WindowBoundsOperation =
   (windowId: string): (() => Promise<GtkCaptureBounds>) =>
@@ -1649,8 +1752,20 @@ export const createGtkElement = (
   }
 };
 
+const createX11GtkContainerElement = (
+  processId: number,
+  windowId: string,
+  bounds: GtkCaptureBounds
+): GtkWidgetElement => ({
+  kind: 'container',
+  info: createX11ContainerInfoOperation(windowId),
+  capture: createX11WindowCaptureOperation(windowId, bounds),
+  ...createX11ChildContainerOperations(processId, windowId),
+});
+
 const createX11OnlyGtkWindowElement = (
-  window: UnifiedNativeWindow
+  window: UnifiedNativeWindow,
+  processId: number
 ): GtkWindowElement => {
   const x11 = window.x11;
   if (x11 === null) {
@@ -1660,11 +1775,10 @@ const createX11OnlyGtkWindowElement = (
   return {
     kind: 'window',
     info: createX11WindowInfoOperation(x11.windowId),
-    capture: createX11WindowCaptureOperation(x11.windowId),
+    capture: createX11WindowCaptureOperation(x11.windowId, undefined),
     bounds: createX11WindowBoundsOperation(x11.windowId),
     moveTo: createX11MoveToOperation(x11.windowId),
-    childAt: createX11ChildAtOperation(),
-    getChildCount: createX11UnsupportedSemanticOperation('getChildCount()'),
+    ...createX11ChildContainerOperations(processId, x11.windowId),
     resizeTo: createX11ResizeToOperation(x11.windowId),
     setBounds: createX11SetBoundsOperation(x11.windowId),
     activate: createX11ActivateOperation(x11.windowId),
@@ -1678,7 +1792,8 @@ const createX11OnlyGtkWindowElement = (
 
 /** Creates a window element from unified native window discovery. */
 export const createGtkWindowElement = (
-  window: UnifiedNativeWindow
+  window: UnifiedNativeWindow,
+  processId: number
 ): GtkWindowElement => {
   if (window.atspi !== null) {
     const element = assertExpectedKind<GtkWindowElement>(
@@ -1689,12 +1804,20 @@ export const createGtkWindowElement = (
     if (window.x11 !== null) {
       return {
         ...element,
-        capture: createX11WindowCaptureOperation(window.x11.windowId),
+        capture: createX11WindowCaptureOperation(
+          window.x11.windowId,
+          undefined
+        ),
         bounds: createX11WindowBoundsOperation(window.x11.windowId),
         moveTo: createX11MoveToOperation(window.x11.windowId),
         resizeTo: createX11ResizeToOperation(window.x11.windowId),
         setBounds: createX11SetBoundsOperation(window.x11.windowId),
         activate: createX11ActivateOperation(window.x11.windowId),
+        childAt: createHybridChildAtOperation(
+          window.atspi.handle,
+          processId,
+          window.x11.windowId
+        ),
         resizeHints: createX11ResizeHintsOperation(window.x11.windowId),
         x11Info: createX11WindowX11InfoOperation(window.x11.windowId),
         debugDiagnostics: createStaticWindowDebugDiagnosticsOperation(
@@ -1710,5 +1833,5 @@ export const createGtkWindowElement = (
     };
   }
 
-  return createX11OnlyGtkWindowElement(window);
+  return createX11OnlyGtkWindowElement(window, processId);
 };

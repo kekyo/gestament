@@ -127,6 +127,47 @@ describe('native window discovery fusion', () => {
     ]);
   });
 
+  it('merges child-process windows only when their owner pids match', () => {
+    const matching = mergeNativeWindowSnapshots(
+      [
+        atspiWindow({
+          processId: 2101,
+          name: 'Child Process Window',
+        }),
+      ],
+      [
+        x11Window({
+          processId: 2101,
+          title: 'Child Process Window',
+        }),
+      ],
+      statuses()
+    );
+    expect(matching).toHaveLength(1);
+    expect(matching[0]?.debugDiagnostics.seenBy).toEqual(['at-spi', 'x11']);
+
+    const unrelated = mergeNativeWindowSnapshots(
+      [
+        atspiWindow({
+          processId: 2101,
+          name: 'Child Process Window',
+        }),
+      ],
+      [
+        x11Window({
+          processId: 2102,
+          title: 'Child Process Window',
+        }),
+      ],
+      statuses()
+    );
+    expect(unrelated).toHaveLength(2);
+    expect(unrelated.map((window) => window.debugDiagnostics.seenBy)).toEqual([
+      ['at-spi'],
+      ['x11'],
+    ]);
+  });
+
   it('uses bounds to merge same-title windows when title-based X11 ids are wrong', () => {
     const windows = mergeNativeWindowSnapshots(
       [
