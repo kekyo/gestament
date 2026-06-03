@@ -305,6 +305,48 @@ test_container_image_for_backend() {
   esac
 }
 
+set_runtime_timeout_env_args() {
+  local execution_profile=$1
+
+  case "${execution_profile}" in
+    native)
+      RUNTIME_TIMEOUT_ENV_ARGS=(
+        -e GESTAMENT_APP_WAIT_TIMEOUT_MS=240000
+        -e GESTAMENT_APP_RELEASE_TIMEOUT_MS=30000
+        -e GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS=500
+        -e GESTAMENT_ATSPI_STATE_CHANGE_TIMEOUT_MS=30000
+        -e GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS=30000
+        -e GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS=120000
+        -e GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS=120000
+        -e GESTAMENT_WINDOW_ACTIVATION_TIMEOUT_MS=30000
+        -e GESTAMENT_WINDOW_GEOMETRY_TIMEOUT_MS=30000
+        -e GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS=180000
+        -e GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS=2000
+        -e GESTAMENT_XVFB_STARTUP_TIMEOUT_MS=60000
+      )
+      ;;
+    cross)
+      RUNTIME_TIMEOUT_ENV_ARGS=(
+        -e GESTAMENT_APP_WAIT_TIMEOUT_MS=900000
+        -e GESTAMENT_APP_RELEASE_TIMEOUT_MS=120000
+        -e GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS=5000
+        -e GESTAMENT_ATSPI_STATE_CHANGE_TIMEOUT_MS=120000
+        -e GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS=120000
+        -e GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS=300000
+        -e GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS=300000
+        -e GESTAMENT_WINDOW_ACTIVATION_TIMEOUT_MS=120000
+        -e GESTAMENT_WINDOW_GEOMETRY_TIMEOUT_MS=120000
+        -e GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS=600000
+        -e GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS=10000
+        -e GESTAMENT_XVFB_STARTUP_TIMEOUT_MS=300000
+      )
+      ;;
+    *)
+      fail "Unsupported runtime timeout execution profile: ${execution_profile}"
+      ;;
+  esac
+}
+
 expected_elf_class() {
   case "$1" in
     amd64 | arm64 | riscv64)
@@ -449,6 +491,7 @@ run_platform_test() {
   else
     execution_profile='cross'
   fi
+  set_runtime_timeout_env_args "${execution_profile}"
 
   printf '%s\n' "[test:${backend}] ${arch} (${platform}, ${image}, ${execution_profile})"
 
@@ -471,6 +514,7 @@ run_platform_test() {
     -e GESTAMENT_TEST_RESULTS_ROOT="/workspace/test-results" \
     -e GESTAMENT_TEST_RUN_TIMESTAMP="${TEST_RUN_TIMESTAMP}" \
     -e GESTAMENT_TEST_TARGET_ARCH="${arch}" \
+    "${RUNTIME_TIMEOUT_ENV_ARGS[@]}" \
     "${image}" \
     ./scripts/test_platform_container.sh 2>&1 | tee "${log_path}"
 }
@@ -649,19 +693,9 @@ if (!configBinSource.startsWith("#!/usr/bin/env node")) {
 }
 
 const configCommand = resolve("node_modules/.bin/gestament-config");
-const configCommandTimeoutValue =
-  process.env.GESTAMENT_CONFIG_COMMAND_TIMEOUT_MS ?? "60000";
-if (!/^[1-9][0-9]*$/.test(configCommandTimeoutValue)) {
-  console.error(
-    `GESTAMENT_CONFIG_COMMAND_TIMEOUT_MS must be a positive integer: ${configCommandTimeoutValue}.`
-  );
-  process.exit(1);
-}
-const configCommandTimeoutMs = Number(configCommandTimeoutValue);
 const expectedIncludeDir = resolve(packageRoot, "include");
 const includeDir = execFileSync(configCommand, ["--includedir"], {
   encoding: "utf8",
-  timeout: configCommandTimeoutMs,
 }).trim();
 if (includeDir !== expectedIncludeDir) {
   console.error(`gestament-config --includedir returned ${includeDir}.`);
@@ -669,17 +703,13 @@ if (includeDir !== expectedIncludeDir) {
 }
 const cflags = execFileSync(configCommand, ["--cflags"], {
   encoding: "utf8",
-  timeout: configCommandTimeoutMs,
 }).trim();
 if (cflags !== `-I${expectedIncludeDir}`) {
   console.error(`gestament-config --cflags returned ${cflags}.`);
   process.exit(1);
 }
 try {
-  execFileSync(configCommand, ["--unknown"], {
-    stdio: "pipe",
-    timeout: configCommandTimeoutMs,
-  });
+  execFileSync(configCommand, ["--unknown"], { stdio: "pipe" });
   console.error("gestament-config accepted an unknown option.");
   process.exit(1);
 } catch (error) {

@@ -3,21 +3,35 @@
 // Under MIT.
 // https://github.com/kekyo/gestament
 
+import {
+  defaultRuntimeTimeouts,
+  runtimeTimeoutEnvironmentNames,
+} from '../../src/runtimeTimeouts';
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
 /** Platform test execution profile selected from the current test environment. */
 export type TestExecutionProfile = 'local' | 'platformNative' | 'platformCross';
+
+type RuntimeTimeoutEnvironmentName =
+  (typeof runtimeTimeoutEnvironmentNames)[keyof typeof runtimeTimeoutEnvironmentNames];
+
+/** Environment variables that tune gestament runtime infrastructure timeouts. */
+export type RuntimeTimeoutEnvironment = Record<
+  RuntimeTimeoutEnvironmentName,
+  string
+>;
 
 /** Timeout values used by repository integration tests. */
 export interface TestTimeoutProfile {
   readonly appOutputExitTimeoutMs: number;
-  readonly buildPackageAllScriptTimeoutMs: number;
-  readonly buildPackageScriptTimeoutMs: number;
   readonly cliScriptTimeoutMs: number;
   readonly fixtureWindowDiscoveryTimeoutMs: number;
-  readonly headerCompileScriptTimeoutMs: number;
   readonly launcherScriptTimeoutMs: number;
   readonly missingLookupTimeoutMs: number;
-  readonly packageConfigCommandTimeoutMs: number;
   readonly platformSmokeScriptTimeoutMs: number;
+  readonly spawnTextExitTimeoutMs: number;
+  readonly spawnTextForcedTimeoutMs: number;
   readonly visualE2eTestTimeoutMs: number;
   readonly vitestHookTimeoutMs: number;
   readonly vitestPollTimeoutMs: number;
@@ -60,15 +74,13 @@ export const resolveTestExecutionProfile = (
 const timeoutProfiles: Record<TestExecutionProfile, TestTimeoutProfile> = {
   local: {
     appOutputExitTimeoutMs: 5_000,
-    buildPackageAllScriptTimeoutMs: 10_000,
-    buildPackageScriptTimeoutMs: 60_000,
     cliScriptTimeoutMs: 20_000,
     fixtureWindowDiscoveryTimeoutMs: 90_000,
-    headerCompileScriptTimeoutMs: 20_000,
     launcherScriptTimeoutMs: 45_000,
     missingLookupTimeoutMs: 10_000,
-    packageConfigCommandTimeoutMs: 60_000,
     platformSmokeScriptTimeoutMs: 10_000,
+    spawnTextExitTimeoutMs: 5_000,
+    spawnTextForcedTimeoutMs: 50,
     visualE2eTestTimeoutMs: 240_000,
     vitestHookTimeoutMs: 20_000,
     vitestPollTimeoutMs: 1_000,
@@ -82,15 +94,13 @@ const timeoutProfiles: Record<TestExecutionProfile, TestTimeoutProfile> = {
   },
   platformNative: {
     appOutputExitTimeoutMs: 30_000,
-    buildPackageAllScriptTimeoutMs: 60_000,
-    buildPackageScriptTimeoutMs: 240_000,
     cliScriptTimeoutMs: 120_000,
     fixtureWindowDiscoveryTimeoutMs: 240_000,
-    headerCompileScriptTimeoutMs: 120_000,
     launcherScriptTimeoutMs: 240_000,
     missingLookupTimeoutMs: 10_000,
-    packageConfigCommandTimeoutMs: 120_000,
     platformSmokeScriptTimeoutMs: 60_000,
+    spawnTextExitTimeoutMs: 30_000,
+    spawnTextForcedTimeoutMs: 500,
     visualE2eTestTimeoutMs: 540_000,
     vitestHookTimeoutMs: 900_000,
     vitestPollTimeoutMs: 180_000,
@@ -104,15 +114,13 @@ const timeoutProfiles: Record<TestExecutionProfile, TestTimeoutProfile> = {
   },
   platformCross: {
     appOutputExitTimeoutMs: 120_000,
-    buildPackageAllScriptTimeoutMs: 120_000,
-    buildPackageScriptTimeoutMs: 1_200_000,
     cliScriptTimeoutMs: 300_000,
     fixtureWindowDiscoveryTimeoutMs: 900_000,
-    headerCompileScriptTimeoutMs: 300_000,
     launcherScriptTimeoutMs: 600_000,
     missingLookupTimeoutMs: 90_000,
-    packageConfigCommandTimeoutMs: 300_000,
     platformSmokeScriptTimeoutMs: 120_000,
+    spawnTextExitTimeoutMs: 120_000,
+    spawnTextForcedTimeoutMs: 5_000,
     visualE2eTestTimeoutMs: 1_800_000,
     vitestHookTimeoutMs: 1_800_000,
     vitestPollTimeoutMs: 600_000,
@@ -126,10 +134,88 @@ const timeoutProfiles: Record<TestExecutionProfile, TestTimeoutProfile> = {
   },
 };
 
+const runtimeTimeoutEnvironments: Record<
+  TestExecutionProfile,
+  RuntimeTimeoutEnvironment
+> = {
+  local: {
+    [runtimeTimeoutEnvironmentNames.appWaitTimeoutMs]: String(
+      defaultRuntimeTimeouts.appWaitTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.appReleaseTimeoutMs]: String(
+      defaultRuntimeTimeouts.appReleaseTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.atspiReadinessProbeTimeoutMs]: String(
+      defaultRuntimeTimeouts.atspiReadinessProbeTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.atspiStateChangeTimeoutMs]: String(
+      defaultRuntimeTimeouts.atspiStateChangeTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.displaySessionReleaseTimeoutMs]: String(
+      defaultRuntimeTimeouts.displaySessionReleaseTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.displaySessionStartupTimeoutMs]: String(
+      defaultRuntimeTimeouts.displaySessionStartupTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.trayHostReadyTimeoutMs]: String(
+      defaultRuntimeTimeouts.trayHostReadyTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.windowActivationTimeoutMs]: String(
+      defaultRuntimeTimeouts.windowActivationTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.windowGeometryTimeoutMs]: String(
+      defaultRuntimeTimeouts.windowGeometryTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.xvfbPoolProbeTimeoutMs]: String(
+      defaultRuntimeTimeouts.xvfbPoolProbeTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.xvfbSocketConnectTimeoutMs]: String(
+      defaultRuntimeTimeouts.xvfbSocketConnectTimeoutMs
+    ),
+    [runtimeTimeoutEnvironmentNames.xvfbStartupTimeoutMs]: String(
+      defaultRuntimeTimeouts.xvfbStartupTimeoutMs
+    ),
+  },
+  platformNative: {
+    GESTAMENT_APP_WAIT_TIMEOUT_MS: '240000',
+    GESTAMENT_APP_RELEASE_TIMEOUT_MS: '30000',
+    GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS: '500',
+    GESTAMENT_ATSPI_STATE_CHANGE_TIMEOUT_MS: '30000',
+    GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS: '30000',
+    GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS: '120000',
+    GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS: '120000',
+    GESTAMENT_WINDOW_ACTIVATION_TIMEOUT_MS: '30000',
+    GESTAMENT_WINDOW_GEOMETRY_TIMEOUT_MS: '30000',
+    GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS: '180000',
+    GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS: '2000',
+    GESTAMENT_XVFB_STARTUP_TIMEOUT_MS: '60000',
+  },
+  platformCross: {
+    GESTAMENT_APP_WAIT_TIMEOUT_MS: '900000',
+    GESTAMENT_APP_RELEASE_TIMEOUT_MS: '120000',
+    GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS: '5000',
+    GESTAMENT_ATSPI_STATE_CHANGE_TIMEOUT_MS: '120000',
+    GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS: '120000',
+    GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS: '300000',
+    GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS: '300000',
+    GESTAMENT_WINDOW_ACTIVATION_TIMEOUT_MS: '120000',
+    GESTAMENT_WINDOW_GEOMETRY_TIMEOUT_MS: '120000',
+    GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS: '600000',
+    GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS: '10000',
+    GESTAMENT_XVFB_STARTUP_TIMEOUT_MS: '300000',
+  },
+};
+
 /** Resolves timeout values from a test environment. */
 export const resolveTestTimeoutProfile = (
   env: NodeJS.ProcessEnv = process.env
 ): TestTimeoutProfile => timeoutProfiles[resolveTestExecutionProfile(env)];
+
+/** Resolves gestament runtime timeout environment variables from a test environment. */
+export const resolveRuntimeTimeoutEnvironment = (
+  env: NodeJS.ProcessEnv = process.env
+): RuntimeTimeoutEnvironment =>
+  runtimeTimeoutEnvironments[resolveTestExecutionProfile(env)];
 
 /** Active test execution profile. */
 export const testExecutionProfile = resolveTestExecutionProfile();
@@ -137,16 +223,11 @@ export const testExecutionProfile = resolveTestExecutionProfile();
 /** Active timeout values used by repository integration tests. */
 export const testTimeoutProfile = resolveTestTimeoutProfile();
 
+/** Active gestament runtime timeout environment variables used by tests. */
+export const runtimeTimeoutEnvironment = resolveRuntimeTimeoutEnvironment();
+
 /** Child application output exit wait timeout used by launcher output tests. */
 export const appOutputExitTimeoutMs = testTimeoutProfile.appOutputExitTimeoutMs;
-
-/** Child process timeout used by build_package_all.sh tests. */
-export const buildPackageAllScriptTimeoutMs =
-  testTimeoutProfile.buildPackageAllScriptTimeoutMs;
-
-/** Child process timeout used by build_package.sh tests. */
-export const buildPackageScriptTimeoutMs =
-  testTimeoutProfile.buildPackageScriptTimeoutMs;
 
 /** Child process timeout used by CLI scaffold tests. */
 export const cliScriptTimeoutMs = testTimeoutProfile.cliScriptTimeoutMs;
@@ -168,10 +249,6 @@ export const vitestTeardownTimeoutMs =
 export const fixtureWindowDiscoveryTimeoutMs =
   testTimeoutProfile.fixtureWindowDiscoveryTimeoutMs;
 
-/** Child process timeout used by GTK helper header compile tests. */
-export const headerCompileScriptTimeoutMs =
-  testTimeoutProfile.headerCompileScriptTimeoutMs;
-
 /** Child process timeout used by launcher behavior tests. */
 export const launcherScriptTimeoutMs =
   testTimeoutProfile.launcherScriptTimeoutMs;
@@ -179,13 +256,16 @@ export const launcherScriptTimeoutMs =
 /** Missing element lookup timeout used by visual tests. */
 export const missingLookupTimeoutMs = testTimeoutProfile.missingLookupTimeoutMs;
 
-/** Child process timeout used by package config command validation. */
-export const packageConfigCommandTimeoutMs =
-  testTimeoutProfile.packageConfigCommandTimeoutMs;
-
 /** Child process timeout used by platform container smoke tests. */
 export const platformSmokeScriptTimeoutMs =
   testTimeoutProfile.platformSmokeScriptTimeoutMs;
+
+/** Child process timeout used when spawnText should observe a normal exit. */
+export const spawnTextExitTimeoutMs = testTimeoutProfile.spawnTextExitTimeoutMs;
+
+/** Child process timeout used when spawnText should force termination. */
+export const spawnTextForcedTimeoutMs =
+  testTimeoutProfile.spawnTextForcedTimeoutMs;
 
 /** Explicit per-test timeout used by visual and e2e tests. */
 export const visualE2eTestTimeoutMs = testTimeoutProfile.visualE2eTestTimeoutMs;

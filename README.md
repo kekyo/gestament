@@ -389,7 +389,7 @@ it('launches the app', async () => {
 | `xvfbPool`                | Xvfb session pooling settings. `type: 'xvfb'` reuses only Xvfb; `type: 'all'` also reuses the DBus session, launcher driver, and tray host.                    |
 | `gsettings`               | `GSETTINGS_BACKEND` passed to the GTK application. The default is `memory`; set `null` to leave it unset.                                                      |
 | `theme`                   | `GTK_THEME` passed to the GTK application. The default is `Adwaita`; set `null` to leave it unset.                                                             |
-| `timeoutMs`               | Timeout used by operations that wait for the application or elements. The default is `10000` msec.                                                             |
+| `timeoutMs`               | Timeout used by operations that wait for the application or elements. Defaults to `GESTAMENT_APP_WAIT_TIMEOUT_MS`, or `10000` msec.                            |
 
 Application stdout and stderr can be observed per launch. `outputBufferBytes` limits the retained
 snapshot per stream; omit it to retain complete stdout/stderr until `release()`.
@@ -1105,6 +1105,27 @@ Image comparisons in `gestament/testing` also refer to the following environment
 
 - `GESTAMENT_VISUAL_OUTPUT_RESULT_PATH` specifies where diagnostic files such as actual/diff images are saved. If omitted, diagnostic files are not saved.
 - `GESTAMENT_VISUAL_VARIANT` specifies the variant name used to separate diagnostic files. If omitted, `GESTAMENT_TEST_BACKEND` is used, and if that is also omitted, `default` is used.
+
+#### Internal timeouts
+
+Infrastructure and native wait timeouts can be tuned with environment variables.
+These values affect Xvfb, DBus/launcher driver startup, tray host readiness, app waits and release, AT-SPI probes, and X11 window state observation.
+Each value must be a positive integer in milliseconds.
+
+| Environment variable                           | Default | Wait controlled                                      |
+| :--------------------------------------------- | ------: | :--------------------------------------------------- |
+| `GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS` | `30000` | DBus/launcher driver startup                         |
+| `GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS` |  `5000` | DBus/launcher driver and Xvfb release grace period   |
+| `GESTAMENT_XVFB_STARTUP_TIMEOUT_MS`            | `10000` | Xvfb socket readiness                                |
+| `GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS`     |   `250` | Per-attempt Xvfb Unix socket connect                 |
+| `GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS`         | `30000` | Xvfb pool cleanliness probe                          |
+| `GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS`         | `30000` | StatusNotifier tray host readiness                   |
+| `GESTAMENT_APP_WAIT_TIMEOUT_MS`                | `10000` | Default app and element wait timeout                 |
+| `GESTAMENT_APP_RELEASE_TIMEOUT_MS`             |  `2000` | Launched app SIGTERM-to-SIGKILL grace period         |
+| `GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS`   |    `50` | Native DBus call timeout for AT-SPI readiness probes |
+| `GESTAMENT_ATSPI_STATE_CHANGE_TIMEOUT_MS`      |  `5000` | Native checked/pressed state change observation      |
+| `GESTAMENT_WINDOW_GEOMETRY_TIMEOUT_MS`         |  `2000` | Native X11/AT-SPI window geometry observation        |
+| `GESTAMENT_WINDOW_ACTIVATION_TIMEOUT_MS`       |  `2000` | Native X11/AT-SPI window activation observation      |
 
 ### Speed Optimization Using Xvfb Pooling (Advanced topic)
 

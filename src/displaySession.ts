@@ -39,6 +39,7 @@ import {
 } from './output';
 import { createGtkInputController } from './input';
 import { appendPrerequisiteInstallHint } from './prerequisites';
+import { resolveRuntimeTimeouts } from './runtimeTimeouts';
 import type {
   DriverAppRef,
   DriverCommand,
@@ -234,10 +235,6 @@ const defaultXvfbTrayHost = true;
 const defaultXvfbPoolMaxIdlePerKey = 1;
 const defaultXvfbPoolMaxIdleTotal = 4;
 const screenPattern = /^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$/;
-const sessionStartupTimeoutMs = 30_000;
-const sessionReleaseTimeoutMs = 5_000;
-const xvfbStartupTimeoutMs = 10_000;
-const xvfbPoolProbeTimeoutMs = 30_000;
 const xvfbPoolProbeRetryIntervalMs = 50;
 const xvfbPoolProbePrefix = 'gestament-xvfb-pool-probe: ';
 const x11DisplayOpenFailureMessage =
@@ -1057,10 +1054,11 @@ const connectUnixSocket = (path: string, timeoutMs: number): Promise<void> =>
 const waitForXvfbReady = async (displayNumber: number): Promise<void> => {
   const startedAt = Date.now();
   const path = xvfbSocketPath(displayNumber);
-  while (Date.now() - startedAt <= xvfbStartupTimeoutMs) {
+  const timeouts = resolveRuntimeTimeouts();
+  while (Date.now() - startedAt <= timeouts.xvfbStartupTimeoutMs) {
     if (existsSync(path)) {
       try {
-        await connectUnixSocket(path, 250);
+        await connectUnixSocket(path, timeouts.xvfbSocketConnectTimeoutMs);
         return;
       } catch {
         // Keep polling until the X server accepts local connections.
@@ -1198,8 +1196,10 @@ const terminateXvfb = async (xvfb: PooledXvfb): Promise<void> => {
   if (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
     xvfb.child.kill('SIGTERM');
     const startedAt = Date.now();
+    const releaseTimeoutMs =
+      resolveRuntimeTimeouts().displaySessionReleaseTimeoutMs;
     while (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
-      if (Date.now() - startedAt > sessionReleaseTimeoutMs) {
+      if (Date.now() - startedAt > releaseTimeoutMs) {
         xvfb.child.kill('SIGKILL');
         break;
       }
@@ -1337,12 +1337,13 @@ const runXvfbProbeOnce = (
 
 const runXvfbProbe = async (xvfb: PooledXvfb): Promise<XvfbProbeResult> => {
   const startedAt = Date.now();
+  const probeTimeoutMs = resolveRuntimeTimeouts().xvfbPoolProbeTimeoutMs;
   let lastError: unknown;
 
-  while (Date.now() - startedAt < xvfbPoolProbeTimeoutMs) {
+  while (Date.now() - startedAt < probeTimeoutMs) {
     const remainingTimeoutMs = Math.max(
       1,
-      xvfbPoolProbeTimeoutMs - (Date.now() - startedAt)
+      probeTimeoutMs - (Date.now() - startedAt)
     );
     try {
       return await runXvfbProbeOnce(xvfb, remainingTimeoutMs);
@@ -1353,7 +1354,7 @@ const runXvfbProbe = async (xvfb: PooledXvfb): Promise<XvfbProbeResult> => {
       }
     }
 
-    const remainingDelayMs = xvfbPoolProbeTimeoutMs - (Date.now() - startedAt);
+    const remainingDelayMs = probeTimeoutMs - (Date.now() - startedAt);
     if (remainingDelayMs <= 0) {
       break;
     }
@@ -1638,7 +1639,7 @@ const waitForDriverReady = (
             formatOutputTail(processState.stdout, processState.stderr)
         )
       );
-    }, sessionStartupTimeoutMs);
+    }, resolveRuntimeTimeouts().displaySessionStartupTimeoutMs);
 
     server.on('connection', acceptConnection);
     server.once('error', rejectFromError);
@@ -1861,11 +1862,13 @@ const createDriverSession = (
 
   const waitForExit = async (): Promise<void> => {
     const startedAt = Date.now();
+    const releaseTimeoutMs =
+      resolveRuntimeTimeouts().displaySessionReleaseTimeoutMs;
     while (
       processState.child.exitCode === null &&
       processState.child.signalCode === null
     ) {
-      if (Date.now() - startedAt > sessionReleaseTimeoutMs) {
+      if (Date.now() - startedAt > releaseTimeoutMs) {
         processState.child.kill('SIGKILL');
         break;
       }
@@ -2037,6 +2040,7 @@ const startDriverSession = async (
   options: GtkAppLauncherOptions,
   systemOutputSink: SystemOutputSink | undefined
 ): Promise<DriverSession> => {
+  resolveRuntimeTimeouts();
   const display = resolveDisplay(options.display);
   const xvfbOptions = resolveXvfbOptions(options);
   const effective = resolveEffectiveDisplay(display, xvfbOptions);

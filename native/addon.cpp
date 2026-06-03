@@ -5,6 +5,7 @@
 
 #include "accessible.h"
 #include "atspi_client.h"
+#include "runtime_config.h"
 #include "tray.h"
 
 #include <node_api.h>
@@ -351,6 +352,39 @@ napi_value process_atspi_readiness(napi_env env, napi_callback_info info) {
     return make_undefined(env);
   }
   return result;
+}
+
+napi_value set_timeout_config(napi_env env, napi_callback_info info) {
+  napi_value args[4] = {};
+  if (!read_arguments(env, info, 4, args)) {
+    return make_undefined(env);
+  }
+
+  gint atspi_readiness_probe_timeout_ms = 0;
+  gint state_change_timeout_ms = 0;
+  gint window_geometry_timeout_ms = 0;
+  gint window_activation_timeout_ms = 0;
+  if (!read_positive_int32_argument(env, args[0],
+                                    "atspiReadinessProbeTimeoutMs",
+                                    &atspi_readiness_probe_timeout_ms) ||
+      !read_positive_int32_argument(env, args[1],
+                                    "atspiStateChangeTimeoutMs",
+                                    &state_change_timeout_ms) ||
+      !read_positive_int32_argument(env, args[2], "windowGeometryTimeoutMs",
+                                    &window_geometry_timeout_ms) ||
+      !read_positive_int32_argument(env, args[3], "windowActivationTimeoutMs",
+                                    &window_activation_timeout_ms)) {
+    return make_undefined(env);
+  }
+
+  const gestament::NativeTimeoutConfig config = {
+      atspi_readiness_probe_timeout_ms,
+      static_cast<gint64>(state_change_timeout_ms) * 1000,
+      static_cast<gint64>(window_geometry_timeout_ms) * 1000,
+      static_cast<gint64>(window_activation_timeout_ms) * 1000,
+  };
+  gestament::set_native_timeout_config(config);
+  return make_undefined(env);
 }
 
 napi_value set_text_by_id(napi_env env, napi_callback_info info) {
@@ -2514,6 +2548,7 @@ napi_value initialize(napi_env env, napi_value exports) {
   set_function(env, exports, "findByIdInBounds", find_by_id_in_bounds);
   set_function(env, exports, "findByBounds", find_by_bounds);
   set_function(env, exports, "processAtspiReadiness", process_atspi_readiness);
+  set_function(env, exports, "setTimeoutConfig", set_timeout_config);
   set_function(env, exports, "findAnyById", find_any_by_id);
   set_function(env, exports, "setTextById", set_text_by_id);
   set_function(env, exports, "clickById", click_by_id);

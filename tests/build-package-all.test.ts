@@ -17,11 +17,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import {
-  buildPackageAllScriptTimeoutMs,
-  buildPackageScriptTimeoutMs,
-  packageConfigCommandTimeoutMs,
-} from './support/testTimeouts';
+import { cliScriptTimeoutMs } from './support/testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -80,7 +76,7 @@ writeFileSync(argsPath, JSON.stringify(process.argv.slice(2)));
             BUILD_PACKAGE_SCRIPT: stubScript,
             GESTAMENT_BUILD_PACKAGE_ARGS_PATH: argsPath,
           },
-          timeout: buildPackageAllScriptTimeoutMs,
+          timeout: cliScriptTimeoutMs,
         }
       );
 
@@ -169,10 +165,13 @@ if (env.GESTAMENT_TEST_EXECUTION_PROFILE !== undefined) {
     process.env.GESTAMENT_CONTAINER_STUB_RECORDS,
     JSON.stringify({
       arch: env.GESTAMENT_ARCH,
+      atspiProbeTimeoutMs: env.GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS,
       backend: env.GESTAMENT_GTK_BACKEND,
+      displayStartupTimeoutMs: env.GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS,
       hostArch: env.GESTAMENT_TEST_HOST_ARCH,
       profile: env.GESTAMENT_TEST_EXECUTION_PROFILE,
       targetArch: env.GESTAMENT_TEST_TARGET_ARCH,
+      xvfbStartupTimeoutMs: env.GESTAMENT_XVFB_STARTUP_TIMEOUT_MS,
     }) + '\\n'
   );
 }
@@ -221,13 +220,10 @@ console.log('Machine: RISC-V');
             ...process.env,
             BUILD_PACKAGE_PROJECT_ROOT: tempRoot,
             CONTAINER_ENGINE: containerEnginePath,
-            GESTAMENT_CONFIG_COMMAND_TIMEOUT_MS: String(
-              packageConfigCommandTimeoutMs
-            ),
             GESTAMENT_CONTAINER_STUB_RECORDS: recordsPath,
             PATH: `${binRoot}:${process.env.PATH ?? ''}`,
           },
-          timeout: buildPackageScriptTimeoutMs,
+          timeout: cliScriptTimeoutMs,
         }
       );
 
@@ -240,10 +236,13 @@ console.log('Machine: RISC-V');
           (line) =>
             JSON.parse(line) as {
               readonly arch: string;
+              readonly atspiProbeTimeoutMs: string;
               readonly backend: string;
+              readonly displayStartupTimeoutMs: string;
               readonly hostArch: string;
               readonly profile: string;
               readonly targetArch: string;
+              readonly xvfbStartupTimeoutMs: string;
             }
         );
 
@@ -252,17 +251,23 @@ console.log('Machine: RISC-V');
         expect.arrayContaining([
           {
             arch: hostArch,
+            atspiProbeTimeoutMs: '500',
             backend: 'gtk3',
+            displayStartupTimeoutMs: '120000',
             hostArch,
             profile: 'native',
             targetArch: hostArch,
+            xvfbStartupTimeoutMs: '60000',
           },
           {
             arch: crossArch,
+            atspiProbeTimeoutMs: '5000',
             backend: 'gtk3',
+            displayStartupTimeoutMs: '300000',
             hostArch,
             profile: 'cross',
             targetArch: crossArch,
+            xvfbStartupTimeoutMs: '300000',
           },
         ])
       );

@@ -4,6 +4,7 @@
 // https://github.com/kekyo/gestament
 
 #include "atspi_client.h"
+#include "runtime_config.h"
 
 #include <atspi/atspi.h>
 #include <dbus/dbus.h>
@@ -27,7 +28,6 @@ namespace gestament {
 
 namespace {
 
-constexpr int kReadinessProbeTimeoutMs = 50;
 constexpr const char *kDbusService = "org.freedesktop.DBus";
 constexpr const char *kDbusPath = "/org/freedesktop/DBus";
 constexpr const char *kDbusInterface = "org.freedesktop.DBus";
@@ -157,7 +157,8 @@ DbusMessagePtr call_dbus(DBusConnection *connection, DBusMessage *message) {
   DBusError error;
   dbus_error_init(&error);
   DbusMessagePtr reply(dbus_connection_send_with_reply_and_block(
-      connection, message, kReadinessProbeTimeoutMs, &error));
+      connection, message,
+      native_timeout_config().atspi_readiness_probe_timeout_ms, &error));
   clear_dbus_error(&error);
   return reply;
 }

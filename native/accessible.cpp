@@ -4,6 +4,7 @@
 // https://github.com/kekyo/gestament
 
 #include "accessible.h"
+#include "runtime_config.h"
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glib-object.h>
@@ -37,11 +38,8 @@ namespace gestament {
 namespace {
 
 constexpr guint kMaxVisitedNodes = 10000;
-constexpr gint64 kStateChangeTimeoutUsec = 5000000;
 constexpr gulong kStateChangePollUsec = 50000;
-constexpr gint64 kWindowGeometryTimeoutUsec = 2000000;
 constexpr gulong kWindowGeometryPollUsec = 50000;
-constexpr gint64 kWindowActivationTimeoutUsec = 2000000;
 constexpr gulong kWindowActivationPollUsec = 50000;
 
 bool is_window_role(AtspiAccessible *accessible);
@@ -178,7 +176,9 @@ bool read_checked_or_pressed_state(AtspiAccessible *accessible, bool *checked) {
 
 bool wait_checked_or_pressed_state_change(AtspiAccessible *accessible,
                                           bool initial_checked) {
-  const gint64 deadline = g_get_monotonic_time() + kStateChangeTimeoutUsec;
+  const gint64 deadline =
+      g_get_monotonic_time() +
+      native_timeout_config().state_change_timeout_usec;
 
   do {
     bool checked = false;
@@ -1944,7 +1944,9 @@ bool window_activation_observed(Display *display, Window window,
 
 bool wait_window_activation_observed(Display *display, Window window,
                                      AtspiAccessible *accessible) {
-  const gint64 deadline = g_get_monotonic_time() + kWindowActivationTimeoutUsec;
+  const gint64 deadline =
+      g_get_monotonic_time() +
+      native_timeout_config().window_activation_timeout_usec;
   do {
     if (window_activation_observed(display, window, accessible)) {
       return true;
@@ -1982,7 +1984,9 @@ bool wait_window_geometry_observed(guint process_id,
                                    const CaptureBounds &before,
                                    const WindowGeometryRequest &request,
                                    CaptureBounds *bounds) {
-  const gint64 deadline = g_get_monotonic_time() + kWindowGeometryTimeoutUsec;
+  const gint64 deadline =
+      g_get_monotonic_time() +
+      native_timeout_config().window_geometry_timeout_usec;
 
   do {
     CaptureBounds actual = {};
@@ -5011,7 +5015,9 @@ bool wait_x11_window_geometry_by_id(Display *display, Window root,
                                     const CaptureBounds &before,
                                     const WindowGeometryRequest &request,
                                     CaptureBounds *bounds) {
-  const gint64 deadline = g_get_monotonic_time() + kWindowGeometryTimeoutUsec;
+  const gint64 deadline =
+      g_get_monotonic_time() +
+      native_timeout_config().window_geometry_timeout_usec;
   do {
     CaptureBounds actual = {};
     if (read_x11_window_bounds(display, root, window, &actual) &&
@@ -5150,7 +5156,9 @@ bool x11_window_activation_observed(Display *display, Window window) {
 }
 
 bool wait_x11_window_activation_observed(Display *display, Window window) {
-  const gint64 deadline = g_get_monotonic_time() + kWindowActivationTimeoutUsec;
+  const gint64 deadline =
+      g_get_monotonic_time() +
+      native_timeout_config().window_activation_timeout_usec;
   do {
     if (x11_window_activation_observed(display, window)) {
       return true;

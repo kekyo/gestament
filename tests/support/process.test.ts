@@ -6,6 +6,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { spawnText } from './process';
+import {
+  spawnTextExitTimeoutMs,
+  spawnTextForcedTimeoutMs,
+} from './testTimeouts';
 
 describe('spawnText', () => {
   it('captures text output and exit status', async () => {
@@ -17,7 +21,7 @@ describe('spawnText', () => {
       ],
       {
         env: process.env,
-        timeoutMs: 5000,
+        timeoutMs: spawnTextExitTimeoutMs,
       }
     );
 
@@ -36,7 +40,7 @@ describe('spawnText', () => {
       ['-e', 'setInterval(() => {}, 1000);'],
       {
         env: process.env,
-        timeoutMs: 50,
+        timeoutMs: spawnTextForcedTimeoutMs,
       }
     );
 
@@ -45,6 +49,8 @@ describe('spawnText', () => {
       status: null,
       timedOut: true,
     });
-    expect(result.stderr).toContain('Timed out after 50ms.');
+    expect(result.stderr).toContain(
+      `Timed out after ${spawnTextForcedTimeoutMs}ms.`
+    );
   });
 });

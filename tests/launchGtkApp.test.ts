@@ -583,6 +583,22 @@ const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
     const script = `
 const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
 const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
+const systemSourceSnapshot = (output, source) =>
+  output.sources.find((entry) => entry.source === source);
+const waitForSystemSourceStdout = async (launcher, source, stdout) => {
+  const startedAt = Date.now();
+  let output = await launcher.systemOutput();
+  while (Date.now() - startedAt <= ${JSON.stringify(appOutputExitTimeoutMs)}) {
+    if (systemSourceSnapshot(output, source)?.stdout === stdout) {
+      return output;
+    }
+    await delay(25);
+    output = await launcher.systemOutput();
+  }
+  throw new Error(
+    \`Timed out waiting for system output: \${JSON.stringify(output)}\`
+  );
+};
 (async () => {
   const events = [];
   let thrown = false;
@@ -606,7 +622,11 @@ const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeou
     xvfbTrayHost: false,
   });
   await launcher.environment();
-  const beforeRelease = await launcher.systemOutput();
+  const beforeRelease = await waitForSystemSourceStdout(
+    launcher,
+    'launcher-driver',
+    'throw-output'
+  );
   await launcher.release();
   const afterRelease = await launcher.systemOutput();
   const uncaught = await Promise.race([

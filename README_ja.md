@@ -386,7 +386,7 @@ it('launches the app', async () => {
 | `xvfbPool`                | Xvfbセッションのプーリング設定。`type: 'xvfb'` はXvfbのみ、`type: 'all'` はDBus session、launcher driver、tray hostも再利用します   |
 | `gsettings`               | GTKアプリケーションに渡す `GSETTINGS_BACKEND`。既定は `memory` で、`null` を指定すると未設定にします                                |
 | `theme`                   | GTKアプリケーションに渡す `GTK_THEME`。既定は `Adwaita` で、`null` を指定すると未設定にします                                       |
-| `timeoutMs`               | アプリケーションや要素の待機操作で使用するタイムアウト。既定は `10000` msecです                                                     |
+| `timeoutMs`               | アプリケーションや要素の待機操作で使用するタイムアウト。既定は `GESTAMENT_APP_WAIT_TIMEOUT_MS`、未指定時は `10000` msecです         |
 
 アプリケーションのstdout/stderrは起動単位で監視できます。`outputBufferBytes` はストリーム毎に保持する最大byte数を指定します。
 省略すると `release()` までstdout/stderr全体を保持します。
@@ -1098,6 +1098,27 @@ const launcher = createGtkAppLauncher({
 
 - `GESTAMENT_VISUAL_OUTPUT_RESULT_PATH` は、actual/diffなどの診断ファイルの保存先を指定します。未指定の場合、診断ファイルは保存されません。
 - `GESTAMENT_VISUAL_VARIANT` は、診断ファイルを分けるvariant名を指定します。未指定の場合は `GESTAMENT_TEST_BACKEND`、それも未指定の場合は `default` が使用されます。
+
+#### 内部タイムアウト値
+
+インフラやnative操作の待機タイムアウトは環境変数で調整できます。
+これらはXvfb、DBus/launcher driver起動、tray host readiness、アプリケーション待機と解放、AT-SPI probe、X11 window状態の観測に影響します。
+値はミリ秒単位の正の整数で指定します。
+
+| 環境変数                                       |  既定値 | 対象となる待機                                         |
+| :--------------------------------------------- | ------: | :----------------------------------------------------- |
+| `GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS` | `30000` | DBus/launcher driver起動                               |
+| `GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS` |  `5000` | DBus/launcher driverとXvfbの解放猶予                   |
+| `GESTAMENT_XVFB_STARTUP_TIMEOUT_MS`            | `10000` | Xvfb socket readiness                                  |
+| `GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS`     |   `250` | Xvfb Unix socket connectの各試行                       |
+| `GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS`         | `30000` | Xvfb poolのcleanliness probe                           |
+| `GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS`         | `30000` | StatusNotifier tray host readiness                     |
+| `GESTAMENT_APP_WAIT_TIMEOUT_MS`                | `10000` | アプリケーションと要素の既定待機タイムアウト           |
+| `GESTAMENT_APP_RELEASE_TIMEOUT_MS`             |  `2000` | 起動済みアプリケーションのSIGTERMからSIGKILLまでの猶予 |
+| `GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS`   |    `50` | AT-SPI readiness probeのnative DBus call               |
+| `GESTAMENT_ATSPI_STATE_CHANGE_TIMEOUT_MS`      |  `5000` | checked/pressed状態変化のnative観測                    |
+| `GESTAMENT_WINDOW_GEOMETRY_TIMEOUT_MS`         |  `2000` | X11/AT-SPI window geometryのnative観測                 |
+| `GESTAMENT_WINDOW_ACTIVATION_TIMEOUT_MS`       |  `2000` | X11/AT-SPI window activationのnative観測               |
 
 ### Xvfbプーリングによる高速化 (Advanced topic)
 

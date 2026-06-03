@@ -6,7 +6,7 @@ GESTAMENT_GTK_BACKEND ?= gtk3
 OUT_DIR ?= out
 TARGET ?= $(OUT_DIR)/gestament_native.node
 
-SOURCES := addon.cpp atspi_client.cpp accessible.cpp tray.cpp
+SOURCES := addon.cpp atspi_client.cpp accessible.cpp runtime_config.cpp tray.cpp
 OBJECTS := $(SOURCES:%.cpp=$(OUT_DIR)/%.o)
 
 COMMON_PKGS := atspi-2 glib-2.0 gio-2.0 gdk-pixbuf-2.0 x11 xtst

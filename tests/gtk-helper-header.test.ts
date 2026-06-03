@@ -10,8 +10,6 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
-import { headerCompileScriptTimeoutMs } from './support/testTimeouts';
-
 /////////////////////////////////////////////////////////////////////////////////////////
 
 const execFileAsync = promisify(execFile);
@@ -19,9 +17,7 @@ const includeDir = resolve('include');
 
 const pkgConfigExists = async (name: string): Promise<boolean> => {
   try {
-    await execFileAsync('pkg-config', ['--exists', name], {
-      timeout: headerCompileScriptTimeoutMs,
-    });
+    await execFileAsync('pkg-config', ['--exists', name]);
     return true;
   } catch {
     return false;
@@ -29,9 +25,7 @@ const pkgConfigExists = async (name: string): Promise<boolean> => {
 };
 
 const pkgConfigCflags = async (name: string): Promise<string[]> => {
-  const { stdout } = await execFileAsync('pkg-config', ['--cflags', name], {
-    timeout: headerCompileScriptTimeoutMs,
-  });
+  const { stdout } = await execFileAsync('pkg-config', ['--cflags', name]);
   return stdout.trim().length === 0 ? [] : stdout.trim().split(/\s+/);
 };
 
@@ -67,22 +61,16 @@ const compileHeader = async (
     const standard = language === 'c' ? '-std=c11' : '-std=c++17';
     const cflags = await pkgConfigCflags(pkgConfigName);
 
-    await execFileAsync(
-      compiler,
-      [
-        '-x',
-        language,
-        standard,
-        '-fsyntax-only',
-        '-I',
-        includeDir,
-        ...cflags,
-        sourcePath,
-      ],
-      {
-        timeout: headerCompileScriptTimeoutMs,
-      }
-    );
+    await execFileAsync(compiler, [
+      '-x',
+      language,
+      standard,
+      '-fsyntax-only',
+      '-I',
+      includeDir,
+      ...cflags,
+      sourcePath,
+    ]);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

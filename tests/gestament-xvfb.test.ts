@@ -51,7 +51,10 @@ const result = spawnSync(
     '--method',
     'org.a11y.Bus.GetAddress',
   ],
-  { encoding: 'utf8' }
+  {
+    encoding: 'utf8',
+    timeout: ${JSON.stringify(xvfbLauncherChildEnvironmentTimeoutMs)},
+  }
 );
 console.log(JSON.stringify({
   atSpiBusAddress: process.env.AT_SPI_BUS_ADDRESS ?? null,
@@ -256,7 +259,11 @@ const probeEnvironment = (env) => {
     "  dbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,",
     "  display: process.env.DISPLAY ?? null,",
     "}));",
-  ].join("\\n")], { encoding: 'utf8', env });
+  ].join("\\n")], {
+    encoding: 'utf8',
+    env,
+    timeout: ${JSON.stringify(xvfbLauncherChildEnvironmentTimeoutMs)},
+  });
   if (result.status !== 0) {
     throw new Error(result.stderr);
   }

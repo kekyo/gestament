@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { normalizeNativeError } from './errors';
 import { version as packageVersion } from './generated/packageMetadata';
 import { appendPrerequisiteInstallHint } from './prerequisites';
+import { resolveRuntimeTimeouts } from './runtimeTimeouts';
 import type { GtkAutomationError } from './types';
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -178,6 +179,12 @@ interface NativeAddon {
     height: number
   ) => NativeElementHandle | undefined;
   readonly processAtspiReadiness: (processId: number) => NativeAtspiReadiness;
+  readonly setTimeoutConfig: (
+    atspiReadinessProbeTimeoutMs: number,
+    atspiStateChangeTimeoutMs: number,
+    windowGeometryTimeoutMs: number,
+    windowActivationTimeoutMs: number
+  ) => void;
   readonly findAnyById: (id: string) => NativeElementHandle | undefined;
   readonly setTextById: (processId: number, id: string, text: string) => void;
   readonly clickById: (processId: number, id: string) => void;
@@ -405,8 +412,19 @@ const loadNativePrebuild = (backend: GtkBackend): NativeAddon => {
   return require(path) as NativeAddon;
 };
 
+const configureNativeTimeouts = (addon: NativeAddon): void => {
+  const timeouts = resolveRuntimeTimeouts();
+  addon.setTimeoutConfig(
+    timeouts.atspiReadinessProbeTimeoutMs,
+    timeouts.atspiStateChangeTimeoutMs,
+    timeouts.windowGeometryTimeoutMs,
+    timeouts.windowActivationTimeoutMs
+  );
+};
+
 const loadNativeAddon = (): NativeAddon => {
   if (loadedAddon !== undefined) {
+    configureNativeTimeouts(loadedAddon);
     return loadedAddon;
   }
 
@@ -426,7 +444,7 @@ const loadNativeAddon = (): NativeAddon => {
         );
       }
       loadedAddon = addon;
-      return loadedAddon;
+      break;
     } catch (error) {
       const message =
         error instanceof Error
@@ -434,6 +452,11 @@ const loadNativeAddon = (): NativeAddon => {
           : `Unknown error: ${String(error)}`;
       errors.push(`${backend}: ${message}`);
     }
+  }
+
+  if (loadedAddon !== undefined) {
+    configureNativeTimeouts(loadedAddon);
+    return loadedAddon;
   }
 
   throw createNativeLoadError(

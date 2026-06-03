@@ -1752,7 +1752,7 @@ export interface LaunchGtkAppOptions {
   readonly outputBufferBytes?: number | undefined;
   /**
    * Timeout used by operations that wait for the application or elements.
-   * Default is 10000msec (10sec).
+   * Defaults to GESTAMENT_APP_WAIT_TIMEOUT_MS, or 10000msec (10sec).
    */
   readonly timeoutMs?: number | undefined;
 }
@@ -1968,7 +1968,7 @@ export interface GtkAppLauncherOptions {
   readonly theme?: string | null | undefined;
   /**
    * Timeout used by operations that wait for the application or elements.
-   * Default is 10000msec (10sec).
+   * Defaults to GESTAMENT_APP_WAIT_TIMEOUT_MS, or 10000msec (10sec).
    */
   readonly timeoutMs?: number | undefined;
 }

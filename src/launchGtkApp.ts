@@ -22,6 +22,7 @@ import {
   normalizeOutputBufferBytes,
 } from './output';
 import { appendPrerequisiteInstallHint } from './prerequisites';
+import { resolveRuntimeTimeouts } from './runtimeTimeouts';
 import { effectiveWaitTimeoutMs } from './wait';
 import {
   nativeFindById,
@@ -271,7 +272,8 @@ export const launchGtkApp = (
   options?: LaunchGtkAppOptions
 ): Promise<GtkApp> => {
   const _args = args ?? [];
-  const _timeoutMs = options?.timeoutMs ?? 10_000;
+  const _timeoutMs =
+    options?.timeoutMs ?? resolveRuntimeTimeouts().appWaitTimeoutMs;
   const outputBufferBytes = normalizeOutputBufferBytes(
     options?.outputBufferBytes
   );
@@ -349,8 +351,9 @@ export const launchGtkApp = (
     child.kill('SIGTERM');
 
     const startedAt = Date.now();
+    const releaseTimeoutMs = resolveRuntimeTimeouts().appReleaseTimeoutMs;
     while (state.exitCode === null && state.exitSignal === null) {
-      if (Date.now() - startedAt > 2_000) {
+      if (Date.now() - startedAt > releaseTimeoutMs) {
         child.kill('SIGKILL');
         break;
       }

@@ -93,6 +93,48 @@ validate_package_version() {
   esac
 }
 
+export_default_env() {
+  name=$1
+  value=$2
+  eval "current_value=\${$name:-}"
+  if [ -z "$current_value" ]; then
+    export "$name=$value"
+  fi
+}
+
+apply_runtime_timeout_profile() {
+  case "$GESTAMENT_TEST_EXECUTION_PROFILE" in
+    native)
+      export_default_env GESTAMENT_APP_WAIT_TIMEOUT_MS 240000
+      export_default_env GESTAMENT_APP_RELEASE_TIMEOUT_MS 30000
+      export_default_env GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS 500
+      export_default_env GESTAMENT_ATSPI_STATE_CHANGE_TIMEOUT_MS 30000
+      export_default_env GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS 30000
+      export_default_env GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_WINDOW_ACTIVATION_TIMEOUT_MS 30000
+      export_default_env GESTAMENT_WINDOW_GEOMETRY_TIMEOUT_MS 30000
+      export_default_env GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS 180000
+      export_default_env GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS 2000
+      export_default_env GESTAMENT_XVFB_STARTUP_TIMEOUT_MS 60000
+      ;;
+    cross)
+      export_default_env GESTAMENT_APP_WAIT_TIMEOUT_MS 900000
+      export_default_env GESTAMENT_APP_RELEASE_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS 5000
+      export_default_env GESTAMENT_ATSPI_STATE_CHANGE_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS 300000
+      export_default_env GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS 300000
+      export_default_env GESTAMENT_WINDOW_ACTIVATION_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_WINDOW_GEOMETRY_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS 600000
+      export_default_env GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS 10000
+      export_default_env GESTAMENT_XVFB_STARTUP_TIMEOUT_MS 300000
+      ;;
+  esac
+}
+
 expected_dpkg_architecture() {
   case "$1" in
     amd64)
@@ -138,6 +180,7 @@ case "$GESTAMENT_TEST_EXECUTION_PROFILE" in
     exit 2
     ;;
 esac
+apply_runtime_timeout_profile
 
 actual_dpkg_architecture=$(dpkg --print-architecture)
 expected_dpkg_architecture=$(expected_dpkg_architecture "$GESTAMENT_ARCH")

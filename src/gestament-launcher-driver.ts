@@ -17,6 +17,7 @@ import {
 } from './errors';
 import { createGtkAppEnvironment, launchGtkApp } from './launchGtkApp';
 import { runWithWaitDeadline } from './wait';
+import { resolveRuntimeTimeouts } from './runtimeTimeouts';
 import type {
   DriverEnvironmentPayload,
   DriverAppPayload,
@@ -91,7 +92,6 @@ interface ImageInfoEntry {
 type AsyncMethod = (...args: unknown[]) => Promise<unknown>;
 
 const trayHostReadyLine = 'gestament-tray-host-ready';
-const trayHostReadyTimeoutMs = 30_000;
 
 const apps = new Map<string, GtkApp>();
 const elements = new Map<string, ElementEntry>();
@@ -184,7 +184,7 @@ const waitForTrayHostReady = (host: ChildProcess): Promise<void> =>
           )
         );
       }
-    }, trayHostReadyTimeoutMs);
+    }, resolveRuntimeTimeouts().trayHostReadyTimeoutMs);
 
     host.stdout.on('data', (chunk: Buffer) => {
       appendOutput(stdout, chunk);
