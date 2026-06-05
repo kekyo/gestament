@@ -281,6 +281,7 @@ export const launchGtkApp = (
   const appEnvironment = createGtkAppEnvironment(process.env, options?.env);
 
   const child = spawn(appPath, [..._args], {
+    cwd: options?.cwd,
     env: appEnvironment,
     stdio: 'pipe',
   });

@@ -29,6 +29,10 @@ export interface TestTimeoutProfile {
   readonly fixtureWindowDiscoveryTimeoutMs: number;
   readonly launcherScriptTimeoutMs: number;
   readonly missingLookupTimeoutMs: number;
+  readonly perLaunchTimeoutChildIdleMs: number;
+  readonly perLaunchTimeoutElapsedLimitMs: number;
+  readonly perLaunchTimeoutLauncherTimeoutMs: number;
+  readonly perLaunchTimeoutOverrideMs: number;
   readonly platformSmokeScriptTimeoutMs: number;
   readonly spawnTextExitTimeoutMs: number;
   readonly spawnTextForcedTimeoutMs: number;
@@ -78,9 +82,13 @@ const timeoutProfiles: Record<TestExecutionProfile, TestTimeoutProfile> = {
     fixtureWindowDiscoveryTimeoutMs: 90_000,
     launcherScriptTimeoutMs: 45_000,
     missingLookupTimeoutMs: 10_000,
+    perLaunchTimeoutChildIdleMs: 2_000,
+    perLaunchTimeoutElapsedLimitMs: 1_000,
+    perLaunchTimeoutLauncherTimeoutMs: 5_000,
+    perLaunchTimeoutOverrideMs: 150,
     platformSmokeScriptTimeoutMs: 10_000,
     spawnTextExitTimeoutMs: 5_000,
-    spawnTextForcedTimeoutMs: 50,
+    spawnTextForcedTimeoutMs: 150,
     visualE2eTestTimeoutMs: 240_000,
     vitestHookTimeoutMs: 20_000,
     vitestPollTimeoutMs: 1_000,
@@ -98,9 +106,13 @@ const timeoutProfiles: Record<TestExecutionProfile, TestTimeoutProfile> = {
     fixtureWindowDiscoveryTimeoutMs: 240_000,
     launcherScriptTimeoutMs: 240_000,
     missingLookupTimeoutMs: 10_000,
+    perLaunchTimeoutChildIdleMs: 60_000,
+    perLaunchTimeoutElapsedLimitMs: 20_000,
+    perLaunchTimeoutLauncherTimeoutMs: 120_000,
+    perLaunchTimeoutOverrideMs: 5_000,
     platformSmokeScriptTimeoutMs: 60_000,
     spawnTextExitTimeoutMs: 30_000,
-    spawnTextForcedTimeoutMs: 500,
+    spawnTextForcedTimeoutMs: 5_000,
     visualE2eTestTimeoutMs: 540_000,
     vitestHookTimeoutMs: 900_000,
     vitestPollTimeoutMs: 180_000,
@@ -118,6 +130,10 @@ const timeoutProfiles: Record<TestExecutionProfile, TestTimeoutProfile> = {
     fixtureWindowDiscoveryTimeoutMs: 900_000,
     launcherScriptTimeoutMs: 600_000,
     missingLookupTimeoutMs: 90_000,
+    perLaunchTimeoutChildIdleMs: 120_000,
+    perLaunchTimeoutElapsedLimitMs: 30_000,
+    perLaunchTimeoutLauncherTimeoutMs: 120_000,
+    perLaunchTimeoutOverrideMs: 5_000,
     platformSmokeScriptTimeoutMs: 120_000,
     spawnTextExitTimeoutMs: 120_000,
     spawnTextForcedTimeoutMs: 5_000,
@@ -255,6 +271,22 @@ export const launcherScriptTimeoutMs =
 
 /** Missing element lookup timeout used by visual tests. */
 export const missingLookupTimeoutMs = testTimeoutProfile.missingLookupTimeoutMs;
+
+/** Child idle time used by the per-launch timeout precedence test. */
+export const perLaunchTimeoutChildIdleMs =
+  testTimeoutProfile.perLaunchTimeoutChildIdleMs;
+
+/** Maximum expected elapsed time for the per-launch timeout precedence test. */
+export const perLaunchTimeoutElapsedLimitMs =
+  testTimeoutProfile.perLaunchTimeoutElapsedLimitMs;
+
+/** Launcher-level timeout used by the per-launch timeout precedence test. */
+export const perLaunchTimeoutLauncherTimeoutMs =
+  testTimeoutProfile.perLaunchTimeoutLauncherTimeoutMs;
+
+/** Per-launch timeout override used by the per-launch timeout precedence test. */
+export const perLaunchTimeoutOverrideMs =
+  testTimeoutProfile.perLaunchTimeoutOverrideMs;
 
 /** Child process timeout used by platform container smoke tests. */
 export const platformSmokeScriptTimeoutMs =

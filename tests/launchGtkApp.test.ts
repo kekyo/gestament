@@ -8,10 +8,14 @@ import { delay } from 'async-primitives';
 import {
   closeSync,
   existsSync,
+  mkdtempSync,
   openSync,
+  rmSync,
   unlinkSync,
   writeSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -31,6 +35,10 @@ import { spawnText } from './support/process';
 import {
   appOutputExitTimeoutMs,
   launcherScriptTimeoutMs,
+  perLaunchTimeoutChildIdleMs,
+  perLaunchTimeoutElapsedLimitMs,
+  perLaunchTimeoutLauncherTimeoutMs,
+  perLaunchTimeoutOverrideMs,
 } from './support/testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -45,6 +53,17 @@ process.stdout.write(${JSON.stringify(stdout)}, () => {
     process.exit(${JSON.stringify(exitCode)});
   });
 });
+`;
+
+const nodeCwdScript = 'process.stdout.write(process.cwd());';
+
+const nodeSelectedEnvironmentScript = `
+process.stdout.write(JSON.stringify({
+  launchOnly: process.env.GESTAMENT_TEST_PER_LAUNCH_ONLY ?? null,
+  launcherOnly: process.env.GESTAMENT_TEST_PER_LAUNCH_LAUNCHER_ONLY ?? null,
+  removed: process.env.GESTAMENT_TEST_PER_LAUNCH_REMOVED ?? null,
+  shared: process.env.GESTAMENT_TEST_PER_LAUNCH_SHARED ?? null,
+}));
 `;
 
 const packageEntryPath = fileURLToPath(
@@ -164,6 +183,20 @@ describe.concurrent('GTK application launch environment', () => {
     ).toEqual({
       GDK_BACKEND: 'x11',
     });
+  });
+
+  it('launches direct applications with the requested cwd', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'gestament-direct-cwd-'));
+    try {
+      const app = await launchGtkApp(process.execPath, ['-e', nodeCwdScript], {
+        cwd,
+      });
+      const output = await waitForExitedOutput(app);
+
+      expect(output.stdout).toBe(cwd);
+    } finally {
+      rmSync(cwd, { force: true, recursive: true });
+    }
   });
 });
 
@@ -322,6 +355,115 @@ describe.concurrent('GTK application output capture', () => {
       expect(firstEvents.length).toBe(firstEventCountAfterRelease);
       expect(outputText(firstEvents, 'stdout')).toBe('first-app');
       expect(outputText(secondEvents, 'stdout')).toBe('second-app');
+    } finally {
+      await launcher.release();
+    }
+  });
+
+  it('launches driver-backed applications with launcher and per-launch cwd', async () => {
+    const launcherCwd = mkdtempSync(join(tmpdir(), 'gestament-launcher-cwd-'));
+    const launchCwd = mkdtempSync(join(tmpdir(), 'gestament-launch-cwd-'));
+    const launcher = createGtkAppLauncher({
+      appPath: process.execPath,
+      cwd: launcherCwd,
+      xvfbTrayHost: false,
+    });
+
+    try {
+      const launcherCwdApp = await launcher.launch(['-e', nodeCwdScript]);
+      const launcherCwdOutput = await waitForExitedOutput(launcherCwdApp);
+
+      const launchCwdApp = await launcher.launch(['-e', nodeCwdScript], {
+        cwd: launchCwd,
+      });
+      const launchCwdOutput = await waitForExitedOutput(launchCwdApp);
+
+      expect(launcherCwdOutput.stdout).toBe(launcherCwd);
+      expect(launchCwdOutput.stdout).toBe(launchCwd);
+    } finally {
+      await launcher.release();
+      rmSync(launcherCwd, { force: true, recursive: true });
+      rmSync(launchCwd, { force: true, recursive: true });
+    }
+  });
+
+  it('applies per-launch environment overrides after launcher environment', async () => {
+    const launcher = createGtkAppLauncher({
+      appPath: process.execPath,
+      args: ['-e', nodeSelectedEnvironmentScript],
+      env: {
+        GESTAMENT_TEST_PER_LAUNCH_LAUNCHER_ONLY: 'launcher-only',
+        GESTAMENT_TEST_PER_LAUNCH_REMOVED: 'launcher-removed',
+        GESTAMENT_TEST_PER_LAUNCH_SHARED: 'launcher-shared',
+      },
+      xvfbTrayHost: false,
+    });
+
+    try {
+      const app = await launcher.launch([], {
+        env: {
+          GESTAMENT_TEST_PER_LAUNCH_ONLY: 'launch-only',
+          GESTAMENT_TEST_PER_LAUNCH_REMOVED: undefined,
+          GESTAMENT_TEST_PER_LAUNCH_SHARED: 'launch-shared',
+        },
+      });
+      const output = await waitForExitedOutput(app);
+
+      expect(JSON.parse(output.stdout)).toEqual({
+        launchOnly: 'launch-only',
+        launcherOnly: 'launcher-only',
+        removed: null,
+        shared: 'launch-shared',
+      });
+    } finally {
+      await launcher.release();
+    }
+  });
+
+  it('uses per-launch timeoutMs before launcher timeoutMs', async () => {
+    const launcher = createGtkAppLauncher({
+      appPath: process.execPath,
+      args: [
+        '-e',
+        `setTimeout(() => undefined, ${JSON.stringify(
+          perLaunchTimeoutChildIdleMs
+        )});`,
+      ],
+      timeoutMs: perLaunchTimeoutLauncherTimeoutMs,
+      xvfbTrayHost: false,
+    });
+
+    try {
+      const app = await launcher.launch([], {
+        timeoutMs: perLaunchTimeoutOverrideMs,
+      });
+      const startedAt = Date.now();
+      const windowCount = await app.getWindowCount();
+      const elapsedMs = Date.now() - startedAt;
+
+      expect(windowCount).toBe(0);
+      expect(elapsedMs).toBeLessThan(perLaunchTimeoutElapsedLimitMs);
+      await app.release();
+    } finally {
+      await launcher.release();
+    }
+  });
+
+  it('rejects per-launch internal Xvfb environment overrides', async () => {
+    const launcher = createGtkAppLauncher({
+      appPath: process.execPath,
+      args: ['-e', 'setTimeout(() => undefined, 1000);'],
+      xvfbTrayHost: false,
+    });
+
+    try {
+      await expect(
+        launcher.launch([], { env: { DISPLAY: ':1' } })
+      ).rejects.toMatchObject({
+        code: 'INVALID_ARGUMENT',
+        message:
+          'launchOptions.env must not override DISPLAY when using internal Xvfb.',
+      });
     } finally {
       await launcher.release();
     }

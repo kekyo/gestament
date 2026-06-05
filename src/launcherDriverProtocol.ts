@@ -106,6 +106,7 @@ export type DriverEventChannel = 'app.output' | 'system.output';
 export interface DriverLaunchPayload {
   readonly appPath: string;
   readonly args: readonly string[];
+  readonly cwd: string | null;
   readonly env: WireGtkAppEnvironment;
   readonly outputBufferBytes: number | null;
   readonly outputScopeId: string | null;

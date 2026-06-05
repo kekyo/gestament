@@ -356,6 +356,7 @@ import { createGtkAppLauncher } from 'gestament';
 const launcher = createGtkAppLauncher({
   appPath: './my-app',
   args: ['--test-mode'],
+  cwd: './fixtures/default',
   display: 'xvfb',
   xvfbScreen: '1280x720x24',
   xvfbTrayHost: true,
@@ -379,6 +380,7 @@ it('launches the app', async () => {
 | :------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `appPath`                 | Path to the GTK application binary. This file is launched.                                                                                                     |
 | `args`                    | Base arguments passed to every launch. Arguments passed to `GtkAppLauncher.launch()` are appended after these values.                                          |
+| `cwd`                     | Working directory passed to every launch.                                                                                                                      |
 | `env`                     | Environment variable overrides passed to every launch.                                                                                                         |
 | `outputBufferBytes`       | Maximum retained bytes per stdout/stderr stream for `GtkApp.output()`. Omit it to retain all output, or set `0` to keep only the truncated flags without text. |
 | `onSystemOutput`          | Callback invoked for stdout/stderr chunks from launcher infrastructure processes such as Xvfb, the launcher driver, and the tray host.                         |
@@ -394,16 +396,21 @@ it('launches the app', async () => {
 Application stdout and stderr can be observed per launch. `outputBufferBytes` limits the retained
 snapshot per stream; omit it to retain complete stdout/stderr until `release()`.
 
-An `outputBufferBytes` value passed as the second argument to `GtkAppLauncher.launch()` overrides the
-launcher-wide default for that launch.
+`cwd`, `env`, `outputBufferBytes`, and `timeoutMs` values passed as the second argument to
+`GtkAppLauncher.launch()` override the launcher-wide defaults for that launch.
 
 ```typescript
 // Collect the application's standard output and error logs
 const outputEvents: string[] = [];
 const app = await launcher.launch(['--scenario=basic'], {
+  cwd: './fixtures/basic',
+  env: {
+    APP_SCENARIO: 'basic',
+  },
   onOutput: (event) => {
     outputEvents.push(`[${event.stream}] ${event.text}`);
   },
+  timeoutMs: 5_000,
 });
 
 // Collect all states of the application process
@@ -1057,12 +1064,13 @@ It sets `DISPLAY`, `GDK_BACKEND=x11`, `DBUS_SESSION_BUS_ADDRESS`, `GESTAMENT_XVF
 And, it also clears host values for `WAYLAND_DISPLAY`, `AT_SPI_BUS_ADDRESS`, and `NO_AT_BRIDGE`.
 `XAUTHORITY` is cleared for the unauthenticated Xvfb server that gestament starts directly.
 
-For that reason, `options.env` cannot override the following variables while using an internal Xvfb session:
+For that reason, launcher `options.env` and per-launch `launchOptions.env` cannot override the following variables while using an internal Xvfb session:
 `DISPLAY`, `WAYLAND_DISPLAY`, `GDK_BACKEND`, `DBUS_SESSION_BUS_ADDRESS`, `AT_SPI_BUS_ADDRESS`, `NO_AT_BRIDGE`, `XAUTHORITY`, `GESTAMENT_XVFB_ACTIVE`, and `XDG_SESSION_TYPE`.
 Trying to override one of these values is treated as `INVALID_ARGUMENT`.
 
 Use `GtkAppLauncher.environment()` before launching helper processes for a launcher, or `GtkApp.environment()` after launching an app.
 The returned object is the final environment that should be passed to helpers that must observe the same Xvfb and DBus session as the tested app.
+Per-launch environment overrides are included only in `GtkApp.environment()` for that launched app; `GtkAppLauncher.environment()` reports the launcher-wide environment.
 
 ```typescript
 import { spawnSync } from 'node:child_process';
