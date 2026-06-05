@@ -1049,7 +1049,7 @@ gestamentでは、GTKのテスト実行に必要な共通設定は、GTKアプ�
 実際に使用されるディスプレイが内部Xvfbの場合、gestamentはセッションに関わる重要な環境変数を調整します:
 `DISPLAY`, `GDK_BACKEND=x11`, `DBUS_SESSION_BUS_ADDRESS`, `GESTAMENT_XVFB_ACTIVE=1`, `XDG_SESSION_TYPE=x11` を設定します。
 また、ホスト由来の `WAYLAND_DISPLAY`, `AT_SPI_BUS_ADDRESS`, `NO_AT_BRIDGE` は削除します。
-`XAUTHORITY` はgestamentが直接起動した無認証Xvfbでは削除し、`xvfb-run` 由来のX serverで必要な場合だけ保持します。
+`XAUTHORITY` はgestamentが直接起動した無認証Xvfbでは削除します。
 
 そのため、内部Xvfb使用時の `options.env` では以下の変数を上書きできません:
 `DISPLAY`, `WAYLAND_DISPLAY`, `GDK_BACKEND`, `DBUS_SESSION_BUS_ADDRESS`, `AT_SPI_BUS_ADDRESS`, `NO_AT_BRIDGE`, `XAUTHORITY`, `GESTAMENT_XVFB_ACTIVE`, `XDG_SESSION_TYPE`。

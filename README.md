@@ -1055,7 +1055,7 @@ This session is launcher-scoped: apps launched from the same launcher share one 
 When the effective display is an internal Xvfb session, gestament owns the session-critical environment variables:
 It sets `DISPLAY`, `GDK_BACKEND=x11`, `DBUS_SESSION_BUS_ADDRESS`, `GESTAMENT_XVFB_ACTIVE=1`, and `XDG_SESSION_TYPE=x11`.
 And, it also clears host values for `WAYLAND_DISPLAY`, `AT_SPI_BUS_ADDRESS`, and `NO_AT_BRIDGE`.
-`XAUTHORITY` is cleared for the unauthenticated Xvfb server that gestament starts directly, and is retained only when it is required by an `xvfb-run`-provided server.
+`XAUTHORITY` is cleared for the unauthenticated Xvfb server that gestament starts directly.
 
 For that reason, `options.env` cannot override the following variables while using an internal Xvfb session:
 `DISPLAY`, `WAYLAND_DISPLAY`, `GDK_BACKEND`, `DBUS_SESSION_BUS_ADDRESS`, `AT_SPI_BUS_ADDRESS`, `NO_AT_BRIDGE`, `XAUTHORITY`, `GESTAMENT_XVFB_ACTIVE`, and `XDG_SESSION_TYPE`.

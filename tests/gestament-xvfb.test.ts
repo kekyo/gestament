@@ -90,7 +90,7 @@ const atSpiBusNumber = (address: string): string => {
 };
 
 describe.concurrent('gestament-xvfb', () => {
-  it('prints a prerequisite installation hint when xvfb-run cannot start', () => {
+  it('prints a prerequisite installation hint when Xvfb cannot start', () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), 'gestament-empty-path-'));
     try {
       const result = spawnSync(
@@ -114,6 +114,76 @@ describe.concurrent('gestament-xvfb', () => {
     } finally {
       rmSync(tempDirectory, { force: true, recursive: true });
     }
+  });
+
+  it('allocates distinct displays for concurrent gestament-xvfb processes', async () => {
+    const probeScript = [
+      'console.log(JSON.stringify({',
+      '  display: process.env.DISPLAY ?? null,',
+      '  xauthority: process.env.XAUTHORITY ?? null,',
+      '}));',
+      'setTimeout(() => process.exit(0), 1500);',
+    ].join('\n');
+    const env = { ...process.env };
+    delete env.AT_SPI_BUS_ADDRESS;
+    delete env.DBUS_SESSION_BUS_ADDRESS;
+    delete env.DISPLAY;
+    delete env.GESTAMENT_XVFB_ACTIVE;
+    delete env.NO_AT_BRIDGE;
+    delete env.WAYLAND_DISPLAY;
+    delete env.XAUTHORITY;
+
+    const launches = await Promise.all([
+      spawnText(
+        process.execPath,
+        [
+          xvfbBin,
+          '--screen=640x480x24',
+          '--',
+          process.execPath,
+          '-e',
+          probeScript,
+        ],
+        {
+          env,
+          timeoutMs: xvfbLauncherScriptTimeoutMs,
+        }
+      ),
+      spawnText(
+        process.execPath,
+        [
+          xvfbBin,
+          '--screen=640x480x24',
+          '--',
+          process.execPath,
+          '-e',
+          probeScript,
+        ],
+        {
+          env,
+          timeoutMs: xvfbLauncherScriptTimeoutMs,
+        }
+      ),
+    ]);
+
+    for (const launch of launches) {
+      expect(launch.status, launch.stderr).toBe(0);
+    }
+
+    const probes = launches.map((launch) => {
+      const line = launch.stdout.trim().split('\n').at(-1);
+      expect(line).toBeDefined();
+      return JSON.parse(line as string) as {
+        readonly display: string | null;
+        readonly xauthority: string | null;
+      };
+    });
+
+    expect(probes[0]?.display).not.toBeNull();
+    expect(probes[1]?.display).not.toBeNull();
+    expect(probes[0]?.display).not.toBe(probes[1]?.display);
+    expect(probes[0]?.xauthority).toBeNull();
+    expect(probes[1]?.xauthority).toBeNull();
   });
 
   it('starts the session bus inside Xvfb for AT-SPI isolation', () => {
@@ -1144,6 +1214,95 @@ const launchOutputApp = async (label) => {
       } finally {
         rmSync(tempDirectory, { force: true, recursive: true });
       }
+    },
+    xvfbPoolScriptTimeoutMs + 30_000
+  );
+
+  it(
+    'allocates distinct displays for concurrent launcher processes',
+    async () => {
+      const launchProbe = async (
+        xvfbPool: undefined | { readonly type: 'xvfb' | 'all' }
+      ): Promise<readonly string[]> => {
+        const env = { ...process.env };
+        delete env.AT_SPI_BUS_ADDRESS;
+        delete env.DBUS_SESSION_BUS_ADDRESS;
+        delete env.DISPLAY;
+        delete env.GESTAMENT_XVFB_ACTIVE;
+        delete env.GSETTINGS_BACKEND;
+        delete env.GTK_THEME;
+        delete env.NO_AT_BRIDGE;
+        delete env.WAYLAND_DISPLAY;
+        delete env.XAUTHORITY;
+        delete env.XDG_SESSION_TYPE;
+
+        const script = `
+const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
+const childScript = [
+  "setInterval(() => {}, 2147483647);",
+].join("\\n");
+(async () => {
+  const launcher = createGtkAppLauncher({
+    appPath: process.execPath,
+    args: ['-e', childScript],
+    timeoutMs: ${JSON.stringify(xvfbPoolFixtureTimeoutMs)},
+    xvfbPool: ${JSON.stringify(xvfbPool)},
+    xvfbScreen: '460x320x24',
+    xvfbTrayHost: false,
+  });
+  try {
+    const app = await launcher.launch();
+    const environment = await app.environment();
+    console.log(JSON.stringify({
+      display: environment.DISPLAY ?? null,
+      xauthority: environment.XAUTHORITY ?? null,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  } finally {
+    await launcher.release();
+  }
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+`;
+
+        const launches = await Promise.all([
+          spawnText(process.execPath, ['-e', script], {
+            env,
+            timeoutMs: xvfbPoolScriptTimeoutMs,
+          }),
+          spawnText(process.execPath, ['-e', script], {
+            env,
+            timeoutMs: xvfbPoolScriptTimeoutMs,
+          }),
+        ]);
+
+        for (const launch of launches) {
+          expect(launch.status, launch.stderr).toBe(0);
+        }
+
+        return launches.map((launch) => {
+          const line = launch.stdout.trim().split('\n').at(-1);
+          expect(line).toBeDefined();
+          const probe = JSON.parse(line as string) as {
+            readonly display: string | null;
+            readonly xauthority: string | null;
+          };
+          expect(probe.display).not.toBeNull();
+          expect(probe.xauthority).toBeNull();
+          return probe.display as string;
+        });
+      };
+
+      const unpooledDisplays = await launchProbe(undefined);
+      expect(unpooledDisplays[0]).not.toBe(unpooledDisplays[1]);
+
+      const xvfbPoolDisplays = await launchProbe({ type: 'xvfb' });
+      expect(xvfbPoolDisplays[0]).not.toBe(xvfbPoolDisplays[1]);
+
+      const allPoolDisplays = await launchProbe({ type: 'all' });
+      expect(allPoolDisplays[0]).not.toBe(allPoolDisplays[1]);
     },
     xvfbPoolScriptTimeoutMs + 30_000
   );
