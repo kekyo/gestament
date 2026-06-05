@@ -918,17 +918,18 @@ const wireEnvironmentToGtkAppEnvironment = (
 };
 
 const assertNoSessionOwnedEnvironmentOverrides = (
-  options: GtkAppLauncherOptions,
-  effective: EffectiveDisplay
+  env: GtkAppEnvironment | undefined,
+  effective: EffectiveDisplay,
+  label: string
 ): void => {
-  if (effective.kind !== 'xvfb' || options.env === undefined) {
+  if (effective.kind !== 'xvfb' || env === undefined) {
     return;
   }
 
   for (const key of sessionOwnedEnvironmentKeys) {
-    if (Object.hasOwn(options.env, key)) {
+    if (Object.hasOwn(env, key)) {
       throw createGtkInvalidArgumentError(
-        `options.env must not override ${key} when using internal Xvfb.`
+        `${label} must not override ${key} when using internal Xvfb.`
       );
     }
   }
@@ -936,9 +937,19 @@ const assertNoSessionOwnedEnvironmentOverrides = (
 
 const resolveLauncherEnvironment = (
   options: GtkAppLauncherOptions,
-  effective: EffectiveDisplay
+  effective: EffectiveDisplay,
+  launchOptions: GtkAppLauncherLaunchOptions | undefined
 ): WireGtkAppEnvironment => {
-  assertNoSessionOwnedEnvironmentOverrides(options, effective);
+  assertNoSessionOwnedEnvironmentOverrides(
+    options.env,
+    effective,
+    'options.env'
+  );
+  assertNoSessionOwnedEnvironmentOverrides(
+    launchOptions?.env,
+    effective,
+    'launchOptions.env'
+  );
   return toWireEnvironment({
     GDK_BACKEND: resolveGdkBackend(effective),
     GSETTINGS_BACKEND:
@@ -948,7 +959,16 @@ const resolveLauncherEnvironment = (
     GTK_THEME:
       options.theme === null ? undefined : (options.theme ?? defaultTheme),
     ...options.env,
+    ...launchOptions?.env,
   });
+};
+
+const resolveLaunchCwd = (
+  options: GtkAppLauncherOptions,
+  launchOptions: GtkAppLauncherLaunchOptions | undefined
+): string | null => {
+  const cwd = launchOptions?.cwd ?? options.cwd;
+  return cwd === undefined ? null : resolve(cwd);
 };
 
 const resolveDriverPath = (): string => {
@@ -2128,13 +2148,14 @@ const createLaunchPayload = (
   return {
     appPath: options.appPath,
     args: [...(options.args ?? []), ...args],
-    env: resolveLauncherEnvironment(options, effective),
+    cwd: resolveLaunchCwd(options, launchOptions),
+    env: resolveLauncherEnvironment(options, effective, launchOptions),
     outputBufferBytes: resolveOutputBufferBytes(
       options.outputBufferBytes,
       launchOptions?.outputBufferBytes
     ),
     outputScopeId,
-    timeoutMs: options.timeoutMs ?? null,
+    timeoutMs: launchOptions?.timeoutMs ?? options.timeoutMs ?? null,
   };
 };
 
@@ -2146,7 +2167,7 @@ const createEnvironmentPayload = (
   const effective = resolveEffectiveDisplay(display, xvfb);
 
   return {
-    env: resolveLauncherEnvironment(options, effective),
+    env: resolveLauncherEnvironment(options, effective, undefined),
   };
 };
 

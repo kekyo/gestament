@@ -630,6 +630,7 @@ const handleLauncherCommand = async (
       writePayloadInternalTestOutput(launchPayload.env);
       const outputScopeId = launchPayload.outputScopeId;
       const launchOptions: LaunchGtkAppOptions = {
+        ...(launchPayload.cwd === null ? {} : { cwd: launchPayload.cwd }),
         env: wireEnvironmentToGtkAppEnvironment(launchPayload.env),
         ...(launchPayload.outputBufferBytes === null
           ? {}

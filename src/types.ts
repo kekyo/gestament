@@ -1735,6 +1735,10 @@ export interface GtkXvfbPool {
  */
 export interface LaunchGtkAppOptions {
   /**
+   * Working directory used for the launched child process.
+   */
+  readonly cwd?: string | undefined;
+  /**
    * Environment overrides passed to the child process.
    */
   readonly env?: GtkAppEnvironment | undefined;
@@ -1907,6 +1911,10 @@ export interface GtkAppLauncherOptions {
    */
   readonly args?: readonly string[] | undefined;
   /**
+   * Working directory passed to every launched application.
+   */
+  readonly cwd?: string | undefined;
+  /**
    * Environment overrides passed to every launched application.
    */
   readonly env?: GtkAppEnvironment | undefined;
@@ -1978,6 +1986,23 @@ export interface GtkAppLauncherOptions {
  */
 export interface GtkAppLauncherLaunchOptions {
   /**
+   * Working directory used for this launch.
+   *
+   * @remarks
+   * Omit to use GtkAppLauncherOptions.cwd.
+   */
+  readonly cwd?: string | undefined;
+
+  /**
+   * Environment overrides passed to this launch.
+   *
+   * @remarks
+   * Values override GtkAppLauncherOptions.env for this launch. Set a value to
+   * undefined to remove it from the final child process environment.
+   */
+  readonly env?: GtkAppEnvironment | undefined;
+
+  /**
    * Callback invoked for each stdout/stderr chunk produced by this launch.
    */
   readonly onOutput?: ((event: GtkAppOutputEvent) => void) | undefined;
@@ -1989,6 +2014,14 @@ export interface GtkAppLauncherLaunchOptions {
    * Omit to use GtkAppLauncherOptions.outputBufferBytes.
    */
   readonly outputBufferBytes?: number | undefined;
+
+  /**
+   * Timeout used by wait operations for this launch.
+   *
+   * @remarks
+   * Omit to use GtkAppLauncherOptions.timeoutMs.
+   */
+  readonly timeoutMs?: number | undefined;
 }
 
 /**

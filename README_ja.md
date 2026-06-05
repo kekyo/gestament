@@ -353,6 +353,7 @@ import { createGtkAppLauncher } from 'gestament';
 const launcher = createGtkAppLauncher({
   appPath: './my-app',
   args: ['--test-mode'],
+  cwd: './fixtures/default',
   display: 'xvfb',
   xvfbScreen: '1280x720x24',
   xvfbTrayHost: true,
@@ -376,6 +377,7 @@ it('launches the app', async () => {
 | :------------------------ | :---------------------------------------------------------------------------------------------------------------------------------- |
 | `appPath`                 | GTKアプリケーションバイナリファイルへのパス。このファイルが起動されます                                                             |
 | `args`                    | 全ての起動に共通して渡す基本引数。`GtkAppLauncher.launch()` の引数は、この末尾に追加されます                                        |
+| `cwd`                     | 全ての起動に共通して渡す作業ディレクトリ                                                                                            |
 | `env`                     | 全ての起動に共通して渡す環境変数の上書き                                                                                            |
 | `outputBufferBytes`       | `GtkApp.output()` がstdout/stderrそれぞれで保持する最大byte数。省略時は全体保持、`0` は本文を保持せずtruncated flagのみを更新します |
 | `onSystemOutput`          | Xvfb、launcher driver、tray hostなど、launcher基盤プロセスのstdout/stderr chunkを受け取るcallback                                   |
@@ -391,15 +393,20 @@ it('launches the app', async () => {
 アプリケーションのstdout/stderrは起動単位で監視できます。`outputBufferBytes` はストリーム毎に保持する最大byte数を指定します。
 省略すると `release()` までstdout/stderr全体を保持します。
 
-`GtkAppLauncher.launch()` の第2引数に指定した `outputBufferBytes` は、ランチャーの共通設定よりも優先されます。
+`GtkAppLauncher.launch()` の第2引数に指定した `cwd`, `env`, `outputBufferBytes`, `timeoutMs` は、ランチャーの共通設定よりも優先されます。
 
 ```typescript
 // アプリケーションの標準出力・エラー出力ログを収集する
 const outputEvents: string[] = [];
 const app = await launcher.launch(['--scenario=basic'], {
+  cwd: './fixtures/basic',
+  env: {
+    APP_SCENARIO: 'basic',
+  },
   onOutput: (event) => {
     outputEvents.push(`[${event.stream}] ${event.text}`);
   },
+  timeoutMs: 5_000,
 });
 
 // アプリケーションプロセスのすべての状態を収集する
@@ -1051,12 +1058,13 @@ gestamentでは、GTKのテスト実行に必要な共通設定は、GTKアプ�
 また、ホスト由来の `WAYLAND_DISPLAY`, `AT_SPI_BUS_ADDRESS`, `NO_AT_BRIDGE` は削除します。
 `XAUTHORITY` はgestamentが直接起動した無認証Xvfbでは削除します。
 
-そのため、内部Xvfb使用時の `options.env` では以下の変数を上書きできません:
+そのため、内部Xvfb使用時のランチャー `options.env` と起動単位の `launchOptions.env` では以下の変数を上書きできません:
 `DISPLAY`, `WAYLAND_DISPLAY`, `GDK_BACKEND`, `DBUS_SESSION_BUS_ADDRESS`, `AT_SPI_BUS_ADDRESS`, `NO_AT_BRIDGE`, `XAUTHORITY`, `GESTAMENT_XVFB_ACTIVE`, `XDG_SESSION_TYPE`。
 これらを上書きしようとすると `INVALID_ARGUMENT` として扱います。
 
 ランチャーに紐づく補助プロセスを起動する場合は `GtkAppLauncher.environment()`、アプリケーション起動後に同じセッションを見る補助プロセスを起動する場合は `GtkApp.environment()` を使用してください。
 返されるオブジェクトは、テスト対象アプリと同じXvfb/DBusセッションを見る補助プロセスへ渡すべき最終環境変数です。
+起動単位の環境変数上書きは、その起動済みアプリケーションの `GtkApp.environment()` にだけ含まれます。`GtkAppLauncher.environment()` はランチャー共通の環境変数を返します。
 
 ```typescript
 import { spawnSync } from 'node:child_process';
