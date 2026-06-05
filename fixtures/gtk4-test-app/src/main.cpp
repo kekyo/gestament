@@ -44,12 +44,10 @@ constexpr MainWindowGeometryHints kMainWindowGeometryHints = {
     7,
     11,
 };
-constexpr guint kDeferredGeometryHintIntervalMs = 50;
-constexpr unsigned int kDeferredGeometryHintAttempts = 120;
+constexpr guint kDeferredGeometryHintIntervalMs = 500;
 
 struct DeferredGeometryHintState {
   GtkWidget *window;
-  unsigned int remaining_attempts;
 };
 
 std::filesystem::path executable_directory() {
@@ -470,8 +468,7 @@ void set_x11_main_window_geometry_hints(GtkWidget *window) {
 gboolean reapply_x11_main_window_geometry_hints(gpointer user_data) {
   auto *state = static_cast<DeferredGeometryHintState *>(user_data);
   set_x11_main_window_geometry_hints(state->window);
-  state->remaining_attempts -= 1;
-  return state->remaining_attempts == 0 ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
+  return G_SOURCE_CONTINUE;
 }
 
 void destroy_deferred_geometry_hint_state(gpointer user_data) {
@@ -480,17 +477,16 @@ void destroy_deferred_geometry_hint_state(gpointer user_data) {
   delete state;
 }
 
-void schedule_x11_main_window_geometry_hints(GtkWidget *window) {
+guint schedule_x11_main_window_geometry_hints(GtkWidget *window) {
   auto *state = new DeferredGeometryHintState{
       GTK_WIDGET(g_object_ref(window)),
-      kDeferredGeometryHintAttempts,
   };
 
-  // GTK may rewrite WM_NORMAL_HINTS after map/configure on fast X11 backends.
-  // Keep reapplying while later GTK4 configure cycles settle.
-  g_timeout_add_full(G_PRIORITY_DEFAULT, kDeferredGeometryHintIntervalMs,
-                     reapply_x11_main_window_geometry_hints, state,
-                     destroy_deferred_geometry_hint_state);
+  // GTK may rewrite WM_NORMAL_HINTS after later configure cycles on X11.
+  // Keep fixture-specific hints stable for the whole application lifetime.
+  return g_timeout_add_full(G_PRIORITY_DEFAULT, kDeferredGeometryHintIntervalMs,
+                            reapply_x11_main_window_geometry_hints, state,
+                            destroy_deferred_geometry_hint_state);
 }
 
 bool widget_root_origin(GtkWidget *widget, int *x, int *y) {
@@ -819,6 +815,9 @@ int main(int argc, char **argv) {
 
   const std::filesystem::path image_file = asset_path("sp_mon.png");
   gtk_image_set_from_file(GTK_IMAGE(image_control), image_file.c_str());
+  GDateTime *calendar_date = g_date_time_new_local(2026, 5, 25, 0, 0, 0);
+  gtk_calendar_select_day(GTK_CALENDAR(standard_calendar), calendar_date);
+  g_date_time_unref(calendar_date);
 
   AppWidgets widgets = {
       window,
@@ -855,7 +854,8 @@ int main(int argc, char **argv) {
   gtk_window_present(GTK_WINDOW(window));
   drain_events();
   set_x11_main_window_geometry_hints(window);
-  schedule_x11_main_window_geometry_hints(window);
+  guint geometry_hint_source_id =
+      schedule_x11_main_window_geometry_hints(window);
   if (options.widget_controls) {
     gtk_window_present(GTK_WINDOW(controls_window));
   }
@@ -872,6 +872,11 @@ int main(int argc, char **argv) {
                                   : nullptr;
 
   g_main_loop_run(loop);
+
+  if (geometry_hint_source_id != 0) {
+    g_source_remove(geometry_hint_source_id);
+    geometry_hint_source_id = 0;
+  }
 
   release_status_notifier_item(tray_item);
   g_main_loop_unref(loop);

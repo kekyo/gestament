@@ -4,7 +4,16 @@
 // https://github.com/kekyo/gestament
 
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
 import {
   createConnection,
   createServer,
@@ -30,6 +39,7 @@ import {
 } from './output';
 import { createGtkInputController } from './input';
 import { appendPrerequisiteInstallHint } from './prerequisites';
+import { resolveRuntimeTimeouts } from './runtimeTimeouts';
 import type {
   DriverAppRef,
   DriverCommand,
@@ -72,6 +82,7 @@ import type {
   GtkTrayItemSelector,
   GtkValueInfo,
   GtkWidgetElement,
+  GtkWindowDebugDiagnostics,
   GtkWindowResizeHints,
   GtkX11WindowInfo,
   GtkXvfbPool,
@@ -120,12 +131,20 @@ interface PooledXvfb {
   readonly child: ChildProcessByStdio<null, Readable, Readable>;
   readonly display: string;
   readonly displayNumber: number;
+  readonly displayLock: XvfbDisplayLock;
   readonly key: string;
   readonly screen: string;
   readonly stderr: string[];
   readonly stdout: string[];
   lastUsedAt: number;
   systemOutputSink: SystemOutputSink | undefined;
+}
+
+interface XvfbDisplayLock {
+  readonly displayNumber: number;
+  readonly fd: number;
+  readonly path: string;
+  released: boolean;
 }
 
 interface PooledAllSession {
@@ -216,16 +235,12 @@ const defaultXvfbTrayHost = true;
 const defaultXvfbPoolMaxIdlePerKey = 1;
 const defaultXvfbPoolMaxIdleTotal = 4;
 const screenPattern = /^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$/;
-const sessionStartupTimeoutMs = 30_000;
-const sessionReleaseTimeoutMs = 5_000;
-const xvfbStartupTimeoutMs = 10_000;
-const xvfbPoolProbeTimeoutMs = 5_000;
 const xvfbPoolProbeRetryIntervalMs = 50;
 const xvfbPoolProbePrefix = 'gestament-xvfb-pool-probe: ';
 const x11DisplayOpenFailureMessage =
   'Failed to open the X11 display. Ensure DISPLAY points to an X11 display.';
-const firstPooledDisplayNumber = 90;
-const lastPooledDisplayNumber = 590;
+const firstPooledDisplayNumber = 600;
+const lastPooledDisplayNumber = 1099;
 const sessionOwnedEnvironmentKeys = [
   'DISPLAY',
   'WAYLAND_DISPLAY',
@@ -379,6 +394,94 @@ const resolveDisplay = (display: GtkAppDisplay | undefined): GtkAppDisplay => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const errorCode = (error: unknown): string | undefined =>
+  isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
+
+const xvfbDisplayLockPath = (displayNumber: number): string =>
+  join(tmpdir(), `gestament-xvfb-display-${displayNumber}.lock`);
+
+const readXvfbDisplayLockPid = (path: string): number | undefined => {
+  try {
+    const pid = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const processExists = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return errorCode(error) === 'EPERM';
+  }
+};
+
+const removeStaleXvfbDisplayLock = (path: string): void => {
+  const pid = readXvfbDisplayLockPid(path);
+  if (pid === undefined || processExists(pid)) {
+    return;
+  }
+
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+  }
+};
+
+const openXvfbDisplayLock = (
+  displayNumber: number,
+  path: string
+): XvfbDisplayLock | undefined => {
+  try {
+    const fd = openSync(path, 'wx');
+    writeSync(fd, `${process.pid}\n`);
+    return { displayNumber, fd, path, released: false };
+  } catch (error) {
+    if (errorCode(error) === 'EEXIST') {
+      return undefined;
+    }
+    throw error;
+  }
+};
+
+const tryAcquireXvfbDisplayLock = (
+  displayNumber: number
+): XvfbDisplayLock | undefined => {
+  if (leasedDisplayNumbers.has(displayNumber)) {
+    return undefined;
+  }
+
+  const path = xvfbDisplayLockPath(displayNumber);
+  const lock = openXvfbDisplayLock(displayNumber, path);
+  if (lock !== undefined) {
+    return lock;
+  }
+
+  removeStaleXvfbDisplayLock(path);
+  return openXvfbDisplayLock(displayNumber, path);
+};
+
+const releaseXvfbDisplayLock = (lock: XvfbDisplayLock): void => {
+  if (lock.released) {
+    return;
+  }
+
+  lock.released = true;
+  closeSync(lock.fd);
+  try {
+    unlinkSync(lock.path);
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+  }
+};
 
 const createDriverEventKey = (
   channel: DriverEventChannel,
@@ -720,6 +823,16 @@ const emptyDriverSessionPoolOptions = (): DriverSessionPoolOptions => ({
   xvfb: undefined,
 });
 
+const unpooledXvfbSessionPoolOptions = (
+  xvfb: PooledXvfb
+): DriverSessionPoolOptions => ({
+  allKey: undefined,
+  allowedMappedWindowCount: 0,
+  limits: nonePoolLimits(),
+  mode: 'none',
+  xvfb,
+});
+
 const resolveXvfbOptions = (
   options: GtkAppLauncherOptions
 ): XvfbSessionOptions => {
@@ -897,8 +1010,12 @@ const createDriverEnvironment = (
 const xvfbSocketPath = (displayNumber: number): string =>
   `/tmp/.X11-unix/X${displayNumber}`;
 
+const xvfbServerLockPath = (displayNumber: number): string =>
+  `/tmp/.X${displayNumber}-lock`;
+
 const isDisplayNumberAvailable = (displayNumber: number): boolean =>
   !leasedDisplayNumbers.has(displayNumber) &&
+  !existsSync(xvfbServerLockPath(displayNumber)) &&
   !existsSync(xvfbSocketPath(displayNumber));
 
 const connectUnixSocket = (path: string, timeoutMs: number): Promise<void> =>
@@ -937,10 +1054,11 @@ const connectUnixSocket = (path: string, timeoutMs: number): Promise<void> =>
 const waitForXvfbReady = async (displayNumber: number): Promise<void> => {
   const startedAt = Date.now();
   const path = xvfbSocketPath(displayNumber);
-  while (Date.now() - startedAt <= xvfbStartupTimeoutMs) {
+  const timeouts = resolveRuntimeTimeouts();
+  while (Date.now() - startedAt <= timeouts.xvfbStartupTimeoutMs) {
     if (existsSync(path)) {
       try {
-        await connectUnixSocket(path, 250);
+        await connectUnixSocket(path, timeouts.xvfbSocketConnectTimeoutMs);
         return;
       } catch {
         // Keep polling until the X server accepts local connections.
@@ -958,6 +1076,8 @@ const killXvfbNow = (xvfb: PooledXvfb): void => {
   if (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
     xvfb.child.kill('SIGTERM');
   }
+  leasedDisplayNumbers.delete(xvfb.displayNumber);
+  releaseXvfbDisplayLock(xvfb.displayLock);
 };
 
 const installPoolCleanup = (): void => {
@@ -982,7 +1102,13 @@ const spawnDirectXvfb = async (
     displayNumber <= lastPooledDisplayNumber;
     displayNumber += 1
   ) {
+    const displayLock = tryAcquireXvfbDisplayLock(displayNumber);
+    if (displayLock === undefined) {
+      continue;
+    }
+
     if (!isDisplayNumberAvailable(displayNumber)) {
+      releaseXvfbDisplayLock(displayLock);
       continue;
     }
 
@@ -1001,6 +1127,7 @@ const spawnDirectXvfb = async (
       child,
       display: `:${displayNumber}`,
       displayNumber,
+      displayLock,
       key: screen,
       lastUsedAt: Date.now(),
       screen,
@@ -1069,8 +1196,10 @@ const terminateXvfb = async (xvfb: PooledXvfb): Promise<void> => {
   if (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
     xvfb.child.kill('SIGTERM');
     const startedAt = Date.now();
+    const releaseTimeoutMs =
+      resolveRuntimeTimeouts().displaySessionReleaseTimeoutMs;
     while (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
-      if (Date.now() - startedAt > sessionReleaseTimeoutMs) {
+      if (Date.now() - startedAt > releaseTimeoutMs) {
         xvfb.child.kill('SIGKILL');
         break;
       }
@@ -1079,6 +1208,7 @@ const terminateXvfb = async (xvfb: PooledXvfb): Promise<void> => {
   }
   xvfb.systemOutputSink = undefined;
   leasedDisplayNumbers.delete(xvfb.displayNumber);
+  releaseXvfbDisplayLock(xvfb.displayLock);
 };
 
 const leaseXvfb = async (
@@ -1207,12 +1337,13 @@ const runXvfbProbeOnce = (
 
 const runXvfbProbe = async (xvfb: PooledXvfb): Promise<XvfbProbeResult> => {
   const startedAt = Date.now();
+  const probeTimeoutMs = resolveRuntimeTimeouts().xvfbPoolProbeTimeoutMs;
   let lastError: unknown;
 
-  while (Date.now() - startedAt < xvfbPoolProbeTimeoutMs) {
+  while (Date.now() - startedAt < probeTimeoutMs) {
     const remainingTimeoutMs = Math.max(
       1,
-      xvfbPoolProbeTimeoutMs - (Date.now() - startedAt)
+      probeTimeoutMs - (Date.now() - startedAt)
     );
     try {
       return await runXvfbProbeOnce(xvfb, remainingTimeoutMs);
@@ -1223,7 +1354,7 @@ const runXvfbProbe = async (xvfb: PooledXvfb): Promise<XvfbProbeResult> => {
       }
     }
 
-    const remainingDelayMs = xvfbPoolProbeTimeoutMs - (Date.now() - startedAt);
+    const remainingDelayMs = probeTimeoutMs - (Date.now() - startedAt);
     if (remainingDelayMs <= 0) {
       break;
     }
@@ -1283,30 +1414,15 @@ const spawnDriverProcess = (
   const stderr: string[] = [];
 
   const command =
-    effective.kind === 'xvfb' && xvfb === undefined
+    effective.kind === 'xvfb'
       ? {
-          args: [
-            '-a',
-            '-s',
-            `-screen 0 ${effective.xvfb?.screen ?? defaultXvfbScreen}`,
-            '--',
-            'dbus-run-session',
-            '--',
-            process.execPath,
-            driverPath,
-            ...driverArgs,
-          ],
-          bin: 'xvfb-run',
+          args: ['--', process.execPath, driverPath, ...driverArgs],
+          bin: 'dbus-run-session',
         }
-      : effective.kind === 'xvfb'
-        ? {
-            args: ['--', process.execPath, driverPath, ...driverArgs],
-            bin: 'dbus-run-session',
-          }
-        : {
-            args: [driverPath, ...driverArgs],
-            bin: process.execPath,
-          };
+      : {
+          args: [driverPath, ...driverArgs],
+          bin: process.execPath,
+        };
 
   const child = spawn(command.bin, command.args, {
     env,
@@ -1523,7 +1639,7 @@ const waitForDriverReady = (
             formatOutputTail(processState.stdout, processState.stderr)
         )
       );
-    }, sessionStartupTimeoutMs);
+    }, resolveRuntimeTimeouts().displaySessionStartupTimeoutMs);
 
     server.on('connection', acceptConnection);
     server.once('error', rejectFromError);
@@ -1746,11 +1862,13 @@ const createDriverSession = (
 
   const waitForExit = async (): Promise<void> => {
     const startedAt = Date.now();
+    const releaseTimeoutMs =
+      resolveRuntimeTimeouts().displaySessionReleaseTimeoutMs;
     while (
       processState.child.exitCode === null &&
       processState.child.signalCode === null
     ) {
-      if (Date.now() - startedAt > sessionReleaseTimeoutMs) {
+      if (Date.now() - startedAt > releaseTimeoutMs) {
         processState.child.kill('SIGKILL');
         break;
       }
@@ -1789,7 +1907,13 @@ const createDriverSession = (
 
   const release = async (): Promise<void> => {
     if (poolOptions.mode === 'none') {
-      await closeDriver();
+      try {
+        await closeDriver();
+      } finally {
+        if (poolOptions.xvfb !== undefined) {
+          await terminateXvfb(poolOptions.xvfb);
+        }
+      }
       return;
     }
 
@@ -1916,6 +2040,7 @@ const startDriverSession = async (
   options: GtkAppLauncherOptions,
   systemOutputSink: SystemOutputSink | undefined
 ): Promise<DriverSession> => {
+  resolveRuntimeTimeouts();
   const display = resolveDisplay(options.display);
   const xvfbOptions = resolveXvfbOptions(options);
   const effective = resolveEffectiveDisplay(display, xvfbOptions);
@@ -1931,10 +2056,11 @@ const startDriverSession = async (
 
   const pool = effective.xvfb.pool;
   if (pool === undefined) {
+    const xvfb = await spawnDirectXvfb(effective.xvfb.screen, systemOutputSink);
     return startFreshDriverSession(
       effective,
-      undefined,
-      emptyDriverSessionPoolOptions(),
+      xvfb,
+      unpooledXvfbSessionPoolOptions(xvfb),
       systemOutputSink
     );
   }
@@ -2402,6 +2528,10 @@ const createProxyGtkElement = (
           .then(() => undefined);
       target.x11Info = (): Promise<GtkX11WindowInfo> =>
         session.request<GtkX11WindowInfo>('window.x11Info', { elementId });
+      target.debugDiagnostics = (): Promise<GtkWindowDebugDiagnostics> =>
+        session.request<GtkWindowDebugDiagnostics>('window.debugDiagnostics', {
+          elementId,
+        });
       addChildContainerProxyOperations(session, elementId, target);
       break;
     case 'container':

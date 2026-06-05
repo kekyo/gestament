@@ -10,7 +10,7 @@ import { toPass, waitForResult } from '../src/testing';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-describe('GTK wait helpers', () => {
+describe.concurrent('GTK wait helpers', () => {
   it('retries until a probe returns a result', async () => {
     let attempts = 0;
 

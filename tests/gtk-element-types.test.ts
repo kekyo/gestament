@@ -23,6 +23,8 @@ import type {
   GtkTableCellElement,
   GtkValueInfo,
   GtkWidgetElement,
+  GtkWindowDebugDiagnostics,
+  GtkWindowElement,
 } from '../src/types';
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -50,6 +52,7 @@ const assertSpecializedOperations = async (
       expectType<number>((await element.bounds()).x);
       expectType<number>((await element.resizeHints()).baseWidth);
       expectType<string>((await element.x11Info()).windowId);
+      expectType<GtkWindowDebugDiagnostics>(await element.debugDiagnostics());
       await element.moveTo(0, 0);
       await element.resizeTo(100, 100);
       await element.setBounds({ height: 100, width: 100, x: 0, y: 0 });
@@ -352,6 +355,12 @@ const assertAppOperations = async (app: GtkApp): Promise<void> => {
     await app.findByPath('main_window.0.0');
   expectType<GtkWidgetElement>(pathElement);
   expectType<GtkWidgetElement | undefined>(optionalPathElement);
+  const optionalWindow: GtkWidgetElement | undefined = await app.windowAt(0);
+  expectType<GtkWidgetElement | undefined>(optionalWindow);
+  if (optionalWindow?.kind === 'window') {
+    const window: GtkWindowElement = optionalWindow;
+    expectType<GtkWindowElement>(window);
+  }
 
   // @ts-expect-error Apps do not expose element metadata operations.
   await app.info();

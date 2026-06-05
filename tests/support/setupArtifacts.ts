@@ -11,8 +11,13 @@ import {
   getTaskFullName,
   setCurrentTestArtifact,
 } from './testArtifacts';
+import { runtimeTimeoutEnvironment } from './testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
+
+for (const [name, value] of Object.entries(runtimeTimeoutEnvironment)) {
+  process.env[name] ??= value;
+}
 
 beforeEach(async (context) => {
   const testName = getTaskFullName(context.task);

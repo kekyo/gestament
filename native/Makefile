@@ -6,8 +6,8 @@ GESTAMENT_GTK_BACKEND ?= gtk3
 OUT_DIR ?= out
 TARGET ?= $(OUT_DIR)/gestament_native.node
 
-SOURCES := addon.cc atspi_client.cc accessible.cc tray.cc
-OBJECTS := $(SOURCES:%.cc=$(OUT_DIR)/%.o)
+SOURCES := addon.cpp atspi_client.cpp accessible.cpp runtime_config.cpp tray.cpp
+OBJECTS := $(SOURCES:%.cpp=$(OUT_DIR)/%.o)
 
 COMMON_PKGS := atspi-2 glib-2.0 gio-2.0 gdk-pixbuf-2.0 x11 xtst
 
@@ -37,7 +37,7 @@ $(error GESTAMENT_PACKAGE_VERSION is required)
 endif
 endif
 
-CXXFLAGS ?= -O2
+CXXFLAGS ?= -O3
 CXXFLAGS += -std=c++20 -fPIC -Wall -Wextra -DNAPI_VERSION=8 \
 	-DGESTAMENT_PACKAGE_VERSION=\"$(GESTAMENT_PACKAGE_VERSION)\" \
 	-DGESTAMENT_NATIVE_ARCH=\"$(GESTAMENT_NATIVE_ARCH)\" \
@@ -54,7 +54,7 @@ all: $(TARGET)
 $(TARGET): $(OBJECTS)
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(OUT_DIR)/%.o: %.cc
+$(OUT_DIR)/%.o: %.cpp
 	mkdir -p $(OUT_DIR)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
 

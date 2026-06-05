@@ -8,6 +8,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+import { resolveRuntimeTimeouts } from './runtimeTimeouts';
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 interface WorkerArguments {
@@ -16,7 +18,6 @@ interface WorkerArguments {
 }
 
 const trayHostReadyLine = 'gestament-tray-host-ready';
-const trayHostReadyTimeoutMs = 30_000;
 
 const parseArguments = (args: readonly string[]): WorkerArguments => {
   let withTrayHost = false;
@@ -58,7 +59,7 @@ const waitForTrayHostReady = (host: ChildProcess): Promise<void> =>
         settled = true;
         reject(new Error('Timed out waiting for gestament tray host.'));
       }
-    }, trayHostReadyTimeoutMs);
+    }, resolveRuntimeTimeouts().trayHostReadyTimeoutMs);
 
     host.stdout.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8');

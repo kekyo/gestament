@@ -3,7 +3,7 @@
 // Under MIT.
 // https://github.com/kekyo/gestament
 
-#include "tray.hpp"
+#include "tray.h"
 
 #include <gio/gio.h>
 #include <gtk/gtk.h>

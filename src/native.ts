@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { normalizeNativeError } from './errors';
 import { version as packageVersion } from './generated/packageMetadata';
 import { appendPrerequisiteInstallHint } from './prerequisites';
+import { resolveRuntimeTimeouts } from './runtimeTimeouts';
 import type { GtkAutomationError } from './types';
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -53,7 +54,22 @@ export interface NativeX11WindowInfo {
   readonly normalHints: NativeWindowResizeHints;
 }
 
+export interface NativeX11WindowSnapshot {
+  readonly windowId: string;
+  readonly title: string;
+  readonly className: string;
+  readonly instanceName: string;
+  readonly transientFor: string | null;
+  readonly processId: number | null;
+  readonly bounds: NativeCaptureBounds;
+  readonly normalHints: NativeWindowResizeHints;
+  readonly hasNormalHints: boolean;
+  readonly stackingOrder: number;
+  readonly active: boolean;
+}
+
 export interface NativeElementInfo {
+  readonly processId: number;
   readonly roleName: string;
   readonly localizedRoleName: string;
   readonly accessibleId: string;
@@ -143,7 +159,32 @@ interface NativeAddon {
     processId: number,
     id: string
   ) => NativeElementHandle | undefined;
+  readonly findByIdInSubtree: (
+    element: NativeElementHandle,
+    id: string
+  ) => NativeElementHandle | undefined;
+  readonly findByIdInBounds: (
+    processId: number,
+    id: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+  ) => NativeElementHandle | undefined;
+  readonly findByBounds: (
+    processId: number,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+  ) => NativeElementHandle | undefined;
   readonly processAtspiReadiness: (processId: number) => NativeAtspiReadiness;
+  readonly setTimeoutConfig: (
+    atspiReadinessProbeTimeoutMs: number,
+    atspiStateChangeTimeoutMs: number,
+    windowGeometryTimeoutMs: number,
+    windowActivationTimeoutMs: number
+  ) => void;
   readonly findAnyById: (id: string) => NativeElementHandle | undefined;
   readonly setTextById: (processId: number, id: string, text: string) => void;
   readonly clickById: (processId: number, id: string) => void;
@@ -254,6 +295,35 @@ interface NativeAddon {
   readonly inputSetMouseButton: (button: string, pressed: boolean) => void;
   readonly inputScrollWheel: (xSteps: number, ySteps: number) => void;
   readonly mappedX11WindowCount: () => number;
+  readonly x11WindowSnapshots: (
+    processId: number,
+    filterByProcess: boolean
+  ) => NativeX11WindowSnapshot[];
+  readonly x11WindowSnapshot: (windowId: string) => NativeX11WindowSnapshot;
+  readonly x11ChildWindowSnapshots: (
+    windowId: string
+  ) => NativeX11WindowSnapshot[];
+  readonly x11WindowBounds: (windowId: string) => NativeCaptureBounds;
+  readonly moveX11Window: (
+    windowId: string,
+    x: number,
+    y: number
+  ) => NativeCaptureBounds;
+  readonly resizeX11Window: (
+    windowId: string,
+    width: number,
+    height: number
+  ) => NativeCaptureBounds;
+  readonly setX11WindowBounds: (
+    windowId: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+  ) => NativeCaptureBounds;
+  readonly activateX11Window: (windowId: string) => void;
+  readonly x11WindowResizeHints: (windowId: string) => NativeWindowResizeHints;
+  readonly x11WindowInfo: (windowId: string) => NativeX11WindowInfo;
   readonly elementInfo: (element: NativeElementHandle) => NativeElementInfo;
   readonly trayItems: (processId: number) => NativeTrayItem[];
   readonly runTrayHost: () => void;
@@ -342,8 +412,19 @@ const loadNativePrebuild = (backend: GtkBackend): NativeAddon => {
   return require(path) as NativeAddon;
 };
 
+const configureNativeTimeouts = (addon: NativeAddon): void => {
+  const timeouts = resolveRuntimeTimeouts();
+  addon.setTimeoutConfig(
+    timeouts.atspiReadinessProbeTimeoutMs,
+    timeouts.atspiStateChangeTimeoutMs,
+    timeouts.windowGeometryTimeoutMs,
+    timeouts.windowActivationTimeoutMs
+  );
+};
+
 const loadNativeAddon = (): NativeAddon => {
   if (loadedAddon !== undefined) {
+    configureNativeTimeouts(loadedAddon);
     return loadedAddon;
   }
 
@@ -363,7 +444,7 @@ const loadNativeAddon = (): NativeAddon => {
         );
       }
       loadedAddon = addon;
-      return loadedAddon;
+      break;
     } catch (error) {
       const message =
         error instanceof Error
@@ -371,6 +452,11 @@ const loadNativeAddon = (): NativeAddon => {
           : `Unknown error: ${String(error)}`;
       errors.push(`${backend}: ${message}`);
     }
+  }
+
+  if (loadedAddon !== undefined) {
+    configureNativeTimeouts(loadedAddon);
+    return loadedAddon;
   }
 
   throw createNativeLoadError(
@@ -400,6 +486,45 @@ export const nativeFindById = (
   id: string
 ): NativeElementHandle | undefined =>
   callNative(() => loadNativeAddon().findById(processId, id));
+
+/** Resolves an accessible id under an existing native element subtree. */
+export const nativeFindByIdInSubtree = (
+  element: NativeElementHandle,
+  id: string
+): NativeElementHandle | undefined =>
+  callNative(() => loadNativeAddon().findByIdInSubtree(element, id));
+
+/** Resolves an accessible id inside screen-relative bounds. */
+export const nativeFindByIdInBounds = (
+  processId: number,
+  id: string,
+  bounds: NativeCaptureBounds
+): NativeElementHandle | undefined =>
+  callNative(() =>
+    loadNativeAddon().findByIdInBounds(
+      processId,
+      id,
+      bounds.x,
+      bounds.y,
+      bounds.width,
+      bounds.height
+    )
+  );
+
+/** Resolves the best accessible element inside screen-relative bounds. */
+export const nativeFindByBounds = (
+  processId: number,
+  bounds: NativeCaptureBounds
+): NativeElementHandle | undefined =>
+  callNative(() =>
+    loadNativeAddon().findByBounds(
+      processId,
+      bounds.x,
+      bounds.y,
+      bounds.width,
+      bounds.height
+    )
+  );
 
 /** Checks whether a GTK process has completed AT-SPI root/cache registration. */
 export const nativeProcessAtspiReadiness = (
@@ -736,6 +861,74 @@ export const nativeInputScrollWheel = (
 /** Counts mapped top-level X11 windows currently addressed by DISPLAY. */
 export const nativeMappedX11WindowCount = (): number =>
   callNative(() => loadNativeAddon().mappedX11WindowCount());
+
+/** Reads mapped top-level X11 windows currently addressed by DISPLAY. */
+export const nativeX11WindowSnapshots = (
+  processId: number,
+  filterByProcess: boolean
+): NativeX11WindowSnapshot[] =>
+  callNative(() =>
+    loadNativeAddon().x11WindowSnapshots(processId, filterByProcess)
+  );
+
+/** Reads one mapped top-level X11 window by id. */
+export const nativeX11WindowSnapshot = (
+  windowId: string
+): NativeX11WindowSnapshot =>
+  callNative(() => loadNativeAddon().x11WindowSnapshot(windowId));
+
+/** Reads direct mapped X11 child windows by parent window id. */
+export const nativeX11ChildWindowSnapshots = (
+  windowId: string
+): NativeX11WindowSnapshot[] =>
+  callNative(() => loadNativeAddon().x11ChildWindowSnapshots(windowId));
+
+/** Reads screen-relative bounds for an X11 window by id. */
+export const nativeX11WindowBounds = (windowId: string): NativeCaptureBounds =>
+  callNative(() => loadNativeAddon().x11WindowBounds(windowId));
+
+/** Moves an X11 window by id. */
+export const nativeMoveX11Window = (
+  windowId: string,
+  x: number,
+  y: number
+): NativeCaptureBounds =>
+  callNative(() => loadNativeAddon().moveX11Window(windowId, x, y));
+
+/** Resizes an X11 window by id. */
+export const nativeResizeX11Window = (
+  windowId: string,
+  width: number,
+  height: number
+): NativeCaptureBounds =>
+  callNative(() => loadNativeAddon().resizeX11Window(windowId, width, height));
+
+/** Moves and resizes an X11 window by id. */
+export const nativeSetX11WindowBounds = (
+  windowId: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): NativeCaptureBounds =>
+  callNative(() =>
+    loadNativeAddon().setX11WindowBounds(windowId, x, y, width, height)
+  );
+
+/** Activates an X11 window by id. */
+export const nativeActivateX11Window = (windowId: string): void => {
+  callNative(() => loadNativeAddon().activateX11Window(windowId));
+};
+
+/** Reads X11 WM_NORMAL_HINTS for a window id. */
+export const nativeX11WindowResizeHints = (
+  windowId: string
+): NativeWindowResizeHints =>
+  callNative(() => loadNativeAddon().x11WindowResizeHints(windowId));
+
+/** Reads X11 window metadata for a window id. */
+export const nativeX11WindowInfo = (windowId: string): NativeX11WindowInfo =>
+  callNative(() => loadNativeAddon().x11WindowInfo(windowId));
 
 /** Reads AT-SPI metadata for the accessible resolved by an element handle. */
 export const nativeElementInfo = (

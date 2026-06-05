@@ -17,6 +17,7 @@ import {
 } from './errors';
 import { createGtkAppEnvironment, launchGtkApp } from './launchGtkApp';
 import { runWithWaitDeadline } from './wait';
+import { resolveRuntimeTimeouts } from './runtimeTimeouts';
 import type {
   DriverEnvironmentPayload,
   DriverAppPayload,
@@ -91,7 +92,6 @@ interface ImageInfoEntry {
 type AsyncMethod = (...args: unknown[]) => Promise<unknown>;
 
 const trayHostReadyLine = 'gestament-tray-host-ready';
-const trayHostReadyTimeoutMs = 30_000;
 
 const apps = new Map<string, GtkApp>();
 const elements = new Map<string, ElementEntry>();
@@ -108,6 +108,25 @@ let nextImageInfoId = 1;
 let parentSocket: Socket | undefined;
 let shuttingDown = false;
 let trayHostProcess: ChildProcess | undefined;
+
+const appendOutput = (lines: string[], chunk: Buffer): void => {
+  lines.push(chunk.toString('utf8'));
+  if (lines.length > 40) {
+    lines.splice(0, lines.length - 40);
+  }
+};
+
+const formatOutputTail = (
+  stdout: readonly string[],
+  stderr: readonly string[]
+): string => {
+  const stdoutText = stdout.join('').trim();
+  const stderrText = stderr.join('').trim();
+  if (stdoutText.length === 0 && stderrText.length === 0) {
+    return '';
+  }
+  return `\nstdout:\n${stdoutText}\nstderr:\n${stderrText}`;
+};
 
 const parseArguments = (args: readonly string[]): DriverArguments => {
   let socketPath: string | undefined;
@@ -152,15 +171,23 @@ const waitForTrayHostReady = (host: ChildProcess): Promise<void> =>
 
     let output = '';
     let settled = false;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
 
     const timeout = setTimeout(() => {
       if (!settled) {
         settled = true;
-        rejectReady(new Error('Timed out waiting for gestament tray host.'));
+        rejectReady(
+          new Error(
+            'Timed out waiting for gestament tray host.' +
+              formatOutputTail(stdout, stderr)
+          )
+        );
       }
-    }, trayHostReadyTimeoutMs);
+    }, resolveRuntimeTimeouts().trayHostReadyTimeoutMs);
 
     host.stdout.on('data', (chunk: Buffer) => {
+      appendOutput(stdout, chunk);
       const text = chunk.toString('utf8');
       output += text;
       const readyIndex = output.indexOf(trayHostReadyLine);
@@ -192,13 +219,14 @@ const waitForTrayHostReady = (host: ChildProcess): Promise<void> =>
       writeSystemOutputFlush('stdout');
     });
     host.stderr?.on('data', (chunk: Buffer) => {
+      appendOutput(stderr, chunk);
       writeSystemOutputChunk('stderr', chunk);
     });
     host.stderr?.once('end', () => {
       writeSystemOutputFlush('stderr');
     });
 
-    host.once('exit', (code, signal) => {
+    host.once('close', (code, signal) => {
       if (!settled) {
         settled = true;
         clearTimeout(timeout);
@@ -206,7 +234,7 @@ const waitForTrayHostReady = (host: ChildProcess): Promise<void> =>
           new Error(
             `gestament tray host exited before ready: code=${String(
               code
-            )}, signal=${String(signal)}`
+            )}, signal=${String(signal)}` + formatOutputTail(stdout, stderr)
           )
         );
       }
@@ -216,7 +244,9 @@ const waitForTrayHostReady = (host: ChildProcess): Promise<void> =>
       if (!settled) {
         settled = true;
         clearTimeout(timeout);
-        rejectReady(error);
+        rejectReady(
+          new Error(error.message + formatOutputTail(stdout, stderr))
+        );
       }
     });
   });
@@ -769,6 +799,8 @@ const handleElementCommand = async (
       return null;
     case 'window.x11Info':
       return callElementMethod(entry, 'x11Info');
+    case 'window.debugDiagnostics':
+      return callElementMethod(entry, 'debugDiagnostics');
     case 'element.childAt': {
       const { index } = payload as DriverElementPayload & DriverIndexPayload;
       return optionalElementRef(
@@ -1096,6 +1128,7 @@ const run = async (): Promise<void> => {
 
 run().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`gestament launcher driver: ${message}\n`);
-  process.exitCode = 2;
+  process.stderr.write(`gestament launcher driver: ${message}\n`, () => {
+    process.exit(2);
+  });
 });

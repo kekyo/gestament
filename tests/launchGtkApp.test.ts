@@ -5,6 +5,13 @@
 
 import { describe, expect, it } from 'vitest';
 import { delay } from 'async-primitives';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -21,6 +28,10 @@ import type {
   GtkSystemOutputSource,
 } from '../src/types';
 import { spawnText } from './support/process';
+import {
+  appOutputExitTimeoutMs,
+  launcherScriptTimeoutMs,
+} from './support/testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -44,7 +55,7 @@ const waitForExitedOutput = async (app: GtkApp): Promise<GtkAppOutput> => {
   const startedAt = Date.now();
   let output = await app.output();
 
-  while (Date.now() - startedAt <= 5_000) {
+  while (Date.now() - startedAt <= appOutputExitTimeoutMs) {
     output = await app.output();
     if (output.exitCode !== null || output.exitSignal !== null) {
       return output;
@@ -80,6 +91,17 @@ const systemSourceSnapshot = (
   source: GtkSystemOutputSource
 ) => output.sources.find((entry) => entry.source === source);
 
+const x11DisplayNumber = (display: string | undefined): number => {
+  if (display === undefined) {
+    throw new Error('DISPLAY is missing.');
+  }
+  const match = /^:([0-9]+)(?:\.[0-9]+)?$/.exec(display);
+  if (match === null) {
+    throw new Error(`Unexpected DISPLAY value: ${display}`);
+  }
+  return Number(match[1]);
+};
+
 const expectSystemOutputSequences = (
   events: readonly GtkSystemOutputEvent[]
 ): void => {
@@ -91,7 +113,7 @@ const expectSystemOutputSequences = (
   );
 };
 
-describe('GTK application launch environment', () => {
+describe.concurrent('GTK application launch environment', () => {
   it('adds the gestament default GTK test environment', () => {
     expect(createGtkAppEnvironment({}, undefined)).toEqual({
       GDK_BACKEND: 'x11',
@@ -145,7 +167,7 @@ describe('GTK application launch environment', () => {
   });
 });
 
-describe('GTK application output capture', () => {
+describe.concurrent('GTK application output capture', () => {
   it('captures direct stdout and stderr with output callbacks', async () => {
     const events: GtkAppOutputEvent[] = [];
     const app = await launchGtkApp(
@@ -306,6 +328,46 @@ describe('GTK application output capture', () => {
   });
 });
 
+describe('GTK launcher Xvfb allocation', () => {
+  it('skips display numbers that already have X11 lock files', async () => {
+    const lockPath = '/tmp/.X600-lock';
+    const socketPath = '/tmp/.X11-unix/X600';
+    let lockFd: number | undefined;
+    if (!existsSync(lockPath) && !existsSync(socketPath)) {
+      lockFd = openSync(lockPath, 'wx');
+      writeSync(lockFd, `${process.pid}\n`);
+    }
+
+    const launcher = createGtkAppLauncher({
+      appPath: process.execPath,
+      xvfbTrayHost: false,
+    });
+    try {
+      const env = await launcher.environment();
+
+      expect(env.DISPLAY).not.toBe(':600');
+      expect(x11DisplayNumber(env.DISPLAY)).toBeGreaterThanOrEqual(600);
+    } finally {
+      await launcher.release();
+      if (lockFd !== undefined) {
+        closeSync(lockFd);
+        try {
+          unlinkSync(lockPath);
+        } catch (error) {
+          if (
+            typeof error !== 'object' ||
+            error === null ||
+            !('code' in error) ||
+            error.code !== 'ENOENT'
+          ) {
+            throw error;
+          }
+        }
+      }
+    }
+  });
+});
+
 describe('GTK launcher system output capture', () => {
   it('captures launcher-driver and tray-host output with system callbacks', async () => {
     const previousDriverStdout =
@@ -376,6 +438,64 @@ describe('GTK launcher system output capture', () => {
       restoreEnv('GESTAMENT_TEST_TRAY_HOST_SYSTEM_STDOUT', previousTrayStdout);
       restoreEnv('GESTAMENT_TEST_TRAY_HOST_SYSTEM_STDERR', previousTrayStderr);
     }
+  });
+
+  it('reports tray-host startup stderr without waiting for launcher timeout', async () => {
+    const script = `
+const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
+(async () => {
+  const launcher = createGtkAppLauncher({
+    appPath: process.execPath,
+    args: ['-e', 'process.exit(0)'],
+    xvfbTrayHost: true,
+  });
+  const startedAt = Date.now();
+  try {
+    await launcher.environment();
+    console.error('Launcher unexpectedly started.');
+    process.exitCode = 1;
+  } catch (error) {
+    console.log(JSON.stringify({
+      elapsedMs: Date.now() - startedAt,
+      message: error && error.message ? error.message : String(error),
+    }));
+  } finally {
+    await launcher.release().catch(() => undefined);
+  }
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+`;
+    const result = await spawnText(process.execPath, ['-e', script], {
+      env: {
+        ...process.env,
+        GESTAMENT_TEST_TRAY_HOST_STARTUP_ERROR:
+          'forced-tray-host-startup-error',
+      },
+      timeoutMs: launcherScriptTimeoutMs,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const outputLine = result.stdout.trim().split('\n').at(-1);
+    expect(outputLine).toBeDefined();
+    const output = JSON.parse(outputLine as string) as {
+      readonly elapsedMs: number;
+      readonly message: string;
+    };
+    expect(output.elapsedMs).toBeLessThan(30_000);
+    expect(output.message).not.toContain(
+      'Timed out waiting for launcher driver'
+    );
+    expect(output.message).toMatch(
+      /Launcher driver (?:exited|socket closed) before ready/
+    );
+    expect(output.message).toContain(
+      'gestament tray host exited before ready: code=1'
+    );
+    expect(output.message).toContain(
+      'gestament-tray-host: forced-tray-host-startup-error'
+    );
   });
 
   it('keeps the last system output snapshot after release and resets on the next lease', async () => {
@@ -463,6 +583,22 @@ describe('GTK launcher system output capture', () => {
     const script = `
 const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
 const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
+const systemSourceSnapshot = (output, source) =>
+  output.sources.find((entry) => entry.source === source);
+const waitForSystemSourceStdout = async (launcher, source, stdout) => {
+  const startedAt = Date.now();
+  let output = await launcher.systemOutput();
+  while (Date.now() - startedAt <= ${JSON.stringify(appOutputExitTimeoutMs)}) {
+    if (systemSourceSnapshot(output, source)?.stdout === stdout) {
+      return output;
+    }
+    await delay(25);
+    output = await launcher.systemOutput();
+  }
+  throw new Error(
+    \`Timed out waiting for system output: \${JSON.stringify(output)}\`
+  );
+};
 (async () => {
   const events = [];
   let thrown = false;
@@ -486,12 +622,16 @@ const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeou
     xvfbTrayHost: false,
   });
   await launcher.environment();
-  const beforeRelease = await launcher.systemOutput();
+  const beforeRelease = await waitForSystemSourceStdout(
+    launcher,
+    'launcher-driver',
+    'throw-output'
+  );
   await launcher.release();
   const afterRelease = await launcher.systemOutput();
   const uncaught = await Promise.race([
     uncaughtPromise,
-    delay(1000).then(() => null),
+    delay(${JSON.stringify(appOutputExitTimeoutMs)}).then(() => null),
   ]);
   console.log(JSON.stringify({
     afterRelease,
@@ -506,7 +646,7 @@ const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeou
 `;
     const result = await spawnText(process.execPath, ['-e', script], {
       env: process.env,
-      timeoutMs: 20_000,
+      timeoutMs: launcherScriptTimeoutMs,
     });
 
     expect(result.status, result.stderr).toBe(0);

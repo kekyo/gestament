@@ -91,6 +91,7 @@ export type DriverCommand =
   | 'window.setBounds'
   | 'window.activate'
   | 'window.x11Info'
+  | 'window.debugDiagnostics'
   | 'imageInfo.capture'
   | 'tray.metadata'
   | 'tray.element'

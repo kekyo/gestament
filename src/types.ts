@@ -139,6 +139,93 @@ export interface GtkX11WindowInfo {
   readonly normalHints: GtkWindowResizeHints;
 }
 
+/**
+ * Native window discovery backend name used in diagnostics.
+ */
+export type GtkWindowBackend = 'at-spi' | 'x11';
+
+/**
+ * Backend availability observed during a window discovery operation.
+ */
+export interface GtkWindowBackendStatus {
+  /**
+   * Backend that produced this status.
+   */
+  readonly backend: GtkWindowBackend;
+
+  /**
+   * Whether the backend was usable for this discovery pass.
+   */
+  readonly available: boolean;
+
+  /**
+   * Number of native windows reported by this backend when available.
+   */
+  readonly windowCount: number | null;
+
+  /**
+   * Failure detail when the backend was unavailable.
+   */
+  readonly message: string | null;
+}
+
+/**
+ * Raw backend identifiers associated with a unified native window.
+ */
+export interface GtkWindowRawIds {
+  /**
+   * AT-SPI-side identifier, usually the accessible id or discovered window index.
+   */
+  readonly atspi: string | null;
+
+  /**
+   * X11 window id formatted as a hexadecimal string.
+   */
+  readonly x11: string | null;
+}
+
+/**
+ * Debug diagnostics for a native window discovered through one or more
+ * backends.
+ *
+ * @remarks
+ * This information is intended only for diagnosing backend visibility and
+ * merge issues. Do not branch normal tests on these fields because backend
+ * availability and merge details can change across display servers and
+ * accessibility environments.
+ */
+export interface GtkWindowDebugDiagnostics {
+  /**
+   * Backends that contributed information to this window.
+   */
+  readonly seenBy: readonly GtkWindowBackend[];
+
+  /**
+   * Backends that were available but did not expose this window.
+   */
+  readonly missingFrom: readonly GtkWindowBackend[];
+
+  /**
+   * Confidence score used when backend snapshots were merged.
+   */
+  readonly mergeConfidence: number;
+
+  /**
+   * Rule that selected or merged this window.
+   */
+  readonly matchedBy: string;
+
+  /**
+   * Backend availability captured during discovery.
+   */
+  readonly backendStatus: readonly GtkWindowBackendStatus[];
+
+  /**
+   * Raw backend identifiers for troubleshooting.
+   */
+  readonly rawIds: GtkWindowRawIds;
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 /**
@@ -348,10 +435,14 @@ export interface GtkElement extends GtkCapturable {
  */
 export interface GtkChildContainer<Child extends GtkWidgetElement> {
   /**
-   * Resolves a direct child by AT-SPI child order.
+   * Resolves a direct child by backend child order.
    *
-   * @param index - Zero-based AT-SPI child index.
+   * @param index - Zero-based child index.
    * @returns A promise that resolves to the child element, or undefined when no child exists at the index.
+   * @remarks
+   * AT-SPI-backed elements use AT-SPI child order. X11-backed elements use
+   * direct X11 child-window order and return a semantic AT-SPI element when
+   * the native child window can be matched uniquely by bounds.
    */
   readonly childAt: (index: number) => Promise<Child | undefined>;
 
@@ -500,6 +591,18 @@ export interface GtkWindowElement
    * the native X11 window cannot be resolved.
    */
   readonly x11Info: () => Promise<GtkX11WindowInfo>;
+
+  /**
+   * Reads debug diagnostic details for native window discovery.
+   *
+   * @returns A promise that resolves to backend source and merge information.
+   * @remarks
+   * This is a diagnostic escape hatch for investigating environment-specific
+   * AT-SPI or X11 visibility issues. Normal tests should not branch on this
+   * information because the backend details are intentionally not part of the
+   * stable automation contract.
+   */
+  readonly debugDiagnostics: () => Promise<GtkWindowDebugDiagnostics>;
 }
 
 /**
@@ -1649,13 +1752,13 @@ export interface LaunchGtkAppOptions {
   readonly outputBufferBytes?: number | undefined;
   /**
    * Timeout used by operations that wait for the application or elements.
-   * Default is 10000msec (10sec).
+   * Defaults to GESTAMENT_APP_WAIT_TIMEOUT_MS, or 10000msec (10sec).
    */
   readonly timeoutMs?: number | undefined;
 }
 
 /**
- * A launched GTK application controlled through AT-SPI.
+ * A launched GTK application controlled through AT-SPI and native display backends.
  */
 export interface GtkApp extends Releasable, GtkCapturable {
   /**
@@ -1737,10 +1840,13 @@ export interface GtkApp extends Releasable, GtkCapturable {
   readonly getByPath: (path: string) => Promise<GtkWidgetElement>;
 
   /**
-   * Resolves a top-level window by AT-SPI traversal order.
+   * Resolves a top-level window by unified native discovery order.
    *
    * @param index - Zero-based top-level window index.
    * @returns A promise that resolves to the window element, or undefined when no window exists at the index.
+   * @remarks
+   * AT-SPI windows keep their semantic traversal order. X11-only windows are
+   * appended by stacking order so native dialogs can still be discovered.
    */
   readonly windowAt: (index: number) => Promise<GtkWidgetElement | undefined>;
 
@@ -1748,6 +1854,9 @@ export interface GtkApp extends Releasable, GtkCapturable {
    * Counts top-level windows currently hosted by the application process.
    *
    * @returns A promise that resolves to the current top-level window count.
+   * @remarks
+   * The process is interpreted as the launched root process plus its descendant
+   * processes, so helper processes can expose windows owned by the same app.
    */
   readonly getWindowCount: () => Promise<number>;
 
@@ -1859,7 +1968,7 @@ export interface GtkAppLauncherOptions {
   readonly theme?: string | null | undefined;
   /**
    * Timeout used by operations that wait for the application or elements.
-   * Default is 10000msec (10sec).
+   * Defaults to GESTAMENT_APP_WAIT_TIMEOUT_MS, or 10000msec (10sec).
    */
   readonly timeoutMs?: number | undefined;
 }

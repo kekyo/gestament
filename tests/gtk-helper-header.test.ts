@@ -78,7 +78,7 @@ const compileHeader = async (
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-describe('gestament GTK helper header', () => {
+describe.concurrent('gestament GTK helper header', () => {
   it('compiles as C and C++ against GTK3', async () => {
     if (!(await pkgConfigExists('gtk+-3.0'))) {
       return;

@@ -4,7 +4,7 @@ TypeScript based test driver for GTK
 
 ![gestament](./images/gestament-120.png)
 
-[![Project Status: WIP – Initial development is in progress, but there has not yet been a stable, usable release suitable for the public.](https://www.repostatus.org/badges/latest/wip.svg)](https://www.repostatus.org/#wip)
+[![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -66,6 +66,7 @@ describe('sample GTK app', () => {
 - These APIs can be used to check and manipulate widget states.
 - Captures the rendering output of GTK applications to verify the display area and clip state.
 - Exposes top-level window bounds, resize hints, and X11 metadata without requiring helper tools.
+- Provides low-level keyboard, mouse, and window activation input control for X11/Xvfb test sessions.
 - Detects StatusNotifierItem-based tray icons and allows you to click them, retrieve metadata, and capture screenshots.
 - Runs GTK applications on launcher-scoped `xvfb` sessions to enable stable testing in headless and concurrent environments.
 - Exposes the final GTK session environment so helper processes can join the same Xvfb and DBus session.

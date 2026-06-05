@@ -3,13 +3,23 @@
 // Under MIT.
 // https://github.com/kekyo/gestament
 
-#include "atspi_client.hpp"
+#include "atspi_client.h"
+#include "runtime_config.h"
 
 #include <atspi/atspi.h>
 #include <dbus/dbus.h>
 
+#include <cerrno>
+#include <cctype>
+#include <cstdlib>
+#include <dirent.h>
+#include <fstream>
+#include <limits>
 #include <memory>
+#include <set>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -18,7 +28,6 @@ namespace gestament {
 
 namespace {
 
-constexpr int kReadinessProbeTimeoutMs = 50;
 constexpr const char *kDbusService = "org.freedesktop.DBus";
 constexpr const char *kDbusPath = "/org/freedesktop/DBus";
 constexpr const char *kDbusInterface = "org.freedesktop.DBus";
@@ -29,6 +38,11 @@ constexpr const char *kAtspiCachePath = "/org/a11y/atspi/cache";
 constexpr const char *kAtspiCacheInterface = "org.a11y.atspi.Cache";
 #endif
 
+struct ProcessScope {
+  guint root_process_id;
+  std::set<guint> process_ids;
+};
+
 struct DbusMessageDeleter {
   void operator()(DBusMessage *message) const {
     if (message != nullptr) {
@@ -38,6 +52,96 @@ struct DbusMessageDeleter {
 };
 
 using DbusMessagePtr = std::unique_ptr<DBusMessage, DbusMessageDeleter>;
+
+bool parse_proc_pid(const char *name, guint *pid) {
+  if (name == nullptr || name[0] == '\0' || pid == nullptr) {
+    return false;
+  }
+
+  for (const char *current = name; *current != '\0'; current += 1) {
+    if (!std::isdigit(static_cast<unsigned char>(*current))) {
+      return false;
+    }
+  }
+
+  errno = 0;
+  char *end = nullptr;
+  const unsigned long parsed = std::strtoul(name, &end, 10);
+  if (errno != 0 || end == name || end == nullptr || *end != '\0' ||
+      parsed > static_cast<unsigned long>(std::numeric_limits<guint>::max())) {
+    return false;
+  }
+
+  *pid = static_cast<guint>(parsed);
+  return true;
+}
+
+bool read_proc_parent_process_id(guint process_id, guint *parent_process_id) {
+  if (parent_process_id == nullptr) {
+    return false;
+  }
+
+  std::ifstream stream("/proc/" + std::to_string(process_id) + "/stat");
+  std::string line;
+  if (!std::getline(stream, line)) {
+    return false;
+  }
+
+  const std::size_t close_index = line.rfind(')');
+  if (close_index == std::string::npos || close_index + 2 >= line.size()) {
+    return false;
+  }
+
+  std::istringstream fields(line.substr(close_index + 2));
+  char state = '\0';
+  unsigned long ppid = 0;
+  if (!(fields >> state >> ppid) ||
+      ppid > static_cast<unsigned long>(std::numeric_limits<guint>::max())) {
+    return false;
+  }
+
+  *parent_process_id = static_cast<guint>(ppid);
+  return true;
+}
+
+ProcessScope collect_process_scope(guint root_process_id) {
+  ProcessScope scope = {
+      root_process_id,
+      {root_process_id},
+  };
+
+  DIR *proc = opendir("/proc");
+  if (proc == nullptr) {
+    return scope;
+  }
+
+  std::vector<std::pair<guint, guint>> process_tree;
+  while (dirent *entry = readdir(proc)) {
+    guint process_id = 0;
+    if (!parse_proc_pid(entry->d_name, &process_id)) {
+      continue;
+    }
+
+    guint parent_process_id = 0;
+    if (read_proc_parent_process_id(process_id, &parent_process_id)) {
+      process_tree.push_back({process_id, parent_process_id});
+    }
+  }
+  closedir(proc);
+
+  bool changed = false;
+  do {
+    changed = false;
+    for (const auto &entry : process_tree) {
+      if (scope.process_ids.find(entry.second) != scope.process_ids.end() &&
+          scope.process_ids.insert(entry.first).second) {
+        changed = true;
+      }
+    }
+  } while (changed);
+
+  return scope;
+}
 
 void clear_dbus_error(DBusError *error) {
   if (dbus_error_is_set(error)) {
@@ -53,7 +157,8 @@ DbusMessagePtr call_dbus(DBusConnection *connection, DBusMessage *message) {
   DBusError error;
   dbus_error_init(&error);
   DbusMessagePtr reply(dbus_connection_send_with_reply_and_block(
-      connection, message, kReadinessProbeTimeoutMs, &error));
+      connection, message,
+      native_timeout_config().atspi_readiness_probe_timeout_ms, &error));
   clear_dbus_error(&error);
   return reply;
 }
@@ -130,23 +235,23 @@ bool get_connection_process_id(DBusConnection *connection,
   return true;
 }
 
-bool find_process_bus_name(DBusConnection *connection, guint process_id,
-                           std::string *bus_name) {
+std::vector<std::string> find_process_scope_bus_names(
+    DBusConnection *connection, const ProcessScope &scope) {
   std::vector<std::string> names;
+  std::vector<std::string> matched_names;
   if (!list_bus_names(connection, &names)) {
-    return false;
+    return matched_names;
   }
 
   for (const std::string &name : names) {
     guint candidate_process_id = 0;
     if (get_connection_process_id(connection, name, &candidate_process_id) &&
-        candidate_process_id == process_id) {
-      *bus_name = name;
-      return true;
+        scope.process_ids.find(candidate_process_id) != scope.process_ids.end()) {
+      matched_names.push_back(name);
     }
   }
 
-  return false;
+  return matched_names;
 }
 
 bool call_root_probe(DBusConnection *connection, const std::string &bus_name) {
@@ -199,22 +304,29 @@ AtspiReadiness process_atspi_readiness(guint process_id) {
     return AtspiReadiness::missing_bus_name;
   }
 
-  std::string bus_name;
-  if (!find_process_bus_name(connection, process_id, &bus_name)) {
+  const ProcessScope scope = collect_process_scope(process_id);
+  const std::vector<std::string> bus_names =
+      find_process_scope_bus_names(connection, scope);
+  if (bus_names.empty()) {
     return AtspiReadiness::missing_bus_name;
   }
 
-  if (!call_root_probe(connection, bus_name)) {
-    return AtspiReadiness::missing_root;
-  }
-
+  AtspiReadiness last_readiness = AtspiReadiness::missing_root;
+  for (const std::string &bus_name : bus_names) {
+    if (!call_root_probe(connection, bus_name)) {
+      continue;
+    }
 #if GESTAMENT_GTK_BACKEND_GTK4
-  if (!call_cache_probe(connection, bus_name)) {
-    return AtspiReadiness::missing_cache;
-  }
+    if (!call_cache_probe(connection, bus_name)) {
+      last_readiness = AtspiReadiness::missing_cache;
+      continue;
+    }
 #endif
 
-  return AtspiReadiness::ready;
+    return AtspiReadiness::ready;
+  }
+
+  return last_readiness;
 }
 
 const char *atspi_readiness_to_string(AtspiReadiness readiness) {

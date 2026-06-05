@@ -161,7 +161,7 @@ build_native_backend() {
 
   require_gtk_backend "${backend}"
   make -C native clean
-  make -C native \
+  make -j -C native \
     NODE_INCLUDE_DIR="${node_include_dir}" \
     GESTAMENT_PACKAGE_VERSION="${package_version}" \
     GESTAMENT_NATIVE_ARCH="${node_arch}" \
@@ -234,6 +234,7 @@ test_backends="$(normalize_test_backends)"
 GESTAMENT_TEST_RUN_TIMESTAMP="${GESTAMENT_TEST_RUN_TIMESTAMP:-$(format_test_run_timestamp)}"
 export GESTAMENT_TEST_RUN_TIMESTAMP
 export GESTAMENT_TEST_RESULTS_ARCH=host
+export GESTAMENT_TEST_EXECUTION_PROFILE="${GESTAMENT_TEST_EXECUTION_PROFILE:-native}"
 
 for backend in ${test_backends}; do
   build_native_backend "${backend}"

@@ -3,20 +3,22 @@
 // Under MIT.
 // https://github.com/kekyo/gestament
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { aroundEach, describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import pixelmatch from 'pixelmatch';
 import { PNG } from 'pngjs';
 
 import type {
   GtkApp,
+  GtkAppLauncher,
   GtkCapture,
   GtkElementOfKind,
   GtkTrayItem,
   GtkWidgetKind,
   GtkWidgetElement,
 } from '../src/types';
-import { createGtkAppLauncher, launchGtkApp } from '../src/launchGtkApp';
+import { createGtkAppLauncher } from '../src/launchGtkApp';
 import { createGtkCaptureExpect, toPass, waitForResult } from '../src/testing';
 import {
   expectPngRegionToContainNonLightPixels,
@@ -28,16 +30,28 @@ import {
   expectCaptureRegionToMatchCapture,
   expectCaptureSurfaceText,
 } from './support/captureAssertions';
+import { spawnText } from './support/process';
 import { saveCaptureArtifact } from './support/testArtifacts';
+import {
+  fixtureWindowDiscoveryTimeoutMs as fixtureTimeoutMs,
+  missingLookupTimeoutMs,
+  visualE2eTestTimeoutMs as testTimeoutMs,
+} from './support/testTimeouts';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
 const appPath = fileURLToPath(
   new URL('../.build/gtk3-test-app/gtk3-test-app', import.meta.url)
 );
+const packageEntryPath = fileURLToPath(
+  new URL('../dist/index.cjs', import.meta.url)
+);
 const testBackend = process.env.GESTAMENT_TEST_BACKEND;
 const describeGtk3 = testBackend === 'gtk3' ? describe : describe.skip;
-const missingLookupTimeoutMs = 10_000;
+const visualSuiteOptions = {
+  concurrent: true,
+  timeout: testTimeoutMs,
+} as const;
 const spMonImageUrl = new URL('./images/sp_mon.png', import.meta.url);
 const dawnCatImageUrl = new URL('./images/dawn_cat.png', import.meta.url);
 const spMonImageSize = {
@@ -52,31 +66,81 @@ const mainWindowResizeHints = {
   minWidth: 120,
   widthIncrement: 7,
 } as const;
-const directLaunchEnvironmentKeys = [
-  'AT_SPI_BUS_ADDRESS',
-  'DBUS_SESSION_BUS_ADDRESS',
-  'DISPLAY',
-  'GDK_BACKEND',
-  'GESTAMENT_XVFB_ACTIVE',
-  'GSETTINGS_BACKEND',
-  'GTK_THEME',
-  'NO_AT_BRIDGE',
-  'WAYLAND_DISPLAY',
-  'XAUTHORITY',
-  'XDG_SESSION_TYPE',
-] as const;
+interface TestLauncherStore {
+  defaultLauncher: GtkAppLauncher | undefined;
+  geometryLauncher: GtkAppLauncher | undefined;
+  shortLauncher: GtkAppLauncher | undefined;
+}
 
-const launcher = createGtkAppLauncher({
-  appPath,
+const testLauncherStorage = new AsyncLocalStorage<
+  TestLauncherStore | undefined
+>();
+
+const createLauncherStore = (): TestLauncherStore => ({
+  defaultLauncher: undefined,
+  geometryLauncher: undefined,
+  shortLauncher: undefined,
 });
-const shortLauncher = createGtkAppLauncher({
-  appPath,
-  timeoutMs: missingLookupTimeoutMs,
+
+const getLauncherStore = (): TestLauncherStore => {
+  const store = testLauncherStorage.getStore();
+  if (store === undefined) {
+    throw new Error('No active GTK visual test launcher store.');
+  }
+  return store;
+};
+
+const getStoredLauncher = (
+  key: keyof TestLauncherStore,
+  createLauncher: () => GtkAppLauncher
+): GtkAppLauncher => {
+  const store = getLauncherStore();
+  const existing = store[key];
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const launcher = createLauncher();
+  store[key] = launcher;
+  return launcher;
+};
+
+const createLauncherProxy = (
+  resolveLauncher: () => GtkAppLauncher
+): GtkAppLauncher => ({
+  environment: () => resolveLauncher().environment(),
+  launch: (...args: Parameters<GtkAppLauncher['launch']>) =>
+    resolveLauncher().launch(...args),
+  release: () => resolveLauncher().release(),
+  systemOutput: () => resolveLauncher().systemOutput(),
+  [Symbol.asyncDispose]: () => resolveLauncher().release(),
 });
-const geometryLauncher = createGtkAppLauncher({
-  appPath,
-  xvfbScreen: '800x600x24',
-});
+
+const launcher = createLauncherProxy(() =>
+  getStoredLauncher('defaultLauncher', () =>
+    createGtkAppLauncher({
+      appPath,
+      timeoutMs: fixtureTimeoutMs,
+    })
+  )
+);
+const shortLauncher = createLauncherProxy(() =>
+  getStoredLauncher('shortLauncher', () =>
+    createGtkAppLauncher({
+      appPath,
+      timeoutMs: missingLookupTimeoutMs,
+    })
+  )
+);
+const geometryLauncher = createLauncherProxy(() =>
+  getStoredLauncher('geometryLauncher', () =>
+    createGtkAppLauncher({
+      appPath,
+      timeoutMs: fixtureTimeoutMs,
+      xvfbScreen: '800x600x24',
+    })
+  )
+);
 
 const waitForWindowCount = async (
   app: GtkApp,
@@ -85,7 +149,7 @@ const waitForWindowCount = async (
   const startedAt = Date.now();
   let lastCount = 0;
 
-  while (Date.now() - startedAt <= 5_000) {
+  while (Date.now() - startedAt <= fixtureTimeoutMs) {
     lastCount = await app.getWindowCount();
     if (lastCount === expectedCount) {
       return;
@@ -114,6 +178,21 @@ const expectElementKind = <Kind extends GtkWidgetKind>(
   return resolved as GtkElementOfKind<Kind>;
 };
 
+const expectChildAtKind = async <Kind extends GtkWidgetKind>(
+  element: {
+    readonly childAt: (index: number) => Promise<GtkWidgetElement | undefined>;
+  },
+  index: number,
+  kind: Kind
+): Promise<GtkElementOfKind<Kind>> =>
+  await waitForResult(
+    async () => expectElementKind(await element.childAt(index), kind),
+    {
+      message: `Timed out waiting for child ${index} kind ${kind}.`,
+      timeoutMs: fixtureTimeoutMs,
+    }
+  );
+
 const expectTrayItem = (item: GtkTrayItem | undefined): GtkTrayItem => {
   expect(item).toBeDefined();
   return item as GtkTrayItem;
@@ -128,6 +207,34 @@ const captureCenter = (capture: GtkCapture): { x: number; y: number } => ({
   x: capture.bounds.x + Math.floor(capture.bounds.width / 2),
   y: capture.bounds.y + Math.floor(capture.bounds.height / 2),
 });
+
+const expectPollToBe = async <Value>(
+  probe: () => Value | Promise<Value>,
+  expected: Value
+): Promise<void> => {
+  await toPass(
+    async () => {
+      expect(await probe()).toBe(expected);
+    },
+    {
+      timeoutMs: fixtureTimeoutMs,
+    }
+  );
+};
+
+const expectPollToContain = async <Value>(
+  probe: () => readonly Value[] | Promise<readonly Value[]>,
+  expected: Value
+): Promise<void> => {
+  await toPass(
+    async () => {
+      expect(await probe()).toContain(expected);
+    },
+    {
+      timeoutMs: fixtureTimeoutMs,
+    }
+  );
+};
 
 const expectSpMonImageCapture = async (capture: GtkCapture): Promise<void> => {
   expect(capture.clipped).toBe(false);
@@ -183,7 +290,7 @@ const waitForRejectedCode = async (
   const startedAt = Date.now();
   let lastCode: unknown;
 
-  while (Date.now() - startedAt <= 5_000) {
+  while (Date.now() - startedAt <= missingLookupTimeoutMs) {
     try {
       await operation();
     } catch (error) {
@@ -239,46 +346,34 @@ const expectWindowBoundsObserved = async (
   expect(capture.bounds).toEqual(expectedBounds);
 };
 
-const withProcessEnvironment = async <Result>(
-  env: Awaited<ReturnType<GtkApp['environment']>>,
-  operation: () => Promise<Result>
-): Promise<Result> => {
-  const keys = new Set([...directLaunchEnvironmentKeys, ...Object.keys(env)]);
-  const previous = new Map<string, string | undefined>();
-  for (const key of keys) {
-    previous.set(key, process.env[key]);
-    const value = env[key];
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-
-  try {
-    return await operation();
-  } finally {
-    for (const [key, value] of previous) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
+const releaseLauncherStore = async (
+  store: TestLauncherStore
+): Promise<void> => {
+  await Promise.all(
+    [
+      store.defaultLauncher,
+      store.shortLauncher,
+      store.geometryLauncher,
+    ].flatMap((launcher) =>
+      launcher === undefined ? [] : [launcher.release()]
+    )
+  );
 };
 
-afterEach(() => {
-  return Promise.all([
-    launcher.release(),
-    shortLauncher.release(),
-    geometryLauncher.release(),
-  ]);
-});
+aroundEach(async (runTest) => {
+  const store = createLauncherStore();
+  await testLauncherStorage.run(store, async () => {
+    try {
+      await runTest();
+    } finally {
+      await releaseLauncherStore(store);
+    }
+  });
+}, testTimeoutMs);
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-describeGtk3('GTK3 AT-SPI automation', () => {
+describeGtk3('GTK3 AT-SPI automation', visualSuiteOptions, () => {
   it('sets entry text, clicks a button, and reads label text', async () => {
     const app = await launcher.launch();
 
@@ -309,7 +404,7 @@ describeGtk3('GTK3 AT-SPI automation', () => {
       accessibleId: 'result_label',
       kind: 'label',
     });
-    await expect.poll(() => label.text()).toBe('ABC');
+    await expectPollToBe(() => label.text(), 'ABC');
   });
 
   it('synthesizes low-level input and window activation', async () => {
@@ -332,7 +427,7 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     });
 
     await mainWindow.activate();
-    await expect.poll(() => label.text()).toBe('window-active:main');
+    await expectPollToBe(() => label.text(), 'window-active:main');
 
     const entryCenter = captureCenter(await entry.capture());
     await app.input.moveMouseTo(entryCenter.x, entryCenter.y);
@@ -344,19 +439,19 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     } finally {
       await app.input.setModifier('shift', false);
     }
-    await expect.poll(() => entry.text()).toBe('A');
+    await expectPollToBe(() => entry.text(), 'A');
 
     await controlsWindow.activate();
-    await expect.poll(() => label.text()).toBe('window-active:controls');
+    await expectPollToBe(() => label.text(), 'window-active:controls');
 
     const probeCenter = captureCenter(await probe.capture());
     await app.input.moveMouseTo(probeCenter.x, probeCenter.y);
     await app.input.setMouseButton('left', true);
-    await expect.poll(() => label.text()).toBe('button-press:1');
+    await expectPollToBe(() => label.text(), 'button-press:1');
     await app.input.setMouseButton('left', false);
-    await expect.poll(() => label.text()).toBe('button-release:1');
+    await expectPollToBe(() => label.text(), 'button-release:1');
     await app.input.scrollWheel(0, 1);
-    await expect.poll(() => label.text()).toBe('scroll:down');
+    await expectPollToBe(() => label.text(), 'scroll:down');
   });
 
   it('resolves child elements by AT-SPI child order', async () => {
@@ -368,17 +463,17 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     );
     expect(await mainWindow.getChildCount()).toBe(1);
 
-    const mainBox = expectElementKind(await mainWindow.childAt(0), 'container');
+    const mainBox = await expectChildAtKind(mainWindow, 0, 'container');
     expect(await mainBox.getChildCount()).toBe(3);
 
-    const entry = expectElementKind(await mainBox.childAt(0), 'entry');
+    const entry = await expectChildAtKind(mainBox, 0, 'entry');
     await entry.setText('XYZ');
 
-    const button = expectElementKind(await mainBox.childAt(1), 'button');
+    const button = await expectChildAtKind(mainBox, 1, 'button');
     await button.click();
 
-    const label = expectElementKind(await mainBox.childAt(2), 'label');
-    await expect.poll(() => label.text()).toBe('XYZ');
+    const label = await expectChildAtKind(mainBox, 2, 'label');
+    await expectPollToBe(() => label.text(), 'XYZ');
     await expect(mainBox.childAt(3)).resolves.toBeUndefined();
   });
 
@@ -409,7 +504,7 @@ describeGtk3('GTK3 AT-SPI automation', () => {
       await app.findByPath('main_window,0.2'),
       'label'
     );
-    await expect.poll(() => label.text()).toBe('PATH');
+    await expectPollToBe(() => label.text(), 'PATH');
   });
 
   it('captures real screen pixels for an accessible id', async () => {
@@ -465,6 +560,10 @@ describeGtk3('GTK3 AT-SPI automation', () => {
       title: 'Gestament GTK3 Fixture',
     });
     expect(x11Info.windowId).toMatch(/^0x[0-9a-f]+$/u);
+    await expect(mainWindow.debugDiagnostics()).resolves.toMatchObject({
+      rawIds: { x11: x11Info.windowId },
+      seenBy: expect.arrayContaining(['x11']),
+    });
     const submitButton = await app.getById('submit_button');
     const submitButtonCapture = await submitButton.capture();
     expectCaptureBoundsWithin(submitButtonCapture, capture);
@@ -511,24 +610,76 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     );
   });
 
-  it('moves windows through the direct launch API', async () => {
-    const env = await geometryLauncher.environment();
-    await withProcessEnvironment(env, async () => {
-      const app = await launchGtkApp(appPath, [], { env });
-      try {
-        await waitForWindowCount(app, 1);
-        const mainWindow = expectElementKind(await app.windowAt(0), 'window');
-        const initialBounds = await mainWindow.bounds();
-        const movedBounds = await mainWindow.moveTo(120, 110);
-
-        expect(movedBounds.x).not.toBe(initialBounds.x);
-        expect(movedBounds.y).not.toBe(initialBounds.y);
-        await expectWindowBoundsObserved(mainWindow, movedBounds);
-      } finally {
-        await app.release();
-      }
+  it(
+    'moves windows through the direct launch API',
+    async () => {
+      const env = await geometryLauncher.environment();
+      const script = `
+const { launchGtkApp } = require(${JSON.stringify(packageEntryPath)});
+const appPath = ${JSON.stringify(appPath)};
+const env = ${JSON.stringify(env)};
+const fixtureTimeoutMs = ${JSON.stringify(fixtureTimeoutMs)};
+const assert = (condition, message) => {
+  if (!condition) {
+    throw new Error(message);
+  }
+};
+const waitForWindowCount = async (app, expectedCount) => {
+  const startedAt = Date.now();
+  let lastCount = 0;
+  while (Date.now() - startedAt <= fixtureTimeoutMs) {
+    lastCount = await app.getWindowCount();
+    if (lastCount === expectedCount) {
+      return;
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
     });
-  });
+  }
+  throw new Error(\`Expected window count \${expectedCount}, actual \${lastCount}.\`);
+};
+const assertBoundsEqual = (actual, expected, label) => {
+  for (const key of ['height', 'width', 'x', 'y']) {
+    assert(
+      actual[key] === expected[key],
+      \`\${label}.\${key}: expected \${expected[key]}, actual \${actual[key]}\`
+    );
+  }
+};
+(async () => {
+  const app = await launchGtkApp(appPath, [], { env, timeoutMs: fixtureTimeoutMs });
+  try {
+    await waitForWindowCount(app, 1);
+    const mainWindow = await app.windowAt(0);
+    assert(mainWindow !== undefined, 'Main window was not found.');
+    const initialBounds = await mainWindow.bounds();
+    const movedBounds = await mainWindow.moveTo(120, 110);
+    assert(movedBounds.x !== initialBounds.x, 'Window x did not change.');
+    assert(movedBounds.y !== initialBounds.y, 'Window y did not change.');
+    assertBoundsEqual(await mainWindow.bounds(), movedBounds, 'bounds');
+    const capture = await mainWindow.capture();
+    assertBoundsEqual(capture.bounds, movedBounds, 'capture.bounds');
+  } finally {
+    await app.release();
+  }
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+`;
+      const result = await spawnText(process.execPath, ['-e', script], {
+        env: {
+          ...process.env,
+          ...env,
+          GESTAMENT_GTK_BACKEND: 'gtk3',
+        },
+        timeoutMs: testTimeoutMs - 30_000,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+    },
+    testTimeoutMs
+  );
 
   it('rejects invalid window geometry arguments', async () => {
     const app = await geometryLauncher.launch();
@@ -626,17 +777,25 @@ describeGtk3('GTK3 AT-SPI automation', () => {
   it('reports undefined when an accessible id is missing', async () => {
     const app = await shortLauncher.launch();
 
-    await expect(
-      app.findById('missing_accessible_id')
-    ).resolves.toBeUndefined();
+    await toPass(
+      async () => {
+        await expect(
+          app.findById('missing_accessible_id')
+        ).resolves.toBeUndefined();
+      },
+      {
+        message: 'missing accessible id should resolve undefined',
+        timeoutMs: missingLookupTimeoutMs,
+      }
+    );
   });
 
   it('rejects when an accessible id is missing', async () => {
     const app = await shortLauncher.launch();
 
-    await expect(app.getById('missing_accessible_id')).rejects.toMatchObject({
-      code: 'ELEMENT_NOT_FOUND',
-    });
+    await waitForRejectedCode(async () => {
+      await app.getById('missing_accessible_id');
+    }, 'ELEMENT_NOT_FOUND');
   });
 
   it('shares waitForResult deadlines with driver-backed lookups', async () => {
@@ -659,15 +818,25 @@ describeGtk3('GTK3 AT-SPI automation', () => {
   it('reports undefined when an element path is missing', async () => {
     const app = await shortLauncher.launch();
 
-    await expect(app.findByPath('main_window.0.3')).resolves.toBeUndefined();
+    await toPass(
+      async () => {
+        await expect(
+          app.findByPath('main_window.0.3')
+        ).resolves.toBeUndefined();
+      },
+      {
+        message: 'missing element path should resolve undefined',
+        timeoutMs: missingLookupTimeoutMs,
+      }
+    );
   });
 
   it('rejects when an element path is missing', async () => {
     const app = await shortLauncher.launch();
 
-    await expect(app.getByPath('main_window.0.3')).rejects.toMatchObject({
-      code: 'ELEMENT_NOT_FOUND',
-    });
+    await waitForRejectedCode(async () => {
+      await app.getByPath('main_window.0.3');
+    }, 'ELEMENT_NOT_FOUND');
   });
 
   it('launches multiple apps and releases them from the launcher', async () => {
@@ -740,9 +909,9 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     );
     expect(await checkbox.isChecked()).toBe(false);
     await checkbox.toggle();
-    await expect.poll(() => checkbox.isChecked()).toBe(true);
+    await expectPollToBe(() => checkbox.isChecked(), true);
     await checkbox.toggle();
-    await expect.poll(() => checkbox.isChecked()).toBe(false);
+    await expectPollToBe(() => checkbox.isChecked(), false);
     await waitForVisualUpdate();
     await expectCaptureArtifact(await checkbox.capture(), 'checkbox');
 
@@ -752,12 +921,12 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     );
     expect(await switchControl.isChecked()).toBe(false);
     await switchControl.toggle();
-    await expect.poll(() => switchControl.isChecked()).toBe(true);
+    await expectPollToBe(() => switchControl.isChecked(), true);
     await waitForVisualUpdate();
     const switchOnCapture = await switchControl.capture();
     await expectCaptureArtifact(switchOnCapture, 'switch-on');
     await switchControl.toggle();
-    await expect.poll(() => switchControl.isChecked()).toBe(false);
+    await expectPollToBe(() => switchControl.isChecked(), false);
     await waitForVisualUpdate();
     const switchOffCapture = await switchControl.capture();
     await expectCaptureArtifact(switchOffCapture, 'switch-off');
@@ -778,12 +947,12 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     );
     expect(await toggleButton.isChecked()).toBe(false);
     await toggleButton.toggle();
-    await expect.poll(() => toggleButton.isChecked()).toBe(true);
+    await expectPollToBe(() => toggleButton.isChecked(), true);
     await waitForVisualUpdate();
     const toggleButtonOnCapture = await toggleButton.capture();
     await expectCaptureArtifact(toggleButtonOnCapture, 'toggle-button-on');
     await toggleButton.toggle();
-    await expect.poll(() => toggleButton.isChecked()).toBe(false);
+    await expectPollToBe(() => toggleButton.isChecked(), false);
     await waitForVisualUpdate();
     const toggleButtonOffCapture = await toggleButton.capture();
     await expectCaptureArtifact(toggleButtonOffCapture, 'toggle-button-off');
@@ -809,11 +978,11 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     expect(await radioA.isChecked()).toBe(true);
     expect(await radioB.isChecked()).toBe(false);
     await radioB.toggle();
-    await expect.poll(() => radioA.isChecked()).toBe(false);
-    await expect.poll(() => radioB.isChecked()).toBe(true);
+    await expectPollToBe(() => radioA.isChecked(), false);
+    await expectPollToBe(() => radioB.isChecked(), true);
     await radioA.toggle();
-    await expect.poll(() => radioA.isChecked()).toBe(true);
-    await expect.poll(() => radioB.isChecked()).toBe(false);
+    await expectPollToBe(() => radioA.isChecked(), true);
+    await expectPollToBe(() => radioB.isChecked(), false);
     await waitForVisualUpdate();
     const radioACapture = await radioA.capture();
     const radioBCapture = await radioB.capture();
@@ -833,11 +1002,11 @@ describeGtk3('GTK3 AT-SPI automation', () => {
       minimumIncrement: 1,
     });
     await spinButton.increment();
-    await expect.poll(() => spinButton.value()).toBe(3);
+    await expectPollToBe(() => spinButton.value(), 3);
     await spinButton.decrement();
-    await expect.poll(() => spinButton.value()).toBe(2);
+    await expectPollToBe(() => spinButton.value(), 2);
     await spinButton.setValue(7);
-    await expect.poll(() => spinButton.value()).toBe(7);
+    await expectPollToBe(() => spinButton.value(), 7);
     await waitForVisualUpdate();
     await expectCaptureArtifact(await spinButton.capture(), 'spin-button');
 
@@ -847,7 +1016,7 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     );
     await expect(slider.value()).resolves.toBe(25);
     await slider.setValue(40);
-    await expect.poll(() => slider.value()).toBe(40);
+    await expectPollToBe(() => slider.value(), 40);
     await waitForVisualUpdate();
     await expectCaptureArtifact(await slider.capture(), 'slider');
 
@@ -931,8 +1100,8 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     await expect(combo.isChildSelected(0)).resolves.toBe(true);
     await expect(combo.isChildSelected(1)).resolves.toBe(false);
     await combo.selectChildAt(1);
-    await expect.poll(async () => (await combo.info()).name).toBe('Combo B');
-    await expect.poll(() => combo.isChildSelected(1)).toBe(true);
+    await expectPollToBe(async () => (await combo.info()).name, 'Combo B');
+    await expectPollToBe(() => combo.isChildSelected(1), true);
     const selectedComboItem = expectElement(await combo.selectedChildAt(0));
     expect(['listItem', 'menuItem']).toContain(selectedComboItem.kind);
     await expect(selectedComboItem.info()).resolves.toMatchObject({
@@ -940,12 +1109,12 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     });
     try {
       await combo.clearSelection();
-      await expect.poll(() => combo.getSelectedChildCount()).toBe(0);
+      await expectPollToBe(() => combo.getSelectedChildCount(), 0);
     } catch (error) {
       expect(error).toMatchObject({ code: 'OPERATION_FAILED' });
     }
     await combo.selectChildAt(1);
-    await expect.poll(() => combo.isChildSelected(1)).toBe(true);
+    await expectPollToBe(() => combo.isChildSelected(1), true);
     await expect(combo.selectChildAt(3)).rejects.toMatchObject({
       code: 'OPERATION_FAILED',
     });
@@ -954,7 +1123,7 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     });
     try {
       await combo.deselectChildAt(1);
-      await expect.poll(() => combo.isChildSelected(1)).toBe(false);
+      await expectPollToBe(() => combo.isChildSelected(1), false);
     } catch (error) {
       expect(error).toMatchObject({ code: 'OPERATION_FAILED' });
     }
@@ -1004,7 +1173,7 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     await expect(list.getSelectedChildCount()).resolves.toBe(0);
     await list.selectChildAt(1);
     await listItem1.click();
-    await expect.poll(() => list.isChildSelected(1)).toBe(true);
+    await expectPollToBe(() => list.isChildSelected(1), true);
     await waitForVisualUpdate();
     const selectedListItem = expectElementKind(
       await list.selectedChildAt(0),
@@ -1026,11 +1195,11 @@ describeGtk3('GTK3 AT-SPI automation', () => {
       'selected-list-item'
     );
     await list.selectAllChildren();
-    await expect.poll(() => list.getSelectedChildCount()).toBe(3);
+    await expectPollToBe(() => list.getSelectedChildCount(), 3);
     await list.deselectChildAt(1);
-    await expect.poll(() => list.isChildSelected(1)).toBe(false);
+    await expectPollToBe(() => list.isChildSelected(1), false);
     await list.clearSelection();
-    await expect.poll(() => list.getSelectedChildCount()).toBe(0);
+    await expectPollToBe(() => list.getSelectedChildCount(), 0);
     await expect(list.childAt(-1)).rejects.toMatchObject({
       code: 'INVALID_ARGUMENT',
     });
@@ -1101,7 +1270,7 @@ describeGtk3('GTK3 AT-SPI automation', () => {
       await app.getById('result_label'),
       'label'
     );
-    await expect.poll(() => resultLabel.text()).toBe('menu-2');
+    await expectPollToBe(() => resultLabel.text(), 'menu-2');
 
     const table = expectElementKind(
       await app.getById('enumerable_table'),
@@ -1151,18 +1320,18 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     await expect(table.selectedRows()).resolves.toEqual([]);
     await expect(table.selectedColumns()).resolves.toEqual([]);
     await table.selectRow(1);
-    await expect.poll(() => table.isRowSelected(1)).toBe(true);
-    await expect.poll(() => table.selectedRows()).toContain(1);
-    await expect.poll(() => table.isCellSelected(1, 0)).toBe(true);
+    await expectPollToBe(() => table.isRowSelected(1), true);
+    await expectPollToContain(() => table.selectedRows(), 1);
+    await expectPollToBe(() => table.isCellSelected(1, 0), true);
     await table.deselectRow(1);
-    await expect.poll(() => table.isRowSelected(1)).toBe(false);
+    await expectPollToBe(() => table.isRowSelected(1), false);
     await expect(table.isColumnSelected(1)).resolves.toBe(false);
     try {
       await table.selectColumn(1);
-      await expect.poll(() => table.isColumnSelected(1)).toBe(true);
-      await expect.poll(() => table.selectedColumns()).toContain(1);
+      await expectPollToBe(() => table.isColumnSelected(1), true);
+      await expectPollToContain(() => table.selectedColumns(), 1);
       await table.deselectColumn(1);
-      await expect.poll(() => table.isColumnSelected(1)).toBe(false);
+      await expectPollToBe(() => table.isColumnSelected(1), false);
     } catch (error) {
       expect(error).toMatchObject({ code: 'OPERATION_FAILED' });
       await expect(table.isColumnSelected(1)).resolves.toBe(false);
@@ -1202,10 +1371,10 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     await expect(tabA.isSelected()).resolves.toBe(true);
     await expect(tabB.isSelected()).resolves.toBe(false);
     await notebook.selectChildAt(1);
-    await expect.poll(() => tabB.isSelected()).toBe(true);
-    await tabA.select();
-    await expect.poll(() => tabA.isSelected()).toBe(true);
+    await expectPollToBe(() => tabB.isSelected(), true);
     await expectCaptureArtifact(await notebook.capture(), 'standard-notebook');
+    await tabA.select();
+    await expectPollToBe(() => tabA.isSelected(), true);
     await expect(notebook.childAt(-1)).rejects.toMatchObject({
       code: 'INVALID_ARGUMENT',
     });
@@ -1220,11 +1389,11 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     expect(await expander.getChildCount()).toBe(1);
     await expect(expander.isExpanded()).resolves.toBe(false);
     await expander.expand();
-    await expect.poll(() => expander.isExpanded()).toBe(true);
+    await expectPollToBe(() => expander.isExpanded(), true);
     await expander.collapse();
-    await expect.poll(() => expander.isExpanded()).toBe(false);
+    await expectPollToBe(() => expander.isExpanded(), false);
     await expander.toggle();
-    await expect.poll(() => expander.isExpanded()).toBe(true);
+    await expectPollToBe(() => expander.isExpanded(), true);
     await toPass(
       async () => {
         await expectCaptureArtifact(
@@ -1232,7 +1401,10 @@ describeGtk3('GTK3 AT-SPI automation', () => {
           'standard-expander-expanded'
         );
       },
-      { message: 'standard expander expanded visual state' }
+      {
+        message: 'standard expander expanded visual state',
+        timeoutMs: fixtureTimeoutMs,
+      }
     );
 
     const scrollbar = expectElementKind(
@@ -1241,7 +1413,7 @@ describeGtk3('GTK3 AT-SPI automation', () => {
     );
     await expect(scrollbar.value()).resolves.toBe(20);
     await scrollbar.setValue(35);
-    await expect.poll(() => scrollbar.value()).toBe(35);
+    await expectPollToBe(() => scrollbar.value(), 35);
     await toPass(
       async () => {
         await expectCaptureArtifact(
@@ -1249,14 +1421,17 @@ describeGtk3('GTK3 AT-SPI automation', () => {
           'standard-scrollbar'
         );
       },
-      { message: 'standard scrollbar visual state' }
+      {
+        message: 'standard scrollbar visual state',
+        timeoutMs: fixtureTimeoutMs,
+      }
     );
 
     const link = expectElementKind(await app.getById('standard_link'), 'link');
     await expect(link.isVisited()).resolves.toBe(false);
     await link.click();
-    await expect.poll(() => resultLabel.text()).toBe('link-activated');
-    await expect.poll(() => link.isVisited()).toBe(true);
+    await expectPollToBe(() => resultLabel.text(), 'link-activated');
+    await expectPollToBe(() => link.isVisited(), true);
     await expectCaptureArtifact(await link.capture(), 'standard-link-visited');
 
     const calendar = expectElementKind(
@@ -1353,7 +1528,7 @@ describeGtk3('GTK3 AT-SPI automation', () => {
 
     await trayItem.click();
     const label = expectElementKind(await app.getById('result_label'), 'label');
-    await expect.poll(() => label.text()).toBe('tray-activated');
+    await expectPollToBe(() => label.text(), 'tray-activated');
 
     const elementCapture = await element.capture();
     expect(elementCapture.bounds).toEqual(capture.bounds);
@@ -1364,11 +1539,9 @@ describeGtk3('GTK3 AT-SPI automation', () => {
   it('rejects when a StatusNotifier tray item is missing', async () => {
     const app = await shortLauncher.launch();
 
-    await expect(
-      app.getTrayItem({ id: 'missing-gestament-fixture' })
-    ).rejects.toMatchObject({
-      code: 'ELEMENT_NOT_FOUND',
-    });
+    await waitForRejectedCode(async () => {
+      await app.getTrayItem({ id: 'missing-gestament-fixture' });
+    }, 'ELEMENT_NOT_FOUND');
   });
 
   it('reports stale element when a held tray item is used after app close', async () => {

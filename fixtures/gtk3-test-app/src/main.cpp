@@ -512,6 +512,8 @@ GtkWidget *create_standard_widgets_window(AppWidgets *widgets) {
   gtk_box_pack_start(GTK_BOX(box), separator_area, FALSE, TRUE, 0);
 
   GtkWidget *calendar = gtk_calendar_new();
+  gtk_calendar_select_month(GTK_CALENDAR(calendar), 4, 2026);
+  gtk_calendar_select_day(GTK_CALENDAR(calendar), 25);
   assign_widget_id(calendar, "standard_calendar");
   g_signal_connect(calendar, "day-selected",
                    G_CALLBACK(on_standard_calendar_day_selected), widgets);

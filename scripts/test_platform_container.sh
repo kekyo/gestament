@@ -93,6 +93,48 @@ validate_package_version() {
   esac
 }
 
+export_default_env() {
+  name=$1
+  value=$2
+  eval "current_value=\${$name:-}"
+  if [ -z "$current_value" ]; then
+    export "$name=$value"
+  fi
+}
+
+apply_runtime_timeout_profile() {
+  case "$GESTAMENT_TEST_EXECUTION_PROFILE" in
+    native)
+      export_default_env GESTAMENT_APP_WAIT_TIMEOUT_MS 240000
+      export_default_env GESTAMENT_APP_RELEASE_TIMEOUT_MS 30000
+      export_default_env GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS 500
+      export_default_env GESTAMENT_ATSPI_STATE_CHANGE_TIMEOUT_MS 30000
+      export_default_env GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS 30000
+      export_default_env GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_WINDOW_ACTIVATION_TIMEOUT_MS 30000
+      export_default_env GESTAMENT_WINDOW_GEOMETRY_TIMEOUT_MS 30000
+      export_default_env GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS 180000
+      export_default_env GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS 2000
+      export_default_env GESTAMENT_XVFB_STARTUP_TIMEOUT_MS 60000
+      ;;
+    cross)
+      export_default_env GESTAMENT_APP_WAIT_TIMEOUT_MS 900000
+      export_default_env GESTAMENT_APP_RELEASE_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_ATSPI_READINESS_PROBE_TIMEOUT_MS 5000
+      export_default_env GESTAMENT_ATSPI_STATE_CHANGE_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS 300000
+      export_default_env GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS 300000
+      export_default_env GESTAMENT_WINDOW_ACTIVATION_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_WINDOW_GEOMETRY_TIMEOUT_MS 120000
+      export_default_env GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS 600000
+      export_default_env GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS 10000
+      export_default_env GESTAMENT_XVFB_STARTUP_TIMEOUT_MS 300000
+      ;;
+  esac
+}
+
 expected_dpkg_architecture() {
   case "$1" in
     amd64)
@@ -119,12 +161,26 @@ expected_dpkg_architecture() {
 
 require_env GESTAMENT_ARCH
 require_env GESTAMENT_GTK_BACKEND
+export GESTAMENT_TEST_EXECUTION_PROFILE="${GESTAMENT_TEST_EXECUTION_PROFILE:-native}"
+export GESTAMENT_TEST_HOST_ARCH="${GESTAMENT_TEST_HOST_ARCH:-$GESTAMENT_ARCH}"
 export GESTAMENT_TEST_RESULTS_ARCH="${GESTAMENT_TEST_RESULTS_ARCH:-$GESTAMENT_ARCH}"
 export GESTAMENT_TEST_RUN_TIMESTAMP="${GESTAMENT_TEST_RUN_TIMESTAMP:-$(format_test_run_timestamp)}"
 export GESTAMENT_TEST_RESULTS_GROUP="${GESTAMENT_TEST_RESULTS_GROUP:-platform-$GESTAMENT_GTK_BACKEND}"
+export GESTAMENT_TEST_TARGET_ARCH="${GESTAMENT_TEST_TARGET_ARCH:-$GESTAMENT_ARCH}"
 if [ -n "${GESTAMENT_TEST_RESULTS_ROOT:-}" ]; then
   mkdir -p "$GESTAMENT_TEST_RESULTS_ROOT"
 fi
+
+case "$GESTAMENT_TEST_EXECUTION_PROFILE" in
+  native | cross)
+    ;;
+  *)
+    printf '%s\n' \
+      "Unsupported GESTAMENT_TEST_EXECUTION_PROFILE: $GESTAMENT_TEST_EXECUTION_PROFILE" >&2
+    exit 2
+    ;;
+esac
+apply_runtime_timeout_profile
 
 actual_dpkg_architecture=$(dpkg --print-architecture)
 expected_dpkg_architecture=$(expected_dpkg_architecture "$GESTAMENT_ARCH")
@@ -134,35 +190,23 @@ if [ "$actual_dpkg_architecture" != "$expected_dpkg_architecture" ]; then
   exit 1
 fi
 
-export DEBIAN_FRONTEND=noninteractive
-
-apt-get update
-apt-get install -y --no-install-recommends \
-  at-spi2-core \
-  build-essential \
-  ca-certificates \
-  dbus-x11 \
-  libatspi2.0-dev \
-  libgdk-pixbuf-2.0-dev \
-  libglib2.0-dev \
-  libnode-dev \
-  libxtst-dev \
-  libx11-dev \
-  make \
-  meson \
-  ninja-build \
-  nodejs \
-  npm \
-  pkg-config \
-  xauth \
-  xvfb
+require_command Xvfb
+require_command dbus-launch
+require_command make
+require_command meson
+require_command node
+require_command npm
+require_command pkg-config
+require_command xauth
 
 case "$GESTAMENT_GTK_BACKEND" in
   gtk3)
-    apt-get install -y --no-install-recommends libgtk-3-dev
+    pkg-config --exists gtk+-3.0 || {
+      printf '%s\n' "GTK3 tests require gtk+-3.0 development files." >&2
+      exit 1
+    }
     ;;
   gtk4)
-    apt-get install -y --no-install-recommends libgtk-4-dev
     pkg-config --atleast-version=4.22 gtk4 || {
       printf '%s\n' "GTK4 tests require gtk4 >= 4.22." >&2
       pkg-config --modversion gtk4 >&2 || true
@@ -174,9 +218,6 @@ case "$GESTAMENT_GTK_BACKEND" in
     exit 2
     ;;
 esac
-
-require_command npm
-require_command node
 
 workspace="/tmp/gestament-platform-test"
 rm -rf "$workspace"
@@ -263,7 +304,7 @@ build_native_backend() {
   out_dir="out/$prebuild_directory/$GESTAMENT_GTK_BACKEND"
 
   make -C native clean OUT_DIR="$out_dir"
-  make -C native \
+  make -C native -j \
     NODE_INCLUDE_DIR="$node_include_dir" \
     GESTAMENT_PACKAGE_VERSION="$package_version" \
     GESTAMENT_NATIVE_ARCH="$GESTAMENT_ARCH" \

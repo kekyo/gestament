@@ -3,7 +3,8 @@
 // Under MIT.
 // https://github.com/kekyo/gestament
 
-#include "accessible.hpp"
+#include "accessible.h"
+#include "runtime_config.h"
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glib-object.h>
@@ -14,12 +15,20 @@
 #include <X11/Xutil.h>
 
 #include <algorithm>
+#include <cerrno>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
+#include <dirent.h>
 #include <deque>
+#include <fstream>
+#include <limits>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -29,14 +38,18 @@ namespace gestament {
 namespace {
 
 constexpr guint kMaxVisitedNodes = 10000;
-constexpr gint64 kStateChangeTimeoutUsec = 5000000;
 constexpr gulong kStateChangePollUsec = 50000;
-constexpr gint64 kWindowGeometryTimeoutUsec = 2000000;
 constexpr gulong kWindowGeometryPollUsec = 50000;
-constexpr gint64 kWindowActivationTimeoutUsec = 2000000;
 constexpr gulong kWindowActivationPollUsec = 50000;
 
 bool is_window_role(AtspiAccessible *accessible);
+NativeError operation_failed_error(const std::string &message);
+NativeError invalid_argument_error(const std::string &message);
+
+struct ProcessScope {
+  guint root_process_id;
+  std::set<guint> process_ids;
+};
 
 const char *state_type_name(AtspiStateType state) {
   switch (state) {
@@ -163,7 +176,9 @@ bool read_checked_or_pressed_state(AtspiAccessible *accessible, bool *checked) {
 
 bool wait_checked_or_pressed_state_change(AtspiAccessible *accessible,
                                           bool initial_checked) {
-  const gint64 deadline = g_get_monotonic_time() + kStateChangeTimeoutUsec;
+  const gint64 deadline =
+      g_get_monotonic_time() +
+      native_timeout_config().state_change_timeout_usec;
 
   do {
     bool checked = false;
@@ -204,7 +219,101 @@ void unref_accessible_queue(std::deque<AtspiAccessible *> *queue) {
   }
 }
 
-bool accessible_matches(AtspiAccessible *accessible, guint process_id,
+bool parse_proc_pid(const char *name, guint *pid) {
+  if (name == nullptr || name[0] == '\0' || pid == nullptr) {
+    return false;
+  }
+
+  for (const char *current = name; *current != '\0'; current += 1) {
+    if (!std::isdigit(static_cast<unsigned char>(*current))) {
+      return false;
+    }
+  }
+
+  errno = 0;
+  char *end = nullptr;
+  const unsigned long parsed = std::strtoul(name, &end, 10);
+  if (errno != 0 || end == name || end == nullptr || *end != '\0' ||
+      parsed > static_cast<unsigned long>(std::numeric_limits<guint>::max())) {
+    return false;
+  }
+
+  *pid = static_cast<guint>(parsed);
+  return true;
+}
+
+bool read_proc_parent_process_id(guint process_id, guint *parent_process_id) {
+  if (parent_process_id == nullptr) {
+    return false;
+  }
+
+  std::ifstream stream("/proc/" + std::to_string(process_id) + "/stat");
+  std::string line;
+  if (!std::getline(stream, line)) {
+    return false;
+  }
+
+  const std::size_t close_index = line.rfind(')');
+  if (close_index == std::string::npos || close_index + 2 >= line.size()) {
+    return false;
+  }
+
+  std::istringstream fields(line.substr(close_index + 2));
+  char state = '\0';
+  unsigned long ppid = 0;
+  if (!(fields >> state >> ppid) ||
+      ppid > static_cast<unsigned long>(std::numeric_limits<guint>::max())) {
+    return false;
+  }
+
+  *parent_process_id = static_cast<guint>(ppid);
+  return true;
+}
+
+ProcessScope collect_process_scope(guint root_process_id) {
+  ProcessScope scope = {
+      root_process_id,
+      {root_process_id},
+  };
+
+  DIR *proc = opendir("/proc");
+  if (proc == nullptr) {
+    return scope;
+  }
+
+  std::vector<std::pair<guint, guint>> process_tree;
+  while (dirent *entry = readdir(proc)) {
+    guint process_id = 0;
+    if (!parse_proc_pid(entry->d_name, &process_id)) {
+      continue;
+    }
+
+    guint parent_process_id = 0;
+    if (read_proc_parent_process_id(process_id, &parent_process_id)) {
+      process_tree.push_back({process_id, parent_process_id});
+    }
+  }
+  closedir(proc);
+
+  bool changed = false;
+  do {
+    changed = false;
+    for (const auto &entry : process_tree) {
+      if (scope.process_ids.find(entry.second) != scope.process_ids.end() &&
+          scope.process_ids.insert(entry.first).second) {
+        changed = true;
+      }
+    }
+  } while (changed);
+
+  return scope;
+}
+
+bool process_scope_contains(const ProcessScope &scope, guint process_id) {
+  return scope.process_ids.find(process_id) != scope.process_ids.end();
+}
+
+bool accessible_matches(AtspiAccessible *accessible, const ProcessScope &scope,
                         const std::string &id) {
   GError *error = nullptr;
   const guint accessible_process_id =
@@ -214,7 +323,7 @@ bool accessible_matches(AtspiAccessible *accessible, guint process_id,
     return false;
   }
 
-  if (accessible_process_id != process_id) {
+  if (!process_scope_contains(scope, accessible_process_id)) {
     return false;
   }
 
@@ -263,6 +372,11 @@ CaptureBounds intersect_bounds(const CaptureBounds &first,
 bool same_bounds(const CaptureBounds &first, const CaptureBounds &second) {
   return first.x == second.x && first.y == second.y &&
          first.width == second.width && first.height == second.height;
+}
+
+bool overlaps_bounds(const CaptureBounds &first, const CaptureBounds &second) {
+  const CaptureBounds intersection = intersect_bounds(first, second);
+  return intersection.width > 0 && intersection.height > 0;
 }
 
 bool read_component_bounds(AtspiAccessible *accessible,
@@ -472,7 +586,7 @@ std::string read_x11_window_title(Display *display, Window window) {
 }
 
 X11ProcessMatch x11_window_process_match(Display *display, Window window,
-                                         guint process_id) {
+                                         const ProcessScope &scope) {
   const Atom pid_atom = XInternAtom(display, "_NET_WM_PID", True);
   if (pid_atom == None) {
     return X11ProcessMatch::unknown;
@@ -494,7 +608,8 @@ X11ProcessMatch x11_window_process_match(Display *display, Window window,
   X11ProcessMatch process_match = X11ProcessMatch::unknown;
   if (actual_format == 32 && item_count >= 1) {
     const auto *values = reinterpret_cast<unsigned long *>(data);
-    process_match = values[0] == static_cast<unsigned long>(process_id)
+    const auto process_id = static_cast<guint>(values[0]);
+    process_match = process_scope_contains(scope, process_id)
                         ? X11ProcessMatch::matches
                         : X11ProcessMatch::mismatches;
   }
@@ -529,7 +644,7 @@ bool read_x11_window_bounds(Display *display, Window root, Window window,
 }
 
 bool find_x11_window_bounds_by_title(Display *display, Window root,
-                                     Window window, guint process_id,
+                                     Window window, const ProcessScope &scope,
                                      const std::string &title,
                                      CaptureBounds *bounds) {
   Window root_return = 0;
@@ -541,7 +656,7 @@ bool find_x11_window_bounds_by_title(Display *display, Window root,
     for (int index = static_cast<int>(child_count) - 1; index >= 0;
          index -= 1) {
       if (find_x11_window_bounds_by_title(display, root, children[index],
-                                          process_id, title, bounds)) {
+                                          scope, title, bounds)) {
         XFree(children);
         return true;
       }
@@ -551,7 +666,7 @@ bool find_x11_window_bounds_by_title(Display *display, Window root,
     }
   }
 
-  if (x11_window_process_match(display, window, process_id) ==
+  if (x11_window_process_match(display, window, scope) ==
           X11ProcessMatch::mismatches ||
       read_x11_window_title(display, window) != title) {
     return false;
@@ -560,7 +675,7 @@ bool find_x11_window_bounds_by_title(Display *display, Window root,
 }
 
 bool find_x11_window_bounds_by_origin(Display *display, Window root,
-                                      Window window, guint process_id,
+                                      Window window, const ProcessScope &scope,
                                       const CaptureBounds &component_bounds,
                                       CaptureBounds *bounds) {
   Window root_return = 0;
@@ -572,7 +687,7 @@ bool find_x11_window_bounds_by_origin(Display *display, Window root,
     for (int index = static_cast<int>(child_count) - 1; index >= 0;
          index -= 1) {
       if (find_x11_window_bounds_by_origin(display, root, children[index],
-                                           process_id, component_bounds,
+                                           scope, component_bounds,
                                            bounds)) {
         XFree(children);
         return true;
@@ -584,7 +699,7 @@ bool find_x11_window_bounds_by_origin(Display *display, Window root,
   }
 
   if (window == root ||
-      x11_window_process_match(display, window, process_id) ==
+      x11_window_process_match(display, window, scope) ==
           X11ProcessMatch::mismatches) {
     return false;
   }
@@ -607,7 +722,8 @@ bool find_x11_window_bounds_by_origin(Display *display, Window root,
 }
 
 bool find_x11_window_by_title(Display *display, Window root, Window window,
-                              guint process_id, const std::string &title,
+                              const ProcessScope &scope,
+                              const std::string &title,
                               Window *result) {
   Window root_return = 0;
   Window parent_return = 0;
@@ -617,7 +733,7 @@ bool find_x11_window_by_title(Display *display, Window root, Window window,
                  &child_count) != 0) {
     for (int index = static_cast<int>(child_count) - 1; index >= 0;
          index -= 1) {
-      if (find_x11_window_by_title(display, root, children[index], process_id,
+      if (find_x11_window_by_title(display, root, children[index], scope,
                                    title, result)) {
         XFree(children);
         return true;
@@ -628,7 +744,7 @@ bool find_x11_window_by_title(Display *display, Window root, Window window,
     }
   }
 
-  if (x11_window_process_match(display, window, process_id) ==
+  if (x11_window_process_match(display, window, scope) ==
           X11ProcessMatch::mismatches ||
       read_x11_window_title(display, window) != title) {
     return false;
@@ -644,7 +760,7 @@ bool find_x11_window_by_title(Display *display, Window root, Window window,
 }
 
 bool find_x11_window_by_origin(Display *display, Window root, Window window,
-                               guint process_id,
+                               const ProcessScope &scope,
                                const CaptureBounds &component_bounds,
                                Window *result) {
   Window root_return = 0;
@@ -655,7 +771,7 @@ bool find_x11_window_by_origin(Display *display, Window root, Window window,
                  &child_count) != 0) {
     for (int index = static_cast<int>(child_count) - 1; index >= 0;
          index -= 1) {
-      if (find_x11_window_by_origin(display, root, children[index], process_id,
+      if (find_x11_window_by_origin(display, root, children[index], scope,
                                     component_bounds, result)) {
         XFree(children);
         return true;
@@ -667,7 +783,7 @@ bool find_x11_window_by_origin(Display *display, Window root, Window window,
   }
 
   if (window == root ||
-      x11_window_process_match(display, window, process_id) ==
+      x11_window_process_match(display, window, scope) ==
           X11ProcessMatch::mismatches) {
     return false;
   }
@@ -689,7 +805,8 @@ bool find_x11_window_by_origin(Display *display, Window root, Window window,
   return true;
 }
 
-bool resolve_x11_toplevel_window(guint process_id, AtspiAccessible *accessible,
+bool resolve_x11_toplevel_window(const ProcessScope &scope,
+                                 AtspiAccessible *accessible,
                                  const CaptureBounds &component_bounds,
                                  Display *display, Window *window) {
   GError *gerror = nullptr;
@@ -703,12 +820,12 @@ bool resolve_x11_toplevel_window(guint process_id, AtspiAccessible *accessible,
 
   Window root = DefaultRootWindow(display);
   if (!title.empty() &&
-      find_x11_window_by_title(display, root, root, process_id, title,
+      find_x11_window_by_title(display, root, root, scope, title,
                                window)) {
     return true;
   }
 
-  return find_x11_window_by_origin(display, root, root, process_id,
+  return find_x11_window_by_origin(display, root, root, scope,
                                    component_bounds, window);
 }
 
@@ -734,7 +851,8 @@ bool resolve_x11_toplevel_window(guint process_id, AtspiAccessible *accessible,
   }
 
   Window window = 0;
-  if (!resolve_x11_toplevel_window(process_id, accessible, component_bounds,
+  const ProcessScope scope = collect_process_scope(process_id);
+  if (!resolve_x11_toplevel_window(scope, accessible, component_bounds,
                                    display.get(), &window)) {
     return false;
   }
@@ -778,6 +896,243 @@ void read_x11_class_hint(Display *display, Window window,
     *instance_name = class_hint.res_name;
     XFree(class_hint.res_name);
   }
+}
+
+std::string x11_window_id_string(Window window) {
+  std::ostringstream stream;
+  stream << "0x" << std::hex << window;
+  return stream.str();
+}
+
+bool parse_x11_window_id(const std::string &window_id, Window *window) {
+  if (window == nullptr || window_id.empty()) {
+    return false;
+  }
+
+  errno = 0;
+  char *end = nullptr;
+  const unsigned long parsed = std::strtoul(window_id.c_str(), &end, 0);
+  if (errno != 0 || end == window_id.c_str() || end == nullptr ||
+      *end != '\0' || parsed == 0) {
+    return false;
+  }
+
+  *window = static_cast<Window>(parsed);
+  return true;
+}
+
+bool read_x11_window_process_id(Display *display, Window window,
+                                guint *process_id) {
+  if (process_id == nullptr) {
+    return false;
+  }
+
+  const Atom pid_atom = XInternAtom(display, "_NET_WM_PID", True);
+  if (pid_atom == None) {
+    return false;
+  }
+
+  Atom actual_type = None;
+  int actual_format = 0;
+  unsigned long item_count = 0;
+  unsigned long bytes_after = 0;
+  unsigned char *data = nullptr;
+  const int status =
+      XGetWindowProperty(display, window, pid_atom, 0, 1, False,
+                         AnyPropertyType, &actual_type, &actual_format,
+                         &item_count, &bytes_after, &data);
+  if (status != Success || data == nullptr) {
+    return false;
+  }
+
+  bool found = false;
+  if (actual_format == 32 && item_count >= 1) {
+    const auto *values = reinterpret_cast<unsigned long *>(data);
+    *process_id = static_cast<guint>(values[0]);
+    found = true;
+  }
+  XFree(data);
+  return found;
+}
+
+std::string read_x11_transient_for(Display *display, Window window) {
+  Window transient_for = 0;
+  if (XGetTransientForHint(display, window, &transient_for) == 0 ||
+      transient_for == 0) {
+    return "";
+  }
+  return x11_window_id_string(transient_for);
+}
+
+bool read_x11_window_property(Display *display, Window root, const char *name,
+                              std::vector<Window> *windows) {
+  if (windows == nullptr) {
+    return false;
+  }
+
+  const Atom atom = XInternAtom(display, name, True);
+  if (atom == None) {
+    return false;
+  }
+
+  Atom actual_type = None;
+  int actual_format = 0;
+  unsigned long item_count = 0;
+  unsigned long bytes_after = 0;
+  unsigned char *data = nullptr;
+  const int status =
+      XGetWindowProperty(display, root, atom, 0, 4096, False, AnyPropertyType,
+                         &actual_type, &actual_format, &item_count,
+                         &bytes_after, &data);
+  if (status != Success || data == nullptr) {
+    return false;
+  }
+
+  bool found = false;
+  if (actual_format == 32 && item_count > 0) {
+    const auto *values = reinterpret_cast<unsigned long *>(data);
+    for (unsigned long index = 0; index < item_count; index += 1) {
+      windows->push_back(static_cast<Window>(values[index]));
+    }
+    found = true;
+  }
+  XFree(data);
+  return found;
+}
+
+bool query_x11_root_children(Display *display, Window root,
+                             std::vector<Window> *windows,
+                             NativeError *error) {
+  if (windows == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window list result must not be null.");
+    }
+    return false;
+  }
+
+  Window root_return = 0;
+  Window parent_return = 0;
+  Window *children = nullptr;
+  unsigned int child_count = 0;
+  if (XQueryTree(display, root, &root_return, &parent_return, &children,
+                 &child_count) == 0) {
+    if (error != nullptr) {
+      *error = operation_failed_error("Failed to query X11 root window children.");
+    }
+    return false;
+  }
+
+  for (unsigned int index = 0; index < child_count; index += 1) {
+    windows->push_back(children[index]);
+  }
+
+  if (children != nullptr) {
+    XFree(children);
+  }
+  return true;
+}
+
+bool read_x11_toplevel_windows(Display *display, Window root,
+                               std::vector<Window> *windows,
+                               NativeError *error) {
+  if (windows == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window list result must not be null.");
+    }
+    return false;
+  }
+
+  if (read_x11_window_property(display, root, "_NET_CLIENT_LIST_STACKING",
+                               windows) ||
+      read_x11_window_property(display, root, "_NET_CLIENT_LIST", windows)) {
+    return true;
+  }
+
+  return query_x11_root_children(display, root, windows, error);
+}
+
+Window read_x11_active_window(Display *display, Window root) {
+  const Atom atom = XInternAtom(display, "_NET_ACTIVE_WINDOW", True);
+  if (atom == None) {
+    return 0;
+  }
+
+  Atom actual_type = None;
+  int actual_format = 0;
+  unsigned long item_count = 0;
+  unsigned long bytes_after = 0;
+  unsigned char *data = nullptr;
+  const int status =
+      XGetWindowProperty(display, root, atom, 0, 1, False, AnyPropertyType,
+                         &actual_type, &actual_format, &item_count,
+                         &bytes_after, &data);
+  if (status != Success || data == nullptr) {
+    return 0;
+  }
+
+  Window active_window = 0;
+  if (actual_format == 32 && item_count >= 1) {
+    const auto *values = reinterpret_cast<unsigned long *>(data);
+    active_window = static_cast<Window>(values[0]);
+  }
+  XFree(data);
+  return active_window;
+}
+
+bool read_x11_snapshot_from_display(Display *display, Window root,
+                                    Window active_window, Window window,
+                                    gint stacking_order,
+                                    X11WindowSnapshot *snapshot) {
+  if (snapshot == nullptr) {
+    return false;
+  }
+
+  CaptureBounds bounds = {};
+  if (!read_x11_window_bounds(display, root, window, &bounds)) {
+    return false;
+  }
+
+  X11WindowSnapshot next = {};
+  next.window_id = x11_window_id_string(window);
+  next.title = read_x11_window_title(display, window);
+  read_x11_class_hint(display, window, &next.class_name, &next.instance_name);
+  next.transient_for = read_x11_transient_for(display, window);
+  next.has_process_id =
+      read_x11_window_process_id(display, window, &next.process_id);
+  next.bounds = bounds;
+  next.has_normal_hints =
+      read_x11_resize_hints(display, window, &next.normal_hints);
+  next.stacking_order = stacking_order;
+  next.active = active_window != 0 && active_window == window;
+  *snapshot = next;
+  return true;
+}
+
+std::vector<X11WindowSnapshot> filter_x11_snapshots_by_process(
+    const std::vector<X11WindowSnapshot> &snapshots, guint process_id) {
+  const ProcessScope scope = collect_process_scope(process_id);
+  std::set<std::string> accepted_window_ids;
+  for (const auto &snapshot : snapshots) {
+    if (snapshot.has_process_id &&
+        process_scope_contains(scope, snapshot.process_id)) {
+      accepted_window_ids.insert(snapshot.window_id);
+    }
+  }
+
+  std::vector<X11WindowSnapshot> filtered;
+  for (const auto &snapshot : snapshots) {
+    const bool process_matches =
+        snapshot.has_process_id &&
+        process_scope_contains(scope, snapshot.process_id);
+    const bool transient_matches =
+        !snapshot.transient_for.empty() &&
+        accepted_window_ids.find(snapshot.transient_for) !=
+            accepted_window_ids.end();
+    if (process_matches || transient_matches) {
+      filtered.push_back(snapshot);
+    }
+  }
+  return filtered;
 }
 
 bool resolve_capture_screen_bounds(guint process_id,
@@ -1589,7 +1944,9 @@ bool window_activation_observed(Display *display, Window window,
 
 bool wait_window_activation_observed(Display *display, Window window,
                                      AtspiAccessible *accessible) {
-  const gint64 deadline = g_get_monotonic_time() + kWindowActivationTimeoutUsec;
+  const gint64 deadline =
+      g_get_monotonic_time() +
+      native_timeout_config().window_activation_timeout_usec;
   do {
     if (window_activation_observed(display, window, accessible)) {
       return true;
@@ -1627,7 +1984,9 @@ bool wait_window_geometry_observed(guint process_id,
                                    const CaptureBounds &before,
                                    const WindowGeometryRequest &request,
                                    CaptureBounds *bounds) {
-  const gint64 deadline = g_get_monotonic_time() + kWindowGeometryTimeoutUsec;
+  const gint64 deadline =
+      g_get_monotonic_time() +
+      native_timeout_config().window_geometry_timeout_usec;
 
   do {
     CaptureBounds actual = {};
@@ -1660,7 +2019,8 @@ bool apply_x11_window_geometry(guint process_id, AtspiAccessible *accessible,
   }
 
   Window window = 0;
-  if (!resolve_x11_toplevel_window(process_id, accessible, component_bounds,
+  const ProcessScope scope = collect_process_scope(process_id);
+  if (!resolve_x11_toplevel_window(scope, accessible, component_bounds,
                                    display.get(), &window)) {
     if (error != nullptr) {
       *error = unsupported_interface_error(
@@ -1817,8 +2177,8 @@ bool change_accessible_proxy_window_geometry(
   return false;
 }
 
-bool accessible_belongs_to_process(AtspiAccessible *accessible,
-                                   guint process_id) {
+bool accessible_belongs_to_scope(AtspiAccessible *accessible,
+                                 const ProcessScope &scope) {
   GError *error = nullptr;
   const guint accessible_process_id =
       atspi_accessible_get_process_id(accessible, &error);
@@ -1827,7 +2187,7 @@ bool accessible_belongs_to_process(AtspiAccessible *accessible,
     return false;
   }
 
-  return accessible_process_id == process_id;
+  return process_scope_contains(scope, accessible_process_id);
 }
 
 bool is_window_role(AtspiAccessible *accessible) {
@@ -1843,8 +2203,8 @@ bool is_window_role(AtspiAccessible *accessible) {
 }
 
 bool accessible_is_process_window(AtspiAccessible *accessible,
-                                  guint process_id) {
-  return accessible_belongs_to_process(accessible, process_id) &&
+                                  const ProcessScope &scope) {
+  return accessible_belongs_to_scope(accessible, scope) &&
          is_window_role(accessible);
 }
 
@@ -1864,6 +2224,7 @@ AccessibleLookupResult find_window_by_index_impl(guint process_id, gint index) {
     };
   }
 
+  const ProcessScope scope = collect_process_scope(process_id);
   std::deque<AtspiAccessible *> queue;
   const gint desktop_count = atspi_get_desktop_count();
   for (gint desktop_index = 0; desktop_index < desktop_count;
@@ -1885,7 +2246,7 @@ AccessibleLookupResult find_window_by_index_impl(guint process_id, gint index) {
       continue;
     }
 
-    if (accessible_is_process_window(current, process_id)) {
+    if (accessible_is_process_window(current, scope)) {
       if (matched_index == index) {
         unref_accessible_queue(&queue);
         return {current, {}};
@@ -1923,6 +2284,7 @@ AccessibleLookupResult find_accessible_by_id(guint process_id,
     };
   }
 
+  const ProcessScope scope = collect_process_scope(process_id);
   std::deque<AtspiAccessible *> queue;
   const gint desktop_count = atspi_get_desktop_count();
   for (gint desktop_index = 0; desktop_index < desktop_count; desktop_index += 1) {
@@ -1942,7 +2304,7 @@ AccessibleLookupResult find_accessible_by_id(guint process_id,
       continue;
     }
 
-    if (accessible_matches(current, process_id, id)) {
+    if (accessible_matches(current, scope, id)) {
       unref_accessible_queue(&queue);
       return {current, {}};
     }
@@ -1953,6 +2315,187 @@ AccessibleLookupResult find_accessible_by_id(guint process_id,
 
   unref_accessible_queue(&queue);
   return not_found_result(id);
+}
+
+AccessibleLookupResult find_accessible_by_id_in_subtree(
+    guint process_id, AtspiAccessible *root, const std::string &id) {
+  NativeError init_error = {};
+  if (!ensure_atspi_initialized(&init_error)) {
+    return {nullptr, init_error};
+  }
+
+  if (id.empty()) {
+    return {
+        nullptr,
+        {
+            NativeErrorCode::invalid_argument,
+            "Accessible id must not be empty.",
+        },
+    };
+  }
+
+  NativeError validation_error = {};
+  if (!validate_accessible(process_id, root, &validation_error)) {
+    return {nullptr, validation_error};
+  }
+
+  const ProcessScope scope = collect_process_scope(process_id);
+  std::deque<AtspiAccessible *> queue;
+  queue.push_back(static_cast<AtspiAccessible *>(g_object_ref(root)));
+
+  guint visited_nodes = 0;
+  while (!queue.empty() && visited_nodes < kMaxVisitedNodes) {
+    AtspiAccessible *current = queue.front();
+    queue.pop_front();
+    visited_nodes += 1;
+
+    if (current == nullptr) {
+      continue;
+    }
+
+    if (accessible_matches(current, scope, id)) {
+      unref_accessible_queue(&queue);
+      return {current, {}};
+    }
+
+    enqueue_children(current, &queue);
+    g_object_unref(current);
+  }
+
+  unref_accessible_queue(&queue);
+  return not_found_result(id);
+}
+
+bool accessible_center_is_inside_bounds(AtspiAccessible *accessible,
+                                        const CaptureBounds &bounds,
+                                        CaptureBounds *accessible_bounds) {
+  CaptureBounds next_bounds = {};
+  NativeError ignored_error = {};
+  if (!resolve_component_screen_bounds(accessible, ".",
+                                       NativeErrorCode::element_not_found,
+                                       &next_bounds, &ignored_error)) {
+    return false;
+  }
+
+  const gint center_x = next_bounds.x + next_bounds.width / 2;
+  const gint center_y = next_bounds.y + next_bounds.height / 2;
+  if (center_x < bounds.x || center_y < bounds.y ||
+      center_x >= bounds.x + bounds.width ||
+      center_y >= bounds.y + bounds.height) {
+    return false;
+  }
+
+  if (accessible_bounds != nullptr) {
+    *accessible_bounds = next_bounds;
+  }
+  return true;
+}
+
+AccessibleLookupResult find_accessible_by_id_in_bounds(
+    guint process_id, const std::string &id, const CaptureBounds &bounds) {
+  NativeError init_error = {};
+  if (!ensure_atspi_initialized(&init_error)) {
+    return {nullptr, init_error};
+  }
+
+  if (id.empty()) {
+    return {
+        nullptr,
+        {
+            NativeErrorCode::invalid_argument,
+            "Accessible id must not be empty.",
+        },
+    };
+  }
+
+  const ProcessScope scope = collect_process_scope(process_id);
+  std::deque<AtspiAccessible *> queue;
+  const gint desktop_count = atspi_get_desktop_count();
+  for (gint desktop_index = 0; desktop_index < desktop_count;
+       desktop_index += 1) {
+    AtspiAccessible *desktop = atspi_get_desktop(desktop_index);
+    if (desktop != nullptr) {
+      queue.push_back(desktop);
+    }
+  }
+
+  guint visited_nodes = 0;
+  while (!queue.empty() && visited_nodes < kMaxVisitedNodes) {
+    AtspiAccessible *current = queue.front();
+    queue.pop_front();
+    visited_nodes += 1;
+
+    if (current == nullptr) {
+      continue;
+    }
+
+    if (accessible_matches(current, scope, id) &&
+        accessible_center_is_inside_bounds(current, bounds, nullptr)) {
+      unref_accessible_queue(&queue);
+      return {current, {}};
+    }
+
+    enqueue_children(current, &queue);
+    g_object_unref(current);
+  }
+
+  unref_accessible_queue(&queue);
+  return not_found_result(id);
+}
+
+AccessibleLookupResult find_accessible_by_bounds(guint process_id,
+                                                 const CaptureBounds &bounds) {
+  NativeError init_error = {};
+  if (!ensure_atspi_initialized(&init_error)) {
+    return {nullptr, init_error};
+  }
+
+  const ProcessScope scope = collect_process_scope(process_id);
+  std::deque<AtspiAccessible *> queue;
+  const gint desktop_count = atspi_get_desktop_count();
+  for (gint desktop_index = 0; desktop_index < desktop_count;
+       desktop_index += 1) {
+    AtspiAccessible *desktop = atspi_get_desktop(desktop_index);
+    if (desktop != nullptr) {
+      queue.push_back(desktop);
+    }
+  }
+
+  AtspiAccessible *best = nullptr;
+  gint best_area = 0;
+  guint visited_nodes = 0;
+  while (!queue.empty() && visited_nodes < kMaxVisitedNodes) {
+    AtspiAccessible *current = queue.front();
+    queue.pop_front();
+    visited_nodes += 1;
+
+    if (current == nullptr) {
+      continue;
+    }
+
+    CaptureBounds current_bounds = {};
+    if (accessible_belongs_to_scope(current, scope) &&
+        accessible_center_is_inside_bounds(current, bounds, &current_bounds)) {
+      const gint area = current_bounds.width * current_bounds.height;
+      if (area > best_area &&
+          area <= bounds.width * bounds.height) {
+        if (best != nullptr) {
+          g_object_unref(best);
+        }
+        best = static_cast<AtspiAccessible *>(g_object_ref(current));
+        best_area = area;
+      }
+    }
+
+    enqueue_children(current, &queue);
+    g_object_unref(current);
+  }
+
+  unref_accessible_queue(&queue);
+  if (best != nullptr) {
+    return {best, {}};
+  }
+  return not_found_message("Accessible bounds were not found.");
 }
 
 AccessibleLookupResult find_accessible_by_id_any_process(
@@ -2052,7 +2595,8 @@ bool validate_accessible(guint process_id, AtspiAccessible *accessible,
     return false;
   }
 
-  if (accessible_process_id != process_id) {
+  const ProcessScope scope = collect_process_scope(process_id);
+  if (!process_scope_contains(scope, accessible_process_id)) {
     if (error != nullptr) {
       *error = {
           NativeErrorCode::stale_element,
@@ -2084,6 +2628,7 @@ bool count_windows(guint process_id, gint *count, NativeError *error) {
     return false;
   }
 
+  const ProcessScope scope = collect_process_scope(process_id);
   std::deque<AtspiAccessible *> queue;
   const gint desktop_count = atspi_get_desktop_count();
   for (gint desktop_index = 0; desktop_index < desktop_count;
@@ -2105,7 +2650,7 @@ bool count_windows(guint process_id, gint *count, NativeError *error) {
       continue;
     }
 
-    if (accessible_is_process_window(current, process_id)) {
+    if (accessible_is_process_window(current, scope)) {
       found_count += 1;
       g_object_unref(current);
       continue;
@@ -3802,7 +4347,8 @@ bool activate_accessible_proxy_window(guint process_id,
   }
 
   Window window = 0;
-  if (!resolve_x11_toplevel_window(process_id, accessible, component_bounds,
+  const ProcessScope scope = collect_process_scope(process_id);
+  if (!resolve_x11_toplevel_window(scope, accessible, component_bounds,
                                    display.get(), &window)) {
     if (error != nullptr) {
       *error = unsupported_interface_error(
@@ -4056,7 +4602,8 @@ bool read_accessible_proxy_resize_hints(guint process_id,
   }
 
   Window window = 0;
-  if (!resolve_x11_toplevel_window(process_id, accessible, component_bounds,
+  const ProcessScope scope = collect_process_scope(process_id);
+  if (!resolve_x11_toplevel_window(scope, accessible, component_bounds,
                                    display.get(), &window)) {
     if (error != nullptr) {
       *error = {
@@ -4127,7 +4674,8 @@ bool read_accessible_proxy_x11_info(guint process_id,
   }
 
   Window window = 0;
-  if (!resolve_x11_toplevel_window(process_id, accessible, component_bounds,
+  const ProcessScope scope = collect_process_scope(process_id);
+  if (!resolve_x11_toplevel_window(scope, accessible, component_bounds,
                                    display.get(), &window)) {
     if (error != nullptr) {
       *error = {
@@ -4283,6 +4831,486 @@ bool count_mapped_x11_windows(guint *count, NativeError *error) {
   return true;
 }
 
+bool read_x11_window_snapshots(guint process_id, bool filter_by_process,
+                               std::vector<X11WindowSnapshot> *snapshots,
+                               NativeError *error) {
+  if (snapshots == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window snapshots result must not be null.");
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  const Window root = DefaultRootWindow(display.get());
+  std::vector<Window> windows;
+  if (!read_x11_toplevel_windows(display.get(), root, &windows, error)) {
+    return false;
+  }
+
+  const Window active_window = read_x11_active_window(display.get(), root);
+  std::vector<X11WindowSnapshot> all_snapshots;
+  for (std::size_t index = 0; index < windows.size(); index += 1) {
+    X11WindowSnapshot snapshot = {};
+    if (read_x11_snapshot_from_display(
+            display.get(), root, active_window, windows[index],
+            static_cast<gint>(index), &snapshot)) {
+      all_snapshots.push_back(snapshot);
+    }
+  }
+
+  *snapshots = filter_by_process
+                   ? filter_x11_snapshots_by_process(all_snapshots, process_id)
+                   : all_snapshots;
+  return true;
+}
+
+bool read_x11_window_snapshot(const std::string &window_id,
+                              X11WindowSnapshot *snapshot,
+                              NativeError *error) {
+  if (snapshot == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window snapshot result must not be null.");
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  const Window root = DefaultRootWindow(display.get());
+  const Window active_window = read_x11_active_window(display.get(), root);
+  if (!read_x11_snapshot_from_display(display.get(), root, active_window,
+                                      window, 0, snapshot)) {
+    if (error != nullptr) {
+      *error = {NativeErrorCode::element_not_found,
+                "X11 window was not found: " + window_id};
+    }
+    return false;
+  }
+  return true;
+}
+
+bool read_x11_child_window_snapshots(
+    const std::string &window_id, std::vector<X11WindowSnapshot> *snapshots,
+    NativeError *error) {
+  if (snapshots == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error(
+          "X11 child window snapshots result must not be null.");
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  Window root_return = 0;
+  Window parent_return = 0;
+  Window *children = nullptr;
+  unsigned int child_count = 0;
+  if (XQueryTree(display.get(), window, &root_return, &parent_return, &children,
+                 &child_count) == 0) {
+    if (error != nullptr) {
+      *error = operation_failed_error("Failed to query X11 child windows.");
+    }
+    return false;
+  }
+
+  const Window root = DefaultRootWindow(display.get());
+  const Window active_window = read_x11_active_window(display.get(), root);
+  CaptureBounds parent_bounds = {};
+  if (!read_x11_window_bounds(display.get(), root, window, &parent_bounds)) {
+    if (children != nullptr) {
+      XFree(children);
+    }
+    if (error != nullptr) {
+      *error = {NativeErrorCode::element_not_found,
+                "X11 window was not found: " + window_id};
+    }
+    return false;
+  }
+
+  std::vector<X11WindowSnapshot> next_snapshots;
+  for (unsigned int index = 0; index < child_count; index += 1) {
+    X11WindowSnapshot snapshot = {};
+    if (read_x11_snapshot_from_display(display.get(), root, active_window,
+                                       children[index],
+                                       static_cast<gint>(index), &snapshot) &&
+        overlaps_bounds(parent_bounds, snapshot.bounds)) {
+      next_snapshots.push_back(snapshot);
+    }
+  }
+
+  if (children != nullptr) {
+    XFree(children);
+  }
+
+  *snapshots = next_snapshots;
+  return true;
+}
+
+bool read_x11_window_bounds_by_id(const std::string &window_id,
+                                  CaptureBounds *bounds, NativeError *error) {
+  if (bounds == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window bounds result must not be null.");
+    }
+    return false;
+  }
+
+  X11WindowSnapshot snapshot = {};
+  if (!read_x11_window_snapshot(window_id, &snapshot, error)) {
+    return false;
+  }
+
+  *bounds = snapshot.bounds;
+  return true;
+}
+
+bool wait_x11_window_geometry_by_id(Display *display, Window root,
+                                    Window window,
+                                    const CaptureBounds &before,
+                                    const WindowGeometryRequest &request,
+                                    CaptureBounds *bounds) {
+  const gint64 deadline =
+      g_get_monotonic_time() +
+      native_timeout_config().window_geometry_timeout_usec;
+  do {
+    CaptureBounds actual = {};
+    if (read_x11_window_bounds(display, root, window, &actual) &&
+        geometry_request_observed(before, actual, request)) {
+      *bounds = actual;
+      return true;
+    }
+    g_usleep(kWindowGeometryPollUsec);
+  } while (g_get_monotonic_time() < deadline);
+
+  return false;
+}
+
+bool change_x11_window_geometry_by_id(const std::string &window_id,
+                                      const WindowGeometryRequest &request,
+                                      CaptureBounds *bounds,
+                                      NativeError *error) {
+  if (bounds == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window bounds result must not be null.");
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  const Window root = DefaultRootWindow(display.get());
+  CaptureBounds before = {};
+  if (!read_x11_window_bounds(display.get(), root, window, &before)) {
+    if (error != nullptr) {
+      *error = {NativeErrorCode::element_not_found,
+                "X11 window was not found: " + window_id};
+    }
+    return false;
+  }
+
+  int status = 0;
+  if (request.update_position && request.update_size) {
+    status = XMoveResizeWindow(
+        display.get(), window, request.bounds.x, request.bounds.y,
+        static_cast<unsigned int>(request.bounds.width),
+        static_cast<unsigned int>(request.bounds.height));
+  } else if (request.update_position) {
+    status =
+        XMoveWindow(display.get(), window, request.bounds.x, request.bounds.y);
+  } else {
+    status = XResizeWindow(display.get(), window,
+                           static_cast<unsigned int>(request.bounds.width),
+                           static_cast<unsigned int>(request.bounds.height));
+  }
+  XSync(display.get(), False);
+
+  if (status == 0) {
+    if (error != nullptr) {
+      *error = operation_failed_error("Failed to " + request.operation +
+                                      " the X11 window.");
+    }
+    return false;
+  }
+
+  if (!wait_x11_window_geometry_by_id(display.get(), root, window, before,
+                                      request, bounds)) {
+    if (error != nullptr) {
+      *error = operation_failed_error("X11 window geometry change was not "
+                                      "observed on the screen.");
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool move_x11_window_by_id(const std::string &window_id, gint x, gint y,
+                           CaptureBounds *bounds, NativeError *error) {
+  WindowGeometryRequest request = {
+      {x, y, 1, 1},
+      true,
+      false,
+      "move",
+  };
+  return change_x11_window_geometry_by_id(window_id, request, bounds, error);
+}
+
+bool resize_x11_window_by_id(const std::string &window_id, gint width,
+                             gint height, CaptureBounds *bounds,
+                             NativeError *error) {
+  WindowGeometryRequest request = {
+      {0, 0, width, height},
+      false,
+      true,
+      "resize",
+  };
+  return change_x11_window_geometry_by_id(window_id, request, bounds, error);
+}
+
+bool set_x11_window_bounds_by_id(const std::string &window_id,
+                                 const CaptureBounds &requested_bounds,
+                                 CaptureBounds *bounds, NativeError *error) {
+  WindowGeometryRequest request = {
+      requested_bounds,
+      true,
+      true,
+      "move and resize",
+  };
+  return change_x11_window_geometry_by_id(window_id, request, bounds, error);
+}
+
+bool x11_window_activation_observed(Display *display, Window window) {
+  const Window root = DefaultRootWindow(display);
+  if (read_x11_active_window(display, root) == window) {
+    return true;
+  }
+
+  Window focus = 0;
+  int revert_to = 0;
+  XGetInputFocus(display, &focus, &revert_to);
+  return focus != None && focus != PointerRoot &&
+         window_contains_x11_window(display, window, focus);
+}
+
+bool wait_x11_window_activation_observed(Display *display, Window window) {
+  const gint64 deadline =
+      g_get_monotonic_time() +
+      native_timeout_config().window_activation_timeout_usec;
+  do {
+    if (x11_window_activation_observed(display, window)) {
+      return true;
+    }
+    g_usleep(kWindowActivationPollUsec);
+  } while (g_get_monotonic_time() < deadline);
+
+  return false;
+}
+
+bool activate_x11_window_by_id(const std::string &window_id,
+                               NativeError *error) {
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  const Window root = DefaultRootWindow(display.get());
+  CaptureBounds ignored_bounds = {};
+  if (!read_x11_window_bounds(display.get(), root, window, &ignored_bounds)) {
+    if (error != nullptr) {
+      *error = {NativeErrorCode::element_not_found,
+                "X11 window was not found: " + window_id};
+    }
+    return false;
+  }
+
+  const Atom active_window_atom =
+      XInternAtom(display.get(), "_NET_ACTIVE_WINDOW", False);
+  XEvent event = {};
+  event.xclient.type = ClientMessage;
+  event.xclient.window = window;
+  event.xclient.message_type = active_window_atom;
+  event.xclient.format = 32;
+  event.xclient.data.l[0] = 1;
+  event.xclient.data.l[1] = CurrentTime;
+  XSendEvent(display.get(), root, False,
+             SubstructureRedirectMask | SubstructureNotifyMask, &event);
+  XSetInputFocus(display.get(), window, RevertToParent, CurrentTime);
+  XRaiseWindow(display.get(), window);
+  XSync(display.get(), False);
+
+  if (!wait_x11_window_activation_observed(display.get(), window)) {
+    if (error != nullptr) {
+      *error = operation_failed_error("X11 window activation was not observed.");
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool read_x11_window_resize_hints_by_id(const std::string &window_id,
+                                        WindowResizeHints *hints,
+                                        NativeError *error) {
+  if (hints == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window resize hints result must not be null.");
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  if (!read_x11_resize_hints(display.get(), window, hints)) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Failed to read X11 WM_NORMAL_HINTS for the window.");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool read_x11_window_info_by_id(const std::string &window_id,
+                                X11WindowInfo *info, NativeError *error) {
+  if (info == nullptr) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("X11 window info result must not be null.");
+    }
+    return false;
+  }
+
+  Window window = 0;
+  if (!parse_x11_window_id(window_id, &window)) {
+    if (error != nullptr) {
+      *error = invalid_argument_error("Invalid X11 window id: " + window_id);
+    }
+    return false;
+  }
+
+  std::unique_ptr<Display, decltype(&XCloseDisplay)> display(
+      XOpenDisplay(nullptr), XCloseDisplay);
+  if (display == nullptr) {
+    if (error != nullptr) {
+      *error = operation_failed_error(
+          "Failed to open the X11 display. Ensure DISPLAY points to an X11 "
+          "display.");
+    }
+    return false;
+  }
+
+  WindowResizeHints normal_hints = {};
+  if (!read_x11_resize_hints(display.get(), window, &normal_hints)) {
+    if (error != nullptr) {
+      *error = unsupported_interface_error(
+          "Failed to read X11 WM_NORMAL_HINTS for the window.");
+    }
+    return false;
+  }
+
+  X11WindowInfo next = {};
+  next.window_id = x11_window_id_string(window);
+  next.title = read_x11_window_title(display.get(), window);
+  read_x11_class_hint(display.get(), window, &next.class_name,
+                      &next.instance_name);
+  next.normal_hints = normal_hints;
+  *info = next;
+  return true;
+}
+
 bool read_accessible_proxy_info(guint process_id, AtspiAccessible *accessible,
                                 AccessibleInfo *info, NativeError *error) {
   if (info == nullptr) {
@@ -4302,6 +5330,19 @@ bool read_accessible_proxy_info(guint process_id, AtspiAccessible *accessible,
   AccessibleInfo next = {};
 
   GError *gerror = nullptr;
+  next.process_id = atspi_accessible_get_process_id(accessible, &gerror);
+  if (gerror != nullptr) {
+    if (error != nullptr) {
+      *error = {
+          NativeErrorCode::stale_element,
+          take_gerror_message(&gerror, "Failed to read process id."),
+      };
+    } else {
+      g_clear_error(&gerror);
+    }
+    return false;
+  }
+
   const AtspiRole role = atspi_accessible_get_role(accessible, &gerror);
   if (gerror != nullptr) {
     if (error != nullptr) {

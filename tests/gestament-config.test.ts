@@ -9,7 +9,7 @@ import { createGestamentConfigOutput } from '../src/gestament-config';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-describe('gestament-config output', () => {
+describe.concurrent('gestament-config output', () => {
   const includeDir = '/tmp/project/node_modules/gestament/include';
 
   it('prints the include directory', () => {

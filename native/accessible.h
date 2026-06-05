@@ -6,7 +6,7 @@
 #ifndef GESTAMENT_ACCESSIBLE_HPP
 #define GESTAMENT_ACCESSIBLE_HPP
 
-#include "atspi_client.hpp"
+#include "atspi_client.h"
 
 #include <atspi/atspi.h>
 
@@ -52,8 +52,25 @@ struct X11WindowInfo {
   WindowResizeHints normal_hints;
 };
 
+/** X11 top-level window snapshot used by native window discovery. */
+struct X11WindowSnapshot {
+  std::string window_id;
+  std::string title;
+  std::string class_name;
+  std::string instance_name;
+  std::string transient_for;
+  guint process_id;
+  bool has_process_id;
+  CaptureBounds bounds;
+  WindowResizeHints normal_hints;
+  bool has_normal_hints;
+  gint stacking_order;
+  bool active;
+};
+
 /** AT-SPI metadata exposed for an accessible element. */
 struct AccessibleInfo {
+  guint process_id;
   std::string role_name;
   std::string localized_role_name;
   std::string accessible_id;
@@ -102,6 +119,18 @@ struct AccessibleLookupResult {
 /** Finds an accessible by process id and AT-SPI accessible id. */
 AccessibleLookupResult find_accessible_by_id(guint process_id,
                                              const std::string &id);
+
+/** Finds an accessible by id under a known accessible subtree. */
+AccessibleLookupResult find_accessible_by_id_in_subtree(
+    guint process_id, AtspiAccessible *root, const std::string &id);
+
+/** Finds an accessible by id whose component bounds are inside screen bounds. */
+AccessibleLookupResult find_accessible_by_id_in_bounds(
+    guint process_id, const std::string &id, const CaptureBounds &bounds);
+
+/** Finds the best accessible whose component bounds match screen bounds. */
+AccessibleLookupResult find_accessible_by_bounds(guint process_id,
+                                                 const CaptureBounds &bounds);
 
 /** Finds an accessible by AT-SPI accessible id across all exposed processes. */
 AccessibleLookupResult find_accessible_by_id_any_process(const std::string &id);
@@ -337,6 +366,52 @@ bool input_scroll_wheel(gint x_steps, gint y_steps, NativeError *error);
 
 /** Counts mapped top-level X11 windows on the current DISPLAY. */
 bool count_mapped_x11_windows(guint *count, NativeError *error);
+
+/** Reads mapped top-level X11 window snapshots on the current DISPLAY. */
+bool read_x11_window_snapshots(guint process_id, bool filter_by_process,
+                               std::vector<X11WindowSnapshot> *snapshots,
+                               NativeError *error);
+
+/** Reads one mapped top-level X11 window snapshot by window id. */
+bool read_x11_window_snapshot(const std::string &window_id,
+                              X11WindowSnapshot *snapshot,
+                              NativeError *error);
+
+/** Reads direct mapped X11 child window snapshots by parent window id. */
+bool read_x11_child_window_snapshots(
+    const std::string &window_id, std::vector<X11WindowSnapshot> *snapshots,
+    NativeError *error);
+
+/** Reads screen-relative bounds for an X11 window by window id. */
+bool read_x11_window_bounds_by_id(const std::string &window_id,
+                                  CaptureBounds *bounds, NativeError *error);
+
+/** Moves an X11 window and returns the observed bounds. */
+bool move_x11_window_by_id(const std::string &window_id, gint x, gint y,
+                           CaptureBounds *bounds, NativeError *error);
+
+/** Resizes an X11 window and returns the observed bounds. */
+bool resize_x11_window_by_id(const std::string &window_id, gint width,
+                             gint height, CaptureBounds *bounds,
+                             NativeError *error);
+
+/** Moves and resizes an X11 window and returns the observed bounds. */
+bool set_x11_window_bounds_by_id(const std::string &window_id,
+                                 const CaptureBounds &requested_bounds,
+                                 CaptureBounds *bounds, NativeError *error);
+
+/** Activates an X11 window by window id. */
+bool activate_x11_window_by_id(const std::string &window_id,
+                               NativeError *error);
+
+/** Reads X11 normal-size hints by window id. */
+bool read_x11_window_resize_hints_by_id(const std::string &window_id,
+                                        WindowResizeHints *hints,
+                                        NativeError *error);
+
+/** Reads X11 window metadata by window id. */
+bool read_x11_window_info_by_id(const std::string &window_id,
+                                X11WindowInfo *info, NativeError *error);
 
 /** Reads AT-SPI metadata for an element within a process. */
 bool read_accessible_proxy_info(guint process_id, AtspiAccessible *accessible,

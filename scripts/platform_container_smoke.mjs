@@ -118,10 +118,10 @@ const assertCapture = (capture, label) => {
   );
 };
 
-const waitForText = async (element, expectedText) => {
+const waitForText = async (element, expectedText, timeoutMs) => {
   const startedAt = Date.now();
   let lastText = '';
-  while (Date.now() - startedAt <= 10_000) {
+  while (Date.now() - startedAt <= timeoutMs) {
     lastText = await element.text();
     if (lastText === expectedText) {
       return;
@@ -164,7 +164,7 @@ const runAppSmoke = async (gestament, appPath, timeoutMs) => {
       label.kind === 'label',
       `result_label kind was ${label.kind}.`
     );
-    await waitForText(label, 'container-smoke');
+    await waitForText(label, 'container-smoke', timeoutMs);
 
     assertCapture(await button.capture(), 'button');
     assertCapture(await app.capture(), 'screen');

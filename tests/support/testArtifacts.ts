@@ -4,6 +4,7 @@
 // https://github.com/kekyo/gestament
 
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
@@ -15,6 +16,20 @@ interface TestArtifactConfig {
   readonly arch: string;
   readonly root: string;
   readonly runRoot: string;
+  readonly timestamp: string;
+}
+
+/**
+ * Values used to build an isolated artifact configuration for tests.
+ */
+export interface TestArtifactConfigValues {
+  /** Architecture directory name. */
+  readonly arch: string;
+  /** Optional result grouping directory. */
+  readonly group: string | undefined;
+  /** Root directory for artifact output. */
+  readonly root: string;
+  /** Shared test-run timestamp. */
   readonly timestamp: string;
 }
 
@@ -37,7 +52,12 @@ interface CurrentTestArtifact {
 }
 
 let config: TestArtifactConfig | undefined;
-let currentTestArtifact: CurrentTestArtifact | undefined;
+const testArtifactConfigStorage = new AsyncLocalStorage<
+  TestArtifactConfig | undefined
+>();
+const currentTestArtifactStorage = new AsyncLocalStorage<
+  CurrentTestArtifact | undefined
+>();
 
 const padNumber = (value: number, width: number): string =>
   value.toString().padStart(width, '0');
@@ -66,6 +86,26 @@ const serializeBounds = (
   x: bounds.x,
   y: bounds.y,
 });
+
+const createTestArtifactConfig = (
+  values: TestArtifactConfigValues
+): TestArtifactConfig => {
+  const timestamp = values.timestamp;
+  const arch = normalizePathSegment(values.arch, 'host');
+  const root = resolve(values.root);
+  const group =
+    values.group === undefined || values.group.length === 0
+      ? undefined
+      : normalizePathSegment(values.group, 'group');
+  const archRunRoot = join(root, timestamp, arch);
+
+  return {
+    arch,
+    root,
+    runRoot: group === undefined ? archRunRoot : join(archRunRoot, group),
+    timestamp,
+  };
+};
 
 /**
  * Formats the shared test-run timestamp used below test-results.
@@ -98,33 +138,38 @@ export const initializeTestRunTimestamp = (): string => {
  * @returns Artifact configuration.
  */
 export const getTestArtifactConfig = (): TestArtifactConfig => {
+  const scopedConfig = testArtifactConfigStorage.getStore();
+  if (scopedConfig !== undefined) {
+    return scopedConfig;
+  }
+
   if (config !== undefined) {
     return config;
   }
 
-  const timestamp = initializeTestRunTimestamp();
-  const arch = normalizePathSegment(
-    process.env.GESTAMENT_TEST_RESULTS_ARCH ?? 'host',
-    'host'
-  );
-  const root = resolve(
-    process.env.GESTAMENT_TEST_RESULTS_ROOT ?? 'test-results'
-  );
-  const groupValue = process.env.GESTAMENT_TEST_RESULTS_GROUP;
-  const group =
-    groupValue === undefined || groupValue.length === 0
-      ? undefined
-      : normalizePathSegment(groupValue, 'group');
-  const archRunRoot = join(root, timestamp, arch);
-
-  config = {
-    arch,
-    root,
-    runRoot: group === undefined ? archRunRoot : join(archRunRoot, group),
-    timestamp,
-  };
+  config = createTestArtifactConfig({
+    arch: process.env.GESTAMENT_TEST_RESULTS_ARCH ?? 'host',
+    group: process.env.GESTAMENT_TEST_RESULTS_GROUP,
+    root: process.env.GESTAMENT_TEST_RESULTS_ROOT ?? 'test-results',
+    timestamp: initializeTestRunTimestamp(),
+  });
   return config;
 };
+
+/**
+ * Runs a callback with an isolated artifact configuration for concurrent tests.
+ * @param values Artifact configuration values.
+ * @param callback Callback executed inside the isolated async context.
+ * @returns The callback result.
+ */
+export const runWithTestArtifactConfigForTesting = async <T>(
+  values: TestArtifactConfigValues,
+  callback: () => Promise<T>
+): Promise<T> =>
+  await testArtifactConfigStorage.run(
+    createTestArtifactConfig(values),
+    callback
+  );
 
 /**
  * Resets cached artifact configuration after environment changes in tests.
@@ -203,19 +248,19 @@ export const setCurrentTestArtifact = (
   testName: string,
   testId: string
 ): void => {
-  currentTestArtifact = {
+  currentTestArtifactStorage.enterWith({
     captureIndex: 0,
     directory: getTestArtifactDirectory(testName, testId),
     id: testId,
     name: testName,
-  };
+  });
 };
 
 /**
  * Clears the active artifact directory for capture helpers.
  */
 export const clearCurrentTestArtifact = (): void => {
-  currentTestArtifact = undefined;
+  currentTestArtifactStorage.enterWith(undefined);
 };
 
 /**
@@ -231,6 +276,7 @@ export const saveCaptureArtifact = async (
   readonly metadataPath: string;
   readonly pngPath: string;
 }> => {
+  const currentTestArtifact = currentTestArtifactStorage.getStore();
   if (currentTestArtifact === undefined) {
     throw new Error('No active test artifact directory.');
   }
