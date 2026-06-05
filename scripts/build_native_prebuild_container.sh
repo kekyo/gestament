@@ -99,31 +99,20 @@ if [ "$actual_dpkg_architecture" != "$expected_dpkg_architecture" ]; then
   exit 1
 fi
 
-export DEBIAN_FRONTEND=noninteractive
-
-apt-get update
-apt-get install -y --no-install-recommends \
-  binutils \
-  build-essential \
-  ca-certificates \
-  file \
-  libatspi2.0-dev \
-  libgdk-pixbuf-2.0-dev \
-  libglib2.0-dev \
-  libxtst-dev \
-  libnode-dev \
-  libx11-dev \
-  make \
-  nodejs \
-  npm \
-  pkg-config
+require_command file
+require_command make
+require_command node
+require_command pkg-config
+require_command readelf
 
 case "$GESTAMENT_GTK_BACKEND" in
   gtk3)
-    apt-get install -y --no-install-recommends libgtk-3-dev
+    pkg-config --exists gtk+-3.0 || {
+      printf '%s\n' "GTK3 backend requires gtk+-3.0 development files." >&2
+      exit 1
+    }
     ;;
   gtk4)
-    apt-get install -y --no-install-recommends libgtk-4-dev
     pkg-config --atleast-version=4.22 gtk4 || {
       printf '%s\n' "GTK4 backend requires gtk4 >= 4.22." >&2
       pkg-config --modversion gtk4 >&2 || true
@@ -135,10 +124,6 @@ case "$GESTAMENT_GTK_BACKEND" in
     exit 2
     ;;
 esac
-
-require_command make
-require_command node
-require_command readelf
 
 package_version=$(detect_package_version)
 validate_package_version "$package_version"

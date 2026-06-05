@@ -7,14 +7,14 @@ PACKAGE_BUILD_ROOT="${PROJECT_ROOT}/.build/package"
 REPORT_ROOT="${PACKAGE_BUILD_ROOT}/reports"
 TMP_ROOT="${PACKAGE_BUILD_ROOT}/tmp"
 TEST_RESULT_ROOT="${PROJECT_ROOT}/test-results"
-DEFAULT_PARALLEL_JOB_CAP=16
+DEFAULT_PARALLEL_JOB_CAP=2
 
 ARCH_MATRIX=$(cat <<'EOF'
-amd64 debian bookworm linux/amd64 docker.io/amd64/debian:bookworm
-i686 debian bookworm linux/386 docker.io/i386/debian:bookworm
 arm64 debian bookworm linux/arm64 docker.io/arm64v8/debian:bookworm
 armv7l debian bookworm linux/arm/v7 docker.io/arm32v7/debian:bookworm
 riscv64 debian trixie linux/riscv64 docker.io/library/debian:trixie
+i686 debian bookworm linux/386 docker.io/i386/debian:bookworm
+amd64 debian bookworm linux/amd64 docker.io/amd64/debian:bookworm
 EOF
 )
 
@@ -29,6 +29,9 @@ Options:
   --with-tests         Run platform tests in containers after native builds.
   --test-backend <b>   gtk3, gtk4, or all. Defaults to gtk3 with --with-tests.
   --help               Show this help.
+
+Run ./prereq.sh first to build the prerequisite Podman images used by native
+prebuild and platform test containers.
 EOF
 }
 
@@ -233,7 +236,7 @@ normalize_test_backend_filter() {
   esac
 }
 
-container_image_for_backend() {
+base_container_image_for_backend() {
   local backend=$1
   local arch=$2
   local default_image=$3
@@ -269,7 +272,7 @@ container_image_for_backend() {
   esac
 }
 
-test_container_image_for_backend() {
+base_test_container_image_for_backend() {
   local backend=$1
   local arch=$2
   local default_image=$3
@@ -297,12 +300,61 @@ test_container_image_for_backend() {
       esac
       ;;
     gtk4)
-      container_image_for_backend "${backend}" "${arch}" "${default_image}"
+      base_container_image_for_backend "${backend}" "${arch}" "${default_image}"
       ;;
     *)
       fail "Unsupported test backend image lookup: ${backend}"
       ;;
   esac
+}
+
+prereq_image_for_base_image() {
+  local purpose=$1
+  local backend=$2
+  local arch=$3
+  local base_image=$4
+  local image_name
+  local distro
+  local release
+
+  image_name="${base_image##*/}"
+  distro="${image_name%%:*}"
+  release="${base_image##*:}"
+
+  printf 'localhost/gestament-pack-%s-%s-%s-%s-%s:latest\n' \
+    "${purpose}" \
+    "${backend}" \
+    "${distro}" \
+    "${release}" \
+    "${arch}"
+}
+
+prereq_image_for_backend() {
+  local backend=$1
+  local arch=$2
+  local default_image=$3
+  local base_image
+
+  base_image="$(base_container_image_for_backend "${backend}" "${arch}" "${default_image}")"
+  prereq_image_for_base_image 'native' "${backend}" "${arch}" "${base_image}"
+}
+
+test_prereq_image_for_backend() {
+  local backend=$1
+  local arch=$2
+  local default_image=$3
+  local base_image
+
+  base_image="$(base_test_container_image_for_backend "${backend}" "${arch}" "${default_image}")"
+  prereq_image_for_base_image 'test' "${backend}" "${arch}" "${base_image}"
+}
+
+assert_prereq_image() {
+  local image=$1
+
+  if ! "${CONTAINER_ENGINE_BIN}" image exists "${image}" >/dev/null 2>&1; then
+    fail "Missing prerequisite image: ${image}. Run ./prereq.sh first."
+  fi
 }
 
 set_runtime_timeout_env_args() {
@@ -427,9 +479,10 @@ build_native_prebuild() {
 
   prebuild_dir="$(prebuild_dir_for_arch "${arch}")/${backend}"
   prebuild_file="$(prebuild_file_for_arch "${arch}")"
-  image="$(container_image_for_backend "${backend}" "${arch}" "${image}")"
+  image="$(prereq_image_for_backend "${backend}" "${arch}" "${image}")"
+  assert_prereq_image "${image}"
 
-  printf '%s\n' "[native:${backend}] ${arch} (${distro} ${release}, ${platform})"
+  printf '%s\n' "[native:${backend}] ${arch} (${distro} ${release}, ${platform}, ${image})"
 
   "${CONTAINER_ENGINE_BIN}" run --rm \
     --platform "${platform}" \
@@ -485,7 +538,8 @@ run_platform_test() {
   local log_dir
   local log_path
 
-  image="$(test_container_image_for_backend "${backend}" "${arch}" "${image}")"
+  image="$(test_prereq_image_for_backend "${backend}" "${arch}" "${image}")"
+  assert_prereq_image "${image}"
   if [[ "${arch}" = "${HOST_ARCH}" ]]; then
     execution_profile='native'
   else

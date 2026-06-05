@@ -1213,6 +1213,16 @@ podman run --rm --platform linux/arm64 docker.io/library/debian:trixie-slim unam
 # Should output: aarch64
 ```
 
+Prepare the package container images before running the package build. This
+installs the native build and platform test dependencies into target-specific
+Podman images, so repeated package builds do not spend time installing apt
+packages inside every container.
+
+```bash
+# Build prerequisite images
+./prereq.sh
+```
+
 ```bash
 # Build all packages
 ./build_package_all.sh

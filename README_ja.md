@@ -1205,6 +1205,15 @@ podman run --rm --platform linux/arm64 docker.io/library/debian:trixie-slim unam
 # Should output: aarch64
 ```
 
+パッケージ生成前に、ビルド用のコンテナイメージを準備します。この手順でネイティブビルドと
+platform testに必要な依存関係をターゲット別のPodmanイメージに導入するため、パッケージ生成のたびに
+各コンテナ内でaptパッケージをインストールする時間を削減できます。
+
+```bash
+# Build prerequisite images
+./prereq.sh
+```
+
 ```bash
 # Build all packages
 ./build_package_all.sh

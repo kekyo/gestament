@@ -21,7 +21,7 @@ export default defineConfig({
     environment: 'node',
     exclude: ['**/node_modules/**', '**/dist/**'],
     fileParallelism: true,
-    maxConcurrency: 16,
+    maxConcurrency: 4,
     expect: {
       poll: {
         timeout: vitestPollTimeoutMs,
