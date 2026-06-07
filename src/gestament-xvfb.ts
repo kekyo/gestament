@@ -9,23 +9,23 @@ import {
   type ChildProcess,
   type ChildProcessByStdio,
 } from 'node:child_process';
-import {
-  closeSync,
-  existsSync,
-  openSync,
-  readFileSync,
-  realpathSync,
-  unlinkSync,
-  writeSync,
-} from 'node:fs';
-import { createConnection } from 'node:net';
-import { tmpdir } from 'node:os';
+import { existsSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { delay } from 'async-primitives';
 
 import { appendPrerequisiteInstallHint } from './prerequisites';
 import { resolveRuntimeTimeouts } from './runtimeTimeouts';
+import {
+  cleanupStaleX11DisplayArtifacts,
+  connectUnixSocket,
+  createXvfbDisplayArtifactPaths,
+  isRetryableXvfbProbeExit,
+  isXvfbDisplayNumberAvailable,
+  releaseXvfbDisplayLock,
+  tryAcquireXvfbDisplayLock,
+  type XvfbDisplayLock,
+} from './xvfbSession';
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -33,13 +33,6 @@ interface ParsedArguments {
   readonly screen: string;
   readonly command: readonly string[];
   readonly withTrayHost: boolean;
-}
-
-interface XvfbDisplayLock {
-  readonly displayNumber: number;
-  readonly fd: number;
-  readonly path: string;
-  released: boolean;
 }
 
 interface XvfbLease {
@@ -68,14 +61,6 @@ const printUsage = (): void => {
   );
 };
 
-const errorCode = (error: unknown): string | undefined =>
-  typeof error === 'object' &&
-  error !== null &&
-  'code' in error &&
-  typeof (error as { readonly code?: unknown }).code === 'string'
-    ? (error as { readonly code: string }).code
-    : undefined;
-
 const appendOutput = (lines: string[], chunk: Buffer): void => {
   lines.push(chunk.toString('utf8'));
   if (lines.length > 40) {
@@ -88,145 +73,209 @@ const formatOutputTail = (stderr: readonly string[]): string => {
   return stderrText.length === 0 ? '' : `\nstderr:\n${stderrText}`;
 };
 
-const xvfbDisplayLockPath = (displayNumber: number): string =>
-  resolve(tmpdir(), `gestament-xvfb-display-${displayNumber}.lock`);
-
-const readXvfbDisplayLockPid = (path: string): number | undefined => {
-  try {
-    const pid = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
-  } catch {
-    return undefined;
+const formatProbeOutputTail = (
+  stdout: readonly string[],
+  stderr: readonly string[]
+): string => {
+  const stdoutText = stdout.join('').trim();
+  const stderrText = stderr.join('').trim();
+  if (stdoutText.length === 0 && stderrText.length === 0) {
+    return '';
   }
+  return `\nstdout:\n${stdoutText}\nstderr:\n${stderrText}`;
 };
 
-const processExists = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return errorCode(error) === 'EPERM';
-  }
+interface XvfbProbeError extends Error {
+  readonly retryable: boolean;
+}
+
+interface FatalXvfbStartupError extends Error {
+  readonly fatalXvfbStartup: true;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const createXvfbProbeError = (
+  message: string,
+  retryable: boolean
+): XvfbProbeError => {
+  const error = new Error(message) as Error & {
+    retryable?: boolean;
+  };
+  Object.defineProperty(error, 'retryable', {
+    value: retryable,
+  });
+  return error as XvfbProbeError;
 };
 
-const removeStaleXvfbDisplayLock = (path: string): void => {
-  const pid = readXvfbDisplayLockPid(path);
-  if (pid === undefined || processExists(pid)) {
-    return;
-  }
+const isRetryableXvfbProbeError = (error: unknown): error is XvfbProbeError =>
+  isRecord(error) && typeof error.retryable === 'boolean' && error.retryable;
 
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    if (errorCode(error) !== 'ENOENT') {
-      throw error;
-    }
-  }
+const createFatalXvfbStartupError = (error: unknown): FatalXvfbStartupError => {
+  const message = error instanceof Error ? error.message : String(error);
+  const fatal = new Error(
+    `Xvfb readiness probe failed: ${message}`
+  ) as FatalXvfbStartupError;
+  Object.defineProperty(fatal, 'fatalXvfbStartup', {
+    value: true,
+  });
+  return fatal;
 };
 
-const openXvfbDisplayLock = (
-  displayNumber: number,
-  path: string
-): XvfbDisplayLock | undefined => {
-  try {
-    const fd = openSync(path, 'wx');
-    writeSync(fd, `${process.pid}\n`);
-    return { displayNumber, fd, path, released: false };
-  } catch (error) {
-    if (errorCode(error) === 'EEXIST') {
-      return undefined;
-    }
-    throw error;
+const isFatalXvfbStartupError = (
+  error: unknown
+): error is FatalXvfbStartupError =>
+  isRecord(error) && error.fatalXvfbStartup === true;
+
+const resolveXvfbPoolProbePath = (): string => {
+  const executablePath = process.argv[1];
+  if (executablePath === undefined) {
+    throw new Error('Missing executable path.');
   }
+
+  const probePath = resolve(
+    dirname(realpathSync(executablePath)),
+    'gestament-xvfb-pool-probe.cjs'
+  );
+  if (!existsSync(probePath)) {
+    throw new Error(`Internal Xvfb probe was not found: ${probePath}`);
+  }
+  return probePath;
 };
 
-const tryAcquireXvfbDisplayLock = (
-  displayNumber: number
-): XvfbDisplayLock | undefined => {
-  const path = xvfbDisplayLockPath(displayNumber);
-  const lock = openXvfbDisplayLock(displayNumber, path);
-  if (lock !== undefined) {
-    return lock;
-  }
+const runXvfbProbeOnce = (xvfb: XvfbLease, timeoutMs: number): Promise<void> =>
+  new Promise<void>((resolveProbe, rejectProbe) => {
+    const probePath = resolveXvfbPoolProbePath();
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      DISPLAY: xvfb.display,
+      GDK_BACKEND: 'x11',
+      GESTAMENT_XVFB_ACTIVE: '1',
+      XDG_SESSION_TYPE: 'x11',
+    };
+    delete env.AT_SPI_BUS_ADDRESS;
+    delete env.DBUS_SESSION_BUS_ADDRESS;
+    delete env.NO_AT_BRIDGE;
+    delete env.WAYLAND_DISPLAY;
+    delete env.XAUTHORITY;
 
-  removeStaleXvfbDisplayLock(path);
-  return openXvfbDisplayLock(displayNumber, path);
-};
-
-const releaseXvfbDisplayLock = (lock: XvfbDisplayLock): void => {
-  if (lock.released) {
-    return;
-  }
-
-  lock.released = true;
-  closeSync(lock.fd);
-  try {
-    unlinkSync(lock.path);
-  } catch (error) {
-    if (errorCode(error) !== 'ENOENT') {
-      throw error;
-    }
-  }
-};
-
-const xvfbSocketPath = (displayNumber: number): string =>
-  `/tmp/.X11-unix/X${displayNumber}`;
-
-const xvfbServerLockPath = (displayNumber: number): string =>
-  `/tmp/.X${displayNumber}-lock`;
-
-const isDisplayNumberAvailable = (displayNumber: number): boolean =>
-  !existsSync(xvfbServerLockPath(displayNumber)) &&
-  !existsSync(xvfbSocketPath(displayNumber));
-
-const connectUnixSocket = (path: string, timeoutMs: number): Promise<void> =>
-  new Promise<void>((resolveConnect, rejectConnect) => {
-    const socket = createConnection(path);
+    const child = spawn(process.execPath, [probePath], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
 
-    const settle = (callback: () => void): void => {
+    const rejectOnce = (error: Error): void => {
       if (settled) {
         return;
       }
       settled = true;
-      clearTimeout(timeout);
-      socket.destroy();
-      callback();
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+      rejectProbe(error);
     };
 
-    const timeout = setTimeout(() => {
-      settle(() => {
-        rejectConnect(new Error(`Timed out connecting to ${path}.`));
-      });
+    const resolveOnce = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+      resolveProbe();
+    };
+
+    timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+      rejectOnce(createXvfbProbeError('Timed out probing Xvfb.', false));
     }, timeoutMs);
 
-    socket.once('connect', () => {
-      settle(resolveConnect);
+    child.stdout.on('data', (chunk: Buffer) => {
+      appendOutput(stdout, chunk);
     });
-    socket.once('error', (error) => {
-      settle(() => {
-        rejectConnect(error);
-      });
+    child.stderr.on('data', (chunk: Buffer) => {
+      appendOutput(stderr, chunk);
+    });
+    child.once('error', (error) => {
+      rejectOnce(error);
+    });
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        resolveOnce();
+        return;
+      }
+
+      const stderrText = stderr.join('');
+      rejectOnce(
+        createXvfbProbeError(
+          `Xvfb probe failed: code=${String(code)}, signal=${String(signal)}` +
+            formatProbeOutputTail(stdout, stderr),
+          isRetryableXvfbProbeExit(stderrText)
+        )
+      );
     });
   });
 
-const waitForXvfbReady = async (displayNumber: number): Promise<void> => {
+const waitForXvfbProcessExit = async (
+  xvfb: XvfbLease,
+  timeoutMs: number
+): Promise<void> => {
   const startedAt = Date.now();
-  const path = xvfbSocketPath(displayNumber);
+  while (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
+    if (Date.now() - startedAt > timeoutMs) {
+      return;
+    }
+    await delay(25);
+  }
+};
+
+const waitForXvfbReady = async (xvfb: XvfbLease): Promise<void> => {
+  const startedAt = Date.now();
+  const paths = createXvfbDisplayArtifactPaths(xvfb.displayNumber);
   const timeouts = resolveRuntimeTimeouts();
+  let lastError: unknown;
+
   while (Date.now() - startedAt <= timeouts.xvfbStartupTimeoutMs) {
-    if (existsSync(path)) {
+    if (existsSync(paths.socketPath)) {
       try {
-        await connectUnixSocket(path, timeouts.xvfbSocketConnectTimeoutMs);
-        return;
-      } catch {
-        // Keep polling until the X server accepts local connections.
+        await connectUnixSocket(
+          paths.socketPath,
+          timeouts.xvfbSocketConnectTimeoutMs
+        );
+        const remainingTimeoutMs = Math.max(
+          1,
+          timeouts.xvfbStartupTimeoutMs - (Date.now() - startedAt)
+        );
+        try {
+          await runXvfbProbeOnce(xvfb, remainingTimeoutMs);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (!isRetryableXvfbProbeError(error)) {
+            throw createFatalXvfbStartupError(error);
+          }
+        }
+      } catch (error) {
+        if (isFatalXvfbStartupError(error)) {
+          throw error;
+        }
+        lastError = error;
       }
     }
     await delay(25);
   }
 
-  throw new Error(`Timed out waiting for Xvfb display :${displayNumber}.`);
+  const suffix =
+    lastError instanceof Error ? ` Last error: ${lastError.message}` : '';
+  throw new Error(
+    `Timed out waiting for Xvfb display ${xvfb.display}.${suffix}`
+  );
 };
 
 const killXvfbNow = (xvfb: XvfbLease): void => {
@@ -237,17 +286,28 @@ const killXvfbNow = (xvfb: XvfbLease): void => {
 };
 
 const spawnDirectXvfb = async (screen: string): Promise<XvfbLease> => {
+  const timeouts = resolveRuntimeTimeouts();
   for (
     let displayNumber = firstDisplayNumber;
     displayNumber <= lastDisplayNumber;
     displayNumber += 1
   ) {
-    const displayLock = tryAcquireXvfbDisplayLock(displayNumber);
+    const paths = createXvfbDisplayArtifactPaths(displayNumber);
+    const displayLock = tryAcquireXvfbDisplayLock(
+      displayNumber,
+      paths,
+      undefined
+    );
     if (displayLock === undefined) {
       continue;
     }
 
-    if (!isDisplayNumberAvailable(displayNumber)) {
+    if (
+      !(await isXvfbDisplayNumberAvailable(
+        paths,
+        timeouts.xvfbSocketConnectTimeoutMs
+      ))
+    ) {
       releaseXvfbDisplayLock(displayLock);
       continue;
     }
@@ -274,7 +334,7 @@ const spawnDirectXvfb = async (screen: string): Promise<XvfbLease> => {
 
     try {
       await Promise.race([
-        waitForXvfbReady(displayNumber),
+        waitForXvfbReady(xvfb),
         new Promise<never>((_resolve, reject) => {
           child.once('error', reject);
         }),
@@ -293,6 +353,13 @@ const spawnDirectXvfb = async (screen: string): Promise<XvfbLease> => {
       return xvfb;
     } catch (error) {
       killXvfbNow(xvfb);
+      await cleanupStaleX11DisplayArtifacts(
+        paths,
+        timeouts.xvfbSocketConnectTimeoutMs
+      ).catch(() => undefined);
+      if (isFatalXvfbStartupError(error)) {
+        throw error;
+      }
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('ENOENT')) {
         throw new Error(
@@ -310,19 +377,22 @@ const spawnDirectXvfb = async (screen: string): Promise<XvfbLease> => {
 };
 
 const terminateXvfb = async (xvfb: XvfbLease): Promise<void> => {
+  const timeouts = resolveRuntimeTimeouts();
   if (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
     xvfb.child.kill('SIGTERM');
-    const startedAt = Date.now();
-    const releaseTimeoutMs =
-      resolveRuntimeTimeouts().displaySessionReleaseTimeoutMs;
-    while (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
-      if (Date.now() - startedAt > releaseTimeoutMs) {
-        xvfb.child.kill('SIGKILL');
-        break;
-      }
-      await delay(25);
+    await waitForXvfbProcessExit(xvfb, timeouts.displaySessionReleaseTimeoutMs);
+    if (xvfb.child.exitCode === null && xvfb.child.signalCode === null) {
+      xvfb.child.kill('SIGKILL');
+      await waitForXvfbProcessExit(
+        xvfb,
+        timeouts.displaySessionReleaseTimeoutMs
+      );
     }
   }
+  await cleanupStaleX11DisplayArtifacts(
+    createXvfbDisplayArtifactPaths(xvfb.displayNumber),
+    timeouts.xvfbSocketConnectTimeoutMs
+  ).catch(() => undefined);
   releaseXvfbDisplayLock(xvfb.displayLock);
 };
 
