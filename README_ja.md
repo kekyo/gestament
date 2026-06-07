@@ -492,6 +492,9 @@ expect(secondWindow).toBeUndefined();
   列挙対象は、起動プロセスをrootとし、その子孫プロセスが所有するウインドウも含みます。
 - `findById()`, `getById()`, `findByPath()`, `getByPath()` は、accessible IDをAT-SPIで解決する前提を維持します。X11-only windowに合成accessible IDを付けることはありません。
   ただし、X11でしか発見できないウインドウについては、X11 boundsとdirect child windowを補助的に使い、対応するAT-SPI elementが一意に見つかる場合はsemantic elementとして返し、見つからない場合はX11-backed containerとして走査できます。
+- `GtkWindowElement.childAt()` や `getByPath()` のようなウインドウ起点の子孫探索は、そのウインドウのAT-SPI subtreeに属する要素だけを辿ります。
+  右クリックメニューなどの一時的なpopup/context menuは、表示中でもウインドウ子孫として露出しない場合があるため、子孫探索では検出できません。
+  メニュー自体またはメニュー項目がAT-SPI accessible IDを露出していれば、表示中に `findById()` / `getById()` で直接検出できます。IDもなく、ウインドウ子孫でもないpopup/context menuを意味的に検出するAPIはありません。
 
 ### GTKウィジェットの操作
 

@@ -497,6 +497,9 @@ expect(secondWindow).toBeUndefined();
   Enumeration uses the launched process as the root and includes windows owned by descendant processes.
 - `findById()`, `getById()`, `findByPath()`, and `getByPath()` still resolve accessible IDs through AT-SPI and do not assign synthetic accessible IDs to X11-only windows.
   When a window is only discoverable through X11, gestament can use X11 bounds and direct child windows to reach matching AT-SPI elements or expose X11-backed containers for traversal.
+- Window-rooted descendant traversal, such as `GtkWindowElement.childAt()` and `getByPath()`, only walks elements that belong to that window's AT-SPI subtree.
+  Temporary popup/context menus, such as right-click menus, may not be exposed as window descendants even while visible, so descendant traversal cannot detect them.
+  If the menu itself or its menu items expose AT-SPI accessible IDs, `findById()` / `getById()` can resolve them while they are visible. There is no semantic API for detecting popup/context menus that have no ID and are not window descendants.
 
 ### Operating GTK widgets
 
