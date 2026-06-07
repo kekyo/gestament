@@ -1127,7 +1127,7 @@ Each value must be a positive integer in milliseconds.
 | :--------------------------------------------- | ------: | :--------------------------------------------------- |
 | `GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS` | `30000` | DBus/launcher driver startup                         |
 | `GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS` |  `5000` | DBus/launcher driver and Xvfb release grace period   |
-| `GESTAMENT_XVFB_STARTUP_TIMEOUT_MS`            | `10000` | Xvfb socket readiness                                |
+| `GESTAMENT_XVFB_STARTUP_TIMEOUT_MS`            | `10000` | Xvfb X11 readiness                                   |
 | `GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS`     |   `250` | Per-attempt Xvfb Unix socket connect                 |
 | `GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS`         | `30000` | Xvfb pool cleanliness probe                          |
 | `GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS`         | `30000` | StatusNotifier tray host readiness                   |

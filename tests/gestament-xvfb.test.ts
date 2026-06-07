@@ -186,6 +186,78 @@ describe.concurrent('gestament-xvfb', () => {
     expect(probes[1]?.xauthority).toBeNull();
   });
 
+  it('starts concurrent launchers in one Node process with usable X11 displays', async () => {
+    const env = { ...process.env };
+    delete env.AT_SPI_BUS_ADDRESS;
+    delete env.DBUS_SESSION_BUS_ADDRESS;
+    delete env.DISPLAY;
+    delete env.GESTAMENT_XVFB_ACTIVE;
+    delete env.NO_AT_BRIDGE;
+    delete env.WAYLAND_DISPLAY;
+    delete env.XAUTHORITY;
+
+    const script = `
+const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
+const childScript = 'setInterval(() => {}, 2147483647);';
+const launchOne = async (index) => {
+  const launcher = createGtkAppLauncher({
+    appPath: process.execPath,
+    args: ['-e', childScript],
+    systemOutputBufferBytes: 4000,
+    xvfbTrayHost: false,
+  });
+  let app;
+  try {
+    app = await launcher.launch();
+    const environment = await app.environment();
+    const capture = await app.capture();
+    return {
+      display: environment.DISPLAY ?? null,
+      height: capture.bounds.height,
+      index,
+      width: capture.bounds.width,
+    };
+  } finally {
+    if (app !== undefined) {
+      await app.release().catch(() => undefined);
+    }
+    await launcher.release().catch(() => undefined);
+  }
+};
+(async () => {
+  const results = await Promise.all(
+    Array.from({ length: 4 }, (_value, index) => launchOne(index))
+  );
+  console.log(JSON.stringify(results));
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+`;
+
+    const result = await spawnText(process.execPath, ['-e', script], {
+      env,
+      timeoutMs: xvfbLauncherScriptTimeoutMs,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const line = result.stdout.trim().split('\n').at(-1);
+    expect(line).toBeDefined();
+    const results = JSON.parse(line as string) as readonly {
+      readonly display: string | null;
+      readonly height: number;
+      readonly width: number;
+    }[];
+    expect(results).toHaveLength(4);
+    const displays = results.map((entry) => entry.display);
+    expect(displays.every((display) => display !== null)).toBe(true);
+    expect(new Set(displays).size).toBe(displays.length);
+    for (const entry of results) {
+      expect(entry.width).toBeGreaterThan(0);
+      expect(entry.height).toBeGreaterThan(0);
+    }
+  });
+
   it('starts the session bus inside Xvfb for AT-SPI isolation', () => {
     const result = spawnSync(
       process.execPath,

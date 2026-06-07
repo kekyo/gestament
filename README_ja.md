@@ -1120,7 +1120,7 @@ const launcher = createGtkAppLauncher({
 | :--------------------------------------------- | ------: | :----------------------------------------------------- |
 | `GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS` | `30000` | DBus/launcher driver起動                               |
 | `GESTAMENT_DISPLAY_SESSION_RELEASE_TIMEOUT_MS` |  `5000` | DBus/launcher driverとXvfbの解放猶予                   |
-| `GESTAMENT_XVFB_STARTUP_TIMEOUT_MS`            | `10000` | Xvfb socket readiness                                  |
+| `GESTAMENT_XVFB_STARTUP_TIMEOUT_MS`            | `10000` | Xvfb X11 readiness                                     |
 | `GESTAMENT_XVFB_SOCKET_CONNECT_TIMEOUT_MS`     |   `250` | Xvfb Unix socket connectの各試行                       |
 | `GESTAMENT_XVFB_POOL_PROBE_TIMEOUT_MS`         | `30000` | Xvfb poolのcleanliness probe                           |
 | `GESTAMENT_TRAY_HOST_READY_TIMEOUT_MS`         | `30000` | StatusNotifier tray host readiness                     |
