@@ -9,7 +9,12 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { createGtkAppLauncher } from '../src/launchGtkApp';
-import type { GtkApp, GtkWidgetElement, GtkWindowElement } from '../src/types';
+import type {
+  GtkApp,
+  GtkElementInfo,
+  GtkWidgetElement,
+  GtkWindowElement,
+} from '../src/types';
 import {
   fixtureWindowDiscoveryTimeoutMs as windowDiscoveryTimeoutMs,
   visualE2eTestTimeoutMs,
@@ -77,6 +82,66 @@ const expectElement = (
 ): GtkWidgetElement => {
   expect(element).toBeDefined();
   return element as GtkWidgetElement;
+};
+
+type ChildContainerElement = GtkWidgetElement & {
+  readonly childAt: (index: number) => Promise<GtkWidgetElement | undefined>;
+  readonly getChildCount: () => Promise<number>;
+};
+
+type ClickableElement = GtkWidgetElement & {
+  readonly click: () => Promise<void>;
+};
+
+const isChildContainerElement = (
+  element: GtkWidgetElement
+): element is ChildContainerElement =>
+  'childAt' in element && 'getChildCount' in element;
+
+const isClickableElement = (
+  element: GtkWidgetElement
+): element is ClickableElement => 'click' in element;
+
+const findDescendant = async (
+  element: GtkWidgetElement,
+  maxDepth: number,
+  predicate: (element: GtkWidgetElement, info: GtkElementInfo) => boolean
+): Promise<GtkWidgetElement | undefined> => {
+  const info = await element.info();
+  if (predicate(element, info)) {
+    return element;
+  }
+  const container = isChildContainerElement(element) ? element : undefined;
+  if (container === undefined || maxDepth <= 0) {
+    return undefined;
+  }
+  const childCount = await container.getChildCount();
+  for (let index = 0; index < childCount; index += 1) {
+    const child = await container.childAt(index);
+    if (child !== undefined) {
+      const match = await findDescendant(child, maxDepth - 1, predicate);
+      if (match !== undefined) {
+        return match;
+      }
+    }
+  }
+  return undefined;
+};
+
+const waitForOutputIncludes = async (
+  app: GtkApp,
+  text: string
+): Promise<void> => {
+  const startedAt = Date.now();
+  let stdout = '';
+  while (Date.now() - startedAt <= windowDiscoveryTimeoutMs) {
+    stdout = (await app.output()).stdout;
+    if (stdout.includes(text)) {
+      return;
+    }
+    await delay(50);
+  }
+  expect(stdout).toContain(text);
 };
 
 const withProbeApp = async (
@@ -182,6 +247,52 @@ describeGtk3.concurrent('native window fusion e2e', () => {
           childCapture.bounds.y + childCapture.bounds.height
         ).toBeLessThanOrEqual(dialogBounds.y + dialogBounds.height);
       });
+    },
+    visualE2eTestTimeoutMs
+  );
+
+  it(
+    'activates GTK file chooser accept controls',
+    async () => {
+      await withProbeApp(
+        'file-dialog-probe',
+        ['--default-file'],
+        async (app) => {
+          await waitForWindowCount(app, 1);
+
+          const dialog = expectWindow(await app.windowAt(0));
+          const openButton = await findDescendant(
+            dialog,
+            5,
+            (element, info) =>
+              isClickableElement(element) &&
+              element.kind === 'button' &&
+              info.name === 'Open'
+          );
+          expect(openButton).toBeDefined();
+          await (openButton as ClickableElement).click();
+          await waitForOutputIncludes(app, 'response=accept');
+        }
+      );
+    },
+    visualE2eTestTimeoutMs
+  );
+
+  it(
+    'accepts GTK file chooser default selection with Return',
+    async () => {
+      await withProbeApp(
+        'file-dialog-probe',
+        ['--default-file'],
+        async (app) => {
+          await waitForWindowCount(app, 1);
+
+          const dialog = expectWindow(await app.windowAt(0));
+          await dialog.activate();
+          await app.input.pressKey('Return');
+          await waitForOutputIncludes(app, 'response=accept');
+        }
+      );
     },
     visualE2eTestTimeoutMs
   );

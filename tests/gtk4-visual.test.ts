@@ -21,6 +21,7 @@ import type {
 } from '../src/types';
 import { createGtkAppLauncher } from '../src/launchGtkApp';
 import { createGtkCaptureExpect, toPass, waitForResult } from '../src/testing';
+import { runWithWaitDeadline } from '../src/wait';
 import {
   expectPngRegionToContainNonLightPixels,
   expectPngToContainDarkPixels,
@@ -265,6 +266,19 @@ const expectPollToBe = async <Value>(
   );
 };
 
+const waitForAppLookupReady = async (app: GtkApp): Promise<void> => {
+  await waitForResult(
+    async () => {
+      expectElementKind(await app.getById('main_window'), 'window');
+      expectElementKind(await app.getById('submit_button'), 'button');
+    },
+    {
+      message: 'Timed out waiting for GTK4 fixture lookup readiness.',
+      timeoutMs: fixtureTimeoutMs,
+    }
+  );
+};
+
 const isUnsupportedImageInterfaceError = (
   error: unknown
 ): error is GtkAutomationError =>
@@ -336,11 +350,12 @@ const waitForRejectedCode = async (
   expectedCode: string
 ): Promise<void> => {
   const startedAt = Date.now();
+  const deadlineMs = startedAt + missingLookupTimeoutMs;
   let lastCode: unknown;
 
-  while (Date.now() - startedAt <= missingLookupTimeoutMs) {
+  while (Date.now() <= deadlineMs) {
     try {
-      await operation();
+      await runWithWaitDeadline(deadlineMs, operation);
     } catch (error) {
       lastCode = (error as { code?: unknown }).code;
       if (lastCode === expectedCode) {
@@ -922,10 +937,13 @@ const assertBoundsEqual = (actual, expected, label) => {
     testTimeoutMs
   );
 
-  it(
+  it.sequential(
     'reports undefined when an accessible id is missing',
     async () => {
-      const app = await shortLauncher.launch();
+      const app = await shortLauncher.launch(undefined, {
+        timeoutMs: fixtureTimeoutMs,
+      });
+      await waitForAppLookupReady(app);
 
       await toPass(
         async () => {
@@ -942,10 +960,13 @@ const assertBoundsEqual = (actual, expected, label) => {
     testTimeoutMs
   );
 
-  it(
+  it.sequential(
     'rejects when an accessible id is missing',
     async () => {
-      const app = await shortLauncher.launch();
+      const app = await shortLauncher.launch(undefined, {
+        timeoutMs: fixtureTimeoutMs,
+      });
+      await waitForAppLookupReady(app);
 
       await waitForRejectedCode(async () => {
         await app.getById('missing_accessible_id');
@@ -975,10 +996,13 @@ const assertBoundsEqual = (actual, expected, label) => {
     testTimeoutMs
   );
 
-  it(
+  it.sequential(
     'reports undefined when an element path is missing',
     async () => {
-      const app = await shortLauncher.launch();
+      const app = await shortLauncher.launch(undefined, {
+        timeoutMs: fixtureTimeoutMs,
+      });
+      await waitForAppLookupReady(app);
 
       await toPass(
         async () => {
@@ -995,10 +1019,13 @@ const assertBoundsEqual = (actual, expected, label) => {
     testTimeoutMs
   );
 
-  it(
+  it.sequential(
     'rejects when an element path is missing',
     async () => {
-      const app = await shortLauncher.launch();
+      const app = await shortLauncher.launch(undefined, {
+        timeoutMs: fixtureTimeoutMs,
+      });
+      await waitForAppLookupReady(app);
 
       await waitForRejectedCode(async () => {
         await app.getByPath('main_window.0.3');
@@ -1218,24 +1245,50 @@ const assertBoundsEqual = (actual, expected, label) => {
     testTimeoutMs
   );
 
-  it(
+  it.sequential(
     'enumerates and selects typed child widgets',
     async () => {
       const app = await launcher.launch(['--widget-enumerables']);
-      await expect
-        .poll(async () => (await app.windowAt(1)) !== undefined)
-        .toBe(true);
-      const enumerablesWindow = expectElementKind(
-        await app.windowAt(1),
-        'window'
-      );
-      expect(await enumerablesWindow.getChildCount()).toBe(1);
+      const enumerableTree = await waitForResult(
+        async () => {
+          const windowCount = await app.getWindowCount();
+          for (let index = 0; index < windowCount; index += 1) {
+            const candidate = await app.windowAt(index);
+            if (candidate === undefined) {
+              continue;
+            }
+            const window = candidate as GtkElementOfKind<'window'>;
 
-      const enumerablesBox = expectElementKind(
-        await enumerablesWindow.childAt(0),
-        'container'
+            if ((await window.getChildCount()) !== 1) {
+              continue;
+            }
+
+            const child = await window.childAt(0);
+            if (child?.kind !== 'container') {
+              continue;
+            }
+
+            const box = child as GtkElementOfKind<'container'>;
+            if ((await box.getChildCount()) !== 4) {
+              continue;
+            }
+
+            return {
+              enumerablesBox: box,
+              enumerablesWindow: window,
+            };
+          }
+
+          throw new Error('GTK4 enumerable window tree was not ready.');
+        },
+        {
+          message: 'Timed out waiting for GTK4 enumerable window tree.',
+          timeoutMs: fixtureTimeoutMs,
+        }
       );
-      expect(await enumerablesBox.getChildCount()).toBe(4);
+      const { enumerablesBox, enumerablesWindow } = enumerableTree;
+      await expectPollToBe(() => enumerablesWindow.getChildCount(), 1);
+      await expectPollToBe(() => enumerablesBox.getChildCount(), 4);
       await expect(enumerablesBox.childAt(4)).resolves.toBeUndefined();
 
       const combo = expectElementKind(

@@ -533,6 +533,22 @@ describeGtk3('GTK3 AT-SPI automation', visualSuiteOptions, () => {
     const app = await launcher.launch();
 
     await waitForWindowCount(app, 1);
+    const mainWindow = expectElementKind(await app.windowAt(0), 'window');
+    await toPass(
+      async () => {
+        await expect(mainWindow.resizeHints()).resolves.toEqual(
+          mainWindowResizeHints
+        );
+        await expect(mainWindow.x11Info()).resolves.toMatchObject({
+          normalHints: mainWindowResizeHints,
+        });
+      },
+      {
+        message: 'Timed out waiting for GTK3 X11 resize hints.',
+        timeoutMs: fixtureTimeoutMs,
+      }
+    );
+
     const capture = await app.capture();
     await saveCaptureArtifact(capture, 'screen');
     const png = PNG.sync.read(capture.image);
@@ -545,23 +561,32 @@ describeGtk3('GTK3 AT-SPI automation', visualSuiteOptions, () => {
     expect(png.width).toBe(capture.bounds.width);
     expect(png.height).toBe(capture.bounds.height);
 
-    const mainWindow = expectElementKind(await app.windowAt(0), 'window');
     const mainWindowCapture = await mainWindow.capture();
     expectCaptureBoundsWithin(mainWindowCapture, capture);
     await expect(mainWindow.bounds()).resolves.toEqual(
       mainWindowCapture.bounds
     );
-    await expect(mainWindow.resizeHints()).resolves.toEqual(
-      mainWindowResizeHints
+    let x11Info: Awaited<ReturnType<typeof mainWindow.x11Info>> | undefined;
+    await toPass(
+      async () => {
+        await expect(mainWindow.resizeHints()).resolves.toEqual(
+          mainWindowResizeHints
+        );
+        const nextX11Info = await mainWindow.x11Info();
+        expect(nextX11Info).toMatchObject({
+          normalHints: mainWindowResizeHints,
+          title: 'Gestament GTK3 Fixture',
+        });
+        x11Info = nextX11Info;
+      },
+      {
+        message: 'Timed out waiting for stable GTK3 X11 resize hints.',
+        timeoutMs: fixtureTimeoutMs,
+      }
     );
-    const x11Info = await mainWindow.x11Info();
-    expect(x11Info).toMatchObject({
-      normalHints: mainWindowResizeHints,
-      title: 'Gestament GTK3 Fixture',
-    });
-    expect(x11Info.windowId).toMatch(/^0x[0-9a-f]+$/u);
+    expect(x11Info?.windowId).toMatch(/^0x[0-9a-f]+$/u);
     await expect(mainWindow.debugDiagnostics()).resolves.toMatchObject({
-      rawIds: { x11: x11Info.windowId },
+      rawIds: { x11: x11Info?.windowId },
       seenBy: expect.arrayContaining(['x11']),
     });
     const submitButton = await app.getById('submit_button');

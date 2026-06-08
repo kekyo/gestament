@@ -53,6 +53,7 @@ import type {
   GtkAppLauncherOptions,
   GtkCapture,
   GtkAppOutput,
+  GtkAutomationError,
   GtkTrayItem,
   GtkTrayItemSelector,
   GtkWidgetElement,
@@ -196,6 +197,13 @@ const isPathChildContainer = (
   element: GtkWidgetElement
 ): element is GtkWidgetElement & GtkPathChildContainer => 'childAt' in element;
 
+const isRetryableAtspiOperationError = (error: GtkAutomationError): boolean =>
+  error.code === 'OPERATION_FAILED' &&
+  (error.message.includes('Timeout was reached') ||
+    error.message.includes('AT-SPI') ||
+    error.message.includes('atspi') ||
+    error.message.includes('Failed to initialize AT-SPI.'));
+
 const waitForAtspiReady = async (
   state: ProcessState,
   command: string,
@@ -206,9 +214,20 @@ const waitForAtspiReady = async (
     return assertProcessRunning(state, command);
   }
 
+  let lastRetryableError: GtkAutomationError | undefined;
   while (Date.now() - startedAt <= timeoutMs) {
     const processId = assertProcessRunning(state, command);
-    state.atspiReadiness = nativeProcessAtspiReadiness(processId);
+    try {
+      state.atspiReadiness = nativeProcessAtspiReadiness(processId);
+    } catch (error) {
+      const normalizedError = normalizeNativeError(error);
+      if (!isRetryableAtspiOperationError(normalizedError)) {
+        throw normalizedError;
+      }
+      lastRetryableError = normalizedError;
+      await delay(50);
+      continue;
+    }
     if (state.atspiReadiness === 'ready') {
       state.atspiReady = true;
       return processId;
@@ -218,10 +237,14 @@ const waitForAtspiReady = async (
   }
 
   assertProcessRunning(state, command);
+  const lastErrorDetails =
+    lastRetryableError === undefined
+      ? ''
+      : `, last error: ${lastRetryableError.message}`;
   throw createGtkOperationFailedError(
     appendPrerequisiteInstallHint(
       `AT-SPI did not become ready for GTK application: ${command} ` +
-        `(last readiness: ${state.atspiReadiness})` +
+        `(last readiness: ${state.atspiReadiness}${lastErrorDetails})` +
         formatProcessOutput(state)
     )
   );
@@ -437,6 +460,21 @@ export const launchGtkApp = (
       : createElementForHandle(processId, handle);
   };
 
+  const retryTransientAtspiLookupError = async (
+    error: unknown,
+    timeoutMs: number,
+    startedAt: number
+  ): Promise<void> => {
+    const normalizedError = normalizeNativeError(error);
+    if (!isRetryableAtspiOperationError(normalizedError)) {
+      throw normalizedError;
+    }
+
+    state.atspiReady = false;
+    await waitForAtspiReady(state, appPath, timeoutMs, startedAt);
+    await delay(50);
+  };
+
   const findById = async (
     id: string
   ): Promise<GtkWidgetElement | undefined> => {
@@ -453,7 +491,8 @@ export const launchGtkApp = (
           return element;
         }
       } catch (error) {
-        throw normalizeNativeError(error);
+        await retryTransientAtspiLookupError(error, timeoutMs, startedAt);
+        continue;
       }
 
       await delay(50);
@@ -509,7 +548,8 @@ export const launchGtkApp = (
           }
         }
       } catch (error) {
-        throw normalizeNativeError(error);
+        await retryTransientAtspiLookupError(error, timeoutMs, startedAt);
+        continue;
       }
 
       await delay(50);

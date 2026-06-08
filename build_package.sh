@@ -8,6 +8,7 @@ REPORT_ROOT="${PACKAGE_BUILD_ROOT}/reports"
 TMP_ROOT="${PACKAGE_BUILD_ROOT}/tmp"
 TEST_RESULT_ROOT="${PROJECT_ROOT}/test-results"
 DEFAULT_PARALLEL_JOB_CAP=2
+DEFAULT_PACKAGE_TEST_PIDS_LIMIT=8192
 
 ARCH_MATRIX=$(cat <<'EOF'
 arm64 debian bookworm linux/arm64 docker.io/arm64v8/debian:bookworm
@@ -485,6 +486,7 @@ build_native_prebuild() {
   printf '%s\n' "[native:${backend}] ${arch} (${distro} ${release}, ${platform}, ${image})"
 
   "${CONTAINER_ENGINE_BIN}" run --rm \
+    --pids-limit "${PACKAGE_TEST_PIDS_LIMIT}" \
     --platform "${platform}" \
     -v "${PROJECT_ROOT}:/workspace" \
     -w /workspace \
@@ -554,6 +556,7 @@ run_platform_test() {
   mkdir -p "${log_dir}" "${TEST_RESULT_ROOT}"
 
   "${CONTAINER_ENGINE_BIN}" run --rm \
+    --pids-limit "${PACKAGE_TEST_PIDS_LIMIT}" \
     --platform "${platform}" \
     -v "${PROJECT_ROOT}:/workspace:ro" \
     -v "${TEST_RESULT_ROOT}:/workspace/test-results:rw" \
@@ -926,11 +929,13 @@ main() {
       ;;
   esac
 
-  ensure_node_dependencies
-
   if [[ -n "${PARALLEL_JOBS}" ]]; then
     validate_positive_integer 'Parallel job count' "${PARALLEL_JOBS}"
   fi
+  PACKAGE_TEST_PIDS_LIMIT="${GESTAMENT_PACKAGE_TEST_PIDS_LIMIT:-${DEFAULT_PACKAGE_TEST_PIDS_LIMIT}}"
+  validate_positive_integer 'GESTAMENT_PACKAGE_TEST_PIDS_LIMIT' "${PACKAGE_TEST_PIDS_LIMIT}"
+
+  ensure_node_dependencies
 
   mkdir -p "${ARTIFACT_ROOT}" "${REPORT_ROOT}" "${TMP_ROOT}"
   rm -rf "${REPORT_ROOT}" "${TMP_ROOT}"
