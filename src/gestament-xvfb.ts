@@ -205,7 +205,7 @@ const runXvfbProbeOnce = (xvfb: XvfbLease, timeoutMs: number): Promise<void> =>
     child.once('error', (error) => {
       rejectOnce(error);
     });
-    child.once('exit', (code, signal) => {
+    child.once('close', (code, signal) => {
       if (code === 0) {
         resolveOnce();
         return;

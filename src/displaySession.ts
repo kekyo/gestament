@@ -1210,7 +1210,7 @@ const runXvfbProbeOnce = (
     child.once('error', (error) => {
       rejectOnce(error);
     });
-    child.once('exit', (code, signal) => {
+    child.once('close', (code, signal) => {
       if (code !== 0) {
         const stderrText = stderr.join('');
         rejectOnce(
