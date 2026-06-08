@@ -243,6 +243,7 @@ const widgetKindFromInfo = (info: NativeElementInfo): GtkWidgetKind => {
     case 'layered pane':
     case 'split pane':
     case 'viewport':
+    case 'file chooser':
       return 'container';
     case 'button':
     case 'push button':
