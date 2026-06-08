@@ -117,13 +117,46 @@ describe.concurrent('gestament-xvfb', () => {
   });
 
   it('allocates distinct displays for concurrent gestament-xvfb processes', async () => {
-    const probeScript = [
-      'console.log(JSON.stringify({',
-      '  display: process.env.DISPLAY ?? null,',
-      '  xauthority: process.env.XAUTHORITY ?? null,',
-      '}));',
-      'setTimeout(() => process.exit(0), 1500);',
-    ].join('\n');
+    const tempDirectory = mkdtempSync(
+      join(tmpdir(), 'gestament-xvfb-concurrent-')
+    );
+    const probeWaitTimeoutMs = Math.max(
+      1_000,
+      Math.floor(xvfbLauncherScriptTimeoutMs * 0.9)
+    );
+    const probeScript = (index: number): string =>
+      [
+        "const { existsSync, renameSync, writeFileSync } = require('node:fs');",
+        "const { join } = require('node:path');",
+        `const tempDirectory = ${JSON.stringify(tempDirectory)};`,
+        `const index = ${JSON.stringify(index)};`,
+        'const expectedProbeCount = 2;',
+        `const timeoutMs = ${JSON.stringify(probeWaitTimeoutMs)};`,
+        'const probePath = join(tempDirectory, `probe-${index}.json`);',
+        'const probeTempPath = `${probePath}.tmp-${process.pid}`;',
+        'const probe = {',
+        '  display: process.env.DISPLAY ?? null,',
+        '  xauthority: process.env.XAUTHORITY ?? null,',
+        '};',
+        'writeFileSync(probeTempPath, JSON.stringify(probe));',
+        'renameSync(probeTempPath, probePath);',
+        'const startedAt = Date.now();',
+        'const waitForPeers = () => {',
+        '  for (let candidate = 0; candidate < expectedProbeCount; candidate += 1) {',
+        '    if (!existsSync(join(tempDirectory, `probe-${candidate}.json`))) {',
+        '      if (Date.now() - startedAt > timeoutMs) {',
+        "        console.error('Timed out waiting for peer gestament-xvfb probe.');",
+        '        process.exit(2);',
+        '      }',
+        '      setTimeout(waitForPeers, 25);',
+        '      return;',
+        '    }',
+        '  }',
+        '  console.log(JSON.stringify(probe));',
+        '  setTimeout(() => process.exit(0), 100);',
+        '};',
+        'waitForPeers();',
+      ].join('\n');
     const env = { ...process.env };
     delete env.AT_SPI_BUS_ADDRESS;
     delete env.DBUS_SESSION_BUS_ADDRESS;
@@ -133,57 +166,61 @@ describe.concurrent('gestament-xvfb', () => {
     delete env.WAYLAND_DISPLAY;
     delete env.XAUTHORITY;
 
-    const launches = await Promise.all([
-      spawnText(
-        process.execPath,
-        [
-          xvfbBin,
-          '--screen=640x480x24',
-          '--',
+    try {
+      const launches = await Promise.all([
+        spawnText(
           process.execPath,
-          '-e',
-          probeScript,
-        ],
-        {
-          env,
-          timeoutMs: xvfbLauncherScriptTimeoutMs,
-        }
-      ),
-      spawnText(
-        process.execPath,
-        [
-          xvfbBin,
-          '--screen=640x480x24',
-          '--',
+          [
+            xvfbBin,
+            '--screen=640x480x24',
+            '--',
+            process.execPath,
+            '-e',
+            probeScript(0),
+          ],
+          {
+            env,
+            timeoutMs: xvfbLauncherScriptTimeoutMs,
+          }
+        ),
+        spawnText(
           process.execPath,
-          '-e',
-          probeScript,
-        ],
-        {
-          env,
-          timeoutMs: xvfbLauncherScriptTimeoutMs,
-        }
-      ),
-    ]);
+          [
+            xvfbBin,
+            '--screen=640x480x24',
+            '--',
+            process.execPath,
+            '-e',
+            probeScript(1),
+          ],
+          {
+            env,
+            timeoutMs: xvfbLauncherScriptTimeoutMs,
+          }
+        ),
+      ]);
 
-    for (const launch of launches) {
-      expect(launch.status, launch.stderr).toBe(0);
+      for (const launch of launches) {
+        expect(launch.status, launch.stderr).toBe(0);
+      }
+
+      const probes = launches.map((launch) => {
+        const line = launch.stdout.trim().split('\n').at(-1);
+        expect(line).toBeDefined();
+        return JSON.parse(line as string) as {
+          readonly display: string | null;
+          readonly xauthority: string | null;
+        };
+      });
+
+      expect(probes[0]?.display).not.toBeNull();
+      expect(probes[1]?.display).not.toBeNull();
+      expect(probes[0]?.display).not.toBe(probes[1]?.display);
+      expect(probes[0]?.xauthority).toBeNull();
+      expect(probes[1]?.xauthority).toBeNull();
+    } finally {
+      rmSync(tempDirectory, { force: true, recursive: true });
     }
-
-    const probes = launches.map((launch) => {
-      const line = launch.stdout.trim().split('\n').at(-1);
-      expect(line).toBeDefined();
-      return JSON.parse(line as string) as {
-        readonly display: string | null;
-        readonly xauthority: string | null;
-      };
-    });
-
-    expect(probes[0]?.display).not.toBeNull();
-    expect(probes[1]?.display).not.toBeNull();
-    expect(probes[0]?.display).not.toBe(probes[1]?.display);
-    expect(probes[0]?.xauthority).toBeNull();
-    expect(probes[1]?.xauthority).toBeNull();
   });
 
   it('starts concurrent launchers in one Node process with usable X11 displays', async () => {

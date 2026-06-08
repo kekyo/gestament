@@ -165,6 +165,8 @@ const scriptIndex = args.findIndex((arg) => arg.startsWith('./scripts/'));
 if (scriptIndex > 0) {
   containerImage = args[scriptIndex - 1] ?? '';
 }
+const pidsLimitIndex = args.indexOf('--pids-limit');
+const pidsLimit = pidsLimitIndex < 0 ? null : args[pidsLimitIndex + 1] ?? '';
 
 if (workspace.length === 0) {
   console.error('workspace volume was not passed to the container stub.');
@@ -182,7 +184,7 @@ if (env.GESTAMENT_PREBUILD_DIR !== undefined) {
   writeFileSync(prebuildPath, 'native-prebuild-stub\\n');
 }
 
-if (env.GESTAMENT_TEST_EXECUTION_PROFILE !== undefined) {
+if (scriptIndex > 0) {
   appendFileSync(
     process.env.GESTAMENT_CONTAINER_STUB_RECORDS,
     JSON.stringify({
@@ -192,7 +194,9 @@ if (env.GESTAMENT_TEST_EXECUTION_PROFILE !== undefined) {
       displayStartupTimeoutMs: env.GESTAMENT_DISPLAY_SESSION_STARTUP_TIMEOUT_MS,
       hostArch: env.GESTAMENT_TEST_HOST_ARCH,
       image: containerImage,
+      pidsLimit,
       profile: env.GESTAMENT_TEST_EXECUTION_PROFILE,
+      script: args[scriptIndex],
       targetArch: env.GESTAMENT_TEST_TARGET_ARCH,
       xvfbStartupTimeoutMs: env.GESTAMENT_XVFB_STARTUP_TIMEOUT_MS,
     }) + '\\n'
@@ -270,19 +274,32 @@ console.log('Machine: RISC-V');
           (line) =>
             JSON.parse(line) as {
               readonly arch: string;
-              readonly atspiProbeTimeoutMs: string;
+              readonly atspiProbeTimeoutMs?: string;
               readonly backend: string;
-              readonly displayStartupTimeoutMs: string;
-              readonly hostArch: string;
+              readonly displayStartupTimeoutMs?: string;
+              readonly hostArch?: string;
               readonly image: string;
-              readonly profile: string;
-              readonly targetArch: string;
-              readonly xvfbStartupTimeoutMs: string;
+              readonly pidsLimit: string | null;
+              readonly profile?: string;
+              readonly script: string;
+              readonly targetArch?: string;
+              readonly xvfbStartupTimeoutMs?: string;
             }
         );
 
-      expect(records).toHaveLength(2);
-      expect(records).toEqual(
+      expect(records.every((record) => record.pidsLimit === '8192')).toBe(true);
+      expect(
+        records.some(
+          (record) =>
+            record.script === './scripts/build_native_prebuild_container.sh'
+        )
+      ).toBe(true);
+
+      const platformRecords = records.filter(
+        (record) => record.profile !== undefined
+      );
+      expect(platformRecords).toHaveLength(2);
+      expect(platformRecords).toEqual(
         expect.arrayContaining([
           {
             arch: hostArch,
@@ -291,7 +308,9 @@ console.log('Machine: RISC-V');
             displayStartupTimeoutMs: '120000',
             hostArch,
             image: packageImageTag('test', 'gtk3', 'trixie', hostArch),
+            pidsLimit: '8192',
             profile: 'native',
+            script: './scripts/test_platform_container.sh',
             targetArch: hostArch,
             xvfbStartupTimeoutMs: '60000',
           },
@@ -302,15 +321,75 @@ console.log('Machine: RISC-V');
             displayStartupTimeoutMs: '300000',
             hostArch,
             image: packageImageTag('test', 'gtk3', 'trixie', crossArch),
+            pidsLimit: '8192',
             profile: 'cross',
+            script: './scripts/test_platform_container.sh',
             targetArch: crossArch,
             xvfbStartupTimeoutMs: '300000',
           },
         ])
       );
+
+      await writeFile(recordsPath, '');
+      const overrideResult = spawnSync(
+        buildPackageScript,
+        [
+          '--target',
+          'native',
+          '--with-tests',
+          '--test-backend',
+          'gtk3',
+          '--arch',
+          `${hostArch},${crossArch}`,
+          '--jobs',
+          '20',
+        ],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            BUILD_PACKAGE_PROJECT_ROOT: tempRoot,
+            CONTAINER_ENGINE: containerEnginePath,
+            GESTAMENT_CONTAINER_STUB_RECORDS: recordsPath,
+            GESTAMENT_PACKAGE_TEST_PIDS_LIMIT: '4096',
+            PATH: `${binRoot}:${process.env.PATH ?? ''}`,
+          },
+          timeout: cliScriptTimeoutMs,
+        }
+      );
+
+      expect(overrideResult.status, overrideResult.stderr).toBe(0);
+      const overrideRecords = (await readFile(recordsPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              readonly pidsLimit: string | null;
+            }
+        );
+      expect(
+        overrideRecords.every((record) => record.pidsLimit === '4096')
+      ).toBe(true);
     } finally {
       await rm(tempRoot, { force: true, recursive: true });
     }
+  });
+
+  it('rejects a non-positive package test pids limit', () => {
+    const result = spawnSync(buildPackageScript, ['--target', 'native'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GESTAMENT_PACKAGE_TEST_PIDS_LIMIT: '0',
+      },
+      timeout: cliScriptTimeoutMs,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'GESTAMENT_PACKAGE_TEST_PIDS_LIMIT must be a positive integer: 0'
+    );
   });
 });
 
