@@ -1049,6 +1049,11 @@ const createAtspiWindowDebugDiagnosticsOperation =
         atspi: info.accessibleId.length === 0 ? null : info.accessibleId,
         x11: null,
       },
+      discovery: {
+        atspiSnapshots: [],
+        mergeCandidates: [],
+        x11Snapshots: [],
+      },
     };
   };
 

@@ -185,6 +185,104 @@ export interface GtkWindowRawIds {
 }
 
 /**
+ * AT-SPI window snapshot included in debug discovery diagnostics.
+ */
+export interface GtkWindowDiscoveryAtspiSnapshot {
+  /** AT-SPI window traversal index. */
+  readonly index: number;
+
+  /** Process id reported by AT-SPI. */
+  readonly processId: number;
+
+  /** Raw AT-SPI role name. */
+  readonly roleName: string;
+
+  /** Accessible name reported by AT-SPI. */
+  readonly name: string;
+
+  /** Accessible id, or null when the backend did not expose one. */
+  readonly accessibleId: string | null;
+
+  /** Screen-relative AT-SPI bounds, or null when unavailable. */
+  readonly bounds: GtkCaptureBounds | null;
+
+  /** X11 window id resolved from the AT-SPI component, or null. */
+  readonly x11WindowId: string | null;
+}
+
+/**
+ * X11 window snapshot included in debug discovery diagnostics.
+ */
+export interface GtkWindowDiscoveryX11Snapshot {
+  /** X11 window id formatted as a hexadecimal string. */
+  readonly windowId: string;
+
+  /** Window title read from X11 metadata. */
+  readonly title: string;
+
+  /** WM_CLASS class name. */
+  readonly className: string;
+
+  /** WM_CLASS instance name. */
+  readonly instanceName: string;
+
+  /** X11 transient parent window id, or null. */
+  readonly transientFor: string | null;
+
+  /** X11 owner process id, or null when unavailable. */
+  readonly processId: number | null;
+
+  /** Screen-relative X11 window bounds. */
+  readonly bounds: GtkCaptureBounds;
+
+  /** X11 stacking order reported by the discovery pass. */
+  readonly stackingOrder: number;
+
+  /** Whether the window was active during the discovery pass. */
+  readonly active: boolean;
+}
+
+/**
+ * Candidate pair considered while merging AT-SPI and X11 windows.
+ */
+export interface GtkWindowDiscoveryMergeCandidate {
+  /** AT-SPI window traversal index. */
+  readonly atspiIndex: number;
+
+  /** AT-SPI accessible id, or null when unavailable. */
+  readonly atspiAccessibleId: string | null;
+
+  /** X11 window id considered for this AT-SPI window. */
+  readonly x11WindowId: string;
+
+  /** Merge confidence when a rule matched, otherwise null. */
+  readonly confidence: number | null;
+
+  /** Merge rule name when a rule matched, otherwise null. */
+  readonly matchedBy: string | null;
+
+  /** Whether this candidate was selected for the final unified window list. */
+  readonly accepted: boolean;
+
+  /** Reason this candidate was not selected, or null when accepted. */
+  readonly rejectionReason: string | null;
+}
+
+/**
+ * Raw discovery data captured during a native window merge pass.
+ */
+export interface GtkWindowDiscoveryDiagnostics {
+  /** AT-SPI snapshots collected for the app process scope. */
+  readonly atspiSnapshots: readonly GtkWindowDiscoveryAtspiSnapshot[];
+
+  /** X11 snapshots collected for the app process scope. */
+  readonly x11Snapshots: readonly GtkWindowDiscoveryX11Snapshot[];
+
+  /** Candidate pairs considered during AT-SPI/X11 merge. */
+  readonly mergeCandidates: readonly GtkWindowDiscoveryMergeCandidate[];
+}
+
+/**
  * Debug diagnostics for a native window discovered through one or more
  * backends.
  *
@@ -224,6 +322,11 @@ export interface GtkWindowDebugDiagnostics {
    * Raw backend identifiers for troubleshooting.
    */
   readonly rawIds: GtkWindowRawIds;
+
+  /**
+   * Raw backend snapshots and merge decisions captured during discovery.
+   */
+  readonly discovery: GtkWindowDiscoveryDiagnostics;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
