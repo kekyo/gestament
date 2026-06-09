@@ -291,6 +291,48 @@ export interface GtkCaptureSimilarityResult extends GtkCaptureVisualResult {
 }
 
 /** One OCR recognition attempt for a GTK capture. */
+export interface GtkCaptureOcrWord {
+  /** Raw word text returned by Tesseract.js. */
+  readonly text: string;
+
+  /** Whitespace-normalized word text. */
+  readonly normalizedText: string;
+
+  /** Word confidence score returned by Tesseract.js. */
+  readonly confidence: number;
+
+  /** Word bounds relative to the capture image. */
+  readonly bounds: GtkCapturePixelRegion;
+
+  /** Word bounds relative to the root screen. */
+  readonly screenBounds: GtkCaptureBounds;
+}
+
+/** OCR text location match returned by findText(). */
+export interface GtkCaptureOcrTextMatch {
+  /** Text covered by the matched OCR word span. */
+  readonly text: string;
+
+  /** Whitespace-normalized matched text. */
+  readonly normalizedText: string;
+
+  /** Confidence score from the selected OCR attempt. */
+  readonly confidence: number;
+
+  /** Page segmentation mode from the selected OCR attempt. */
+  readonly pageSegmentationMode: GtkCaptureOcrPageSegmentationMode;
+
+  /** Matched word-span bounds relative to the capture image. */
+  readonly bounds: GtkCapturePixelRegion;
+
+  /** Matched word-span bounds relative to the root screen. */
+  readonly screenBounds: GtkCaptureBounds;
+
+  /** OCR words included in the matched span. */
+  readonly words: readonly GtkCaptureOcrWord[];
+}
+
+/** One OCR recognition attempt for a GTK capture. */
 export interface GtkCaptureOcrAttempt {
   /** Page segmentation mode used for this attempt. */
   readonly pageSegmentationMode: GtkCaptureOcrPageSegmentationMode;
@@ -303,6 +345,9 @@ export interface GtkCaptureOcrAttempt {
 
   /** Confidence score returned by Tesseract.js. */
   readonly confidence: number;
+
+  /** OCR words with capture-relative and screen-relative bounds. */
+  readonly words: readonly GtkCaptureOcrWord[];
 }
 
 /** Result returned by OCR text assertions. */
@@ -368,6 +413,17 @@ export interface GtkCaptureOcrText {
     expected: string | RegExp,
     options?: GtkCaptureOcrTextAssertionOptions
   ) => Promise<GtkCaptureOcrResult>;
+
+  /**
+   * Finds the first OCR word span that contains the expected string or matches the expected regular expression.
+   * @param expected Expected string or regular expression.
+   * @param options Text matching options.
+   * @returns Matched text location, or undefined when no OCR word span matches.
+   */
+  readonly findText: (
+    expected: string | RegExp,
+    options?: GtkCaptureOcrTextAssertionOptions
+  ) => Promise<GtkCaptureOcrTextMatch | undefined>;
 }
 
 /** Error thrown by GTK capture visual assertions. */
@@ -525,12 +581,24 @@ interface TesseractWorker {
     readonly data: {
       readonly confidence: number;
       readonly text: string;
+      readonly words?: readonly TesseractWord[];
     };
   }>;
   readonly setParameters: (
     parameters: Readonly<Record<string, string>>
   ) => Promise<unknown>;
   readonly terminate: () => Promise<unknown>;
+}
+
+interface TesseractWord {
+  readonly bbox?: {
+    readonly x0?: number;
+    readonly x1?: number;
+    readonly y0?: number;
+    readonly y1?: number;
+  };
+  readonly confidence?: number;
+  readonly text?: string;
 }
 
 interface OcrWorkerController {
@@ -1057,6 +1125,16 @@ const validatePositiveInteger = (value: number, label: string): void => {
 const normalizeWhitespace = (value: string): string =>
   value.replace(/\s+/g, ' ').trim();
 
+const screenBoundsFromCaptureBounds = (
+  visibleBounds: GtkCaptureBounds,
+  bounds: GtkCapturePixelRegion
+): GtkCaptureBounds => ({
+  height: bounds.height,
+  width: bounds.width,
+  x: visibleBounds.x + bounds.x,
+  y: visibleBounds.y + bounds.y,
+});
+
 const resolveOcrPreprocessOptions = (
   options: GtkCaptureOcrPreprocessOptions | undefined
 ): Required<GtkCaptureOcrPreprocessOptions> => {
@@ -1254,6 +1332,75 @@ const createOcrWorker = async (
   );
 };
 
+const finiteNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+const convertTesseractWord = (
+  word: TesseractWord,
+  preparedImage: PreparedOcrImage,
+  fallbackConfidence: number
+): GtkCaptureOcrWord | undefined => {
+  const text = typeof word.text === 'string' ? word.text : undefined;
+  const x0 = finiteNumber(word.bbox?.x0);
+  const x1 = finiteNumber(word.bbox?.x1);
+  const y0 = finiteNumber(word.bbox?.y0);
+  const y1 = finiteNumber(word.bbox?.y1);
+  if (
+    text === undefined ||
+    text.length === 0 ||
+    x0 === undefined ||
+    x1 === undefined ||
+    y0 === undefined ||
+    y1 === undefined ||
+    x1 <= x0 ||
+    y1 <= y0
+  ) {
+    return undefined;
+  }
+
+  const scale = preparedImage.preprocess.scale;
+  const left = Math.floor(preparedImage.region.x + x0 / scale);
+  const top = Math.floor(preparedImage.region.y + y0 / scale);
+  const right = Math.ceil(preparedImage.region.x + x1 / scale);
+  const bottom = Math.ceil(preparedImage.region.y + y1 / scale);
+  const bounds = {
+    height: Math.max(1, bottom - top),
+    width: Math.max(1, right - left),
+    x: left,
+    y: top,
+  };
+  return {
+    bounds,
+    confidence: Number.isFinite(word.confidence)
+      ? (word.confidence as number)
+      : fallbackConfidence,
+    normalizedText: normalizeWhitespace(text),
+    screenBounds: screenBoundsFromCaptureBounds(
+      { height: 0, width: 0, x: 0, y: 0 },
+      bounds
+    ),
+    text,
+  };
+};
+
+const addScreenBoundsToWords = (
+  words: readonly GtkCaptureOcrWord[],
+  visibleBounds: GtkCaptureBounds
+): readonly GtkCaptureOcrWord[] =>
+  words.map((word) => ({
+    ...word,
+    screenBounds: screenBoundsFromCaptureBounds(visibleBounds, word.bounds),
+  }));
+
+const addScreenBoundsToAttempts = (
+  attempts: readonly GtkCaptureOcrAttempt[],
+  visibleBounds: GtkCaptureBounds
+): readonly GtkCaptureOcrAttempt[] =>
+  attempts.map((attempt) => ({
+    ...attempt,
+    words: addScreenBoundsToWords(attempt.words, visibleBounds),
+  }));
+
 const recognizeWithWorker = async (
   worker: TesseractWorker,
   preparedImage: PreparedOcrImage,
@@ -1266,13 +1413,17 @@ const recognizeWithWorker = async (
       tessedit_pageseg_mode: pageSegmentationModeValues[pageSegmentationMode],
     });
     const recognized = await worker.recognize(preparedImage.image);
+    const confidence = Number.isFinite(recognized.data.confidence)
+      ? recognized.data.confidence
+      : 0;
     attempts.push({
-      confidence: Number.isFinite(recognized.data.confidence)
-        ? recognized.data.confidence
-        : 0,
+      confidence,
       normalizedText: normalizeWhitespace(recognized.data.text),
       pageSegmentationMode,
       text: recognized.data.text,
+      words: (recognized.data.words ?? [])
+        .map((word) => convertTesseractWord(word, preparedImage, confidence))
+        .filter((word): word is GtkCaptureOcrWord => word !== undefined),
     });
   }
   return attempts;
@@ -1570,6 +1721,116 @@ const assertOcrText = async (
   );
 };
 
+const candidateMatchesExpectedText = (
+  candidate: string,
+  expected: string | RegExp,
+  options: GtkCaptureOcrTextAssertionOptions | undefined
+): boolean => {
+  if (typeof expected === 'string') {
+    if (expected.length === 0) {
+      throw new TypeError('expected text must not be empty.');
+    }
+    const expectedText =
+      (options?.normalizeWhitespace ?? true)
+        ? normalizeWhitespace(expected)
+        : expected;
+    if (expectedText.length === 0) {
+      throw new TypeError(
+        'expected text must not be empty after normalization.'
+      );
+    }
+    if (options?.caseSensitive ?? false) {
+      return candidate.includes(expectedText);
+    }
+    return candidate
+      .toLocaleLowerCase()
+      .includes(expectedText.toLocaleLowerCase());
+  }
+
+  expected.lastIndex = 0;
+  const matched = expected.test(candidate);
+  expected.lastIndex = 0;
+  return matched;
+};
+
+const unionPixelRegions = (
+  regions: readonly GtkCapturePixelRegion[]
+): GtkCapturePixelRegion => {
+  const left = Math.min(...regions.map((region) => region.x));
+  const top = Math.min(...regions.map((region) => region.y));
+  const right = Math.max(...regions.map((region) => region.x + region.width));
+  const bottom = Math.max(...regions.map((region) => region.y + region.height));
+  return {
+    height: bottom - top,
+    width: right - left,
+    x: left,
+    y: top,
+  };
+};
+
+const createOcrTextMatch = (
+  attempt: GtkCaptureOcrAttempt,
+  words: readonly GtkCaptureOcrWord[]
+): GtkCaptureOcrTextMatch => {
+  const bounds = unionPixelRegions(words.map((word) => word.bounds));
+  const screenBounds = unionPixelRegions(
+    words.map((word) => word.screenBounds)
+  );
+  const text = words.map((word) => word.text).join(' ');
+  return {
+    bounds,
+    confidence: attempt.confidence,
+    normalizedText: normalizeWhitespace(text),
+    pageSegmentationMode: attempt.pageSegmentationMode,
+    screenBounds,
+    text,
+    words,
+  };
+};
+
+const findOcrTextMatchInAttempt = (
+  attempt: GtkCaptureOcrAttempt,
+  expected: string | RegExp,
+  options: GtkCaptureOcrTextAssertionOptions | undefined
+): GtkCaptureOcrTextMatch | undefined => {
+  const minConfidence = options?.minConfidence;
+  if (minConfidence !== undefined) {
+    validateConfidence(minConfidence, 'minConfidence');
+    if (attempt.confidence < minConfidence) {
+      return undefined;
+    }
+  }
+
+  for (let length = 1; length <= attempt.words.length; length += 1) {
+    for (let start = 0; start + length <= attempt.words.length; start += 1) {
+      const words = attempt.words.slice(start, start + length);
+      const rawText = words.map((word) => word.text).join(' ');
+      const candidate =
+        (options?.normalizeWhitespace ?? true)
+          ? normalizeWhitespace(rawText)
+          : rawText;
+      if (candidateMatchesExpectedText(candidate, expected, options)) {
+        return createOcrTextMatch(attempt, words);
+      }
+    }
+  }
+  return undefined;
+};
+
+const findOcrTextMatch = (
+  data: OcrTextData,
+  expected: string | RegExp,
+  options: GtkCaptureOcrTextAssertionOptions | undefined
+): GtkCaptureOcrTextMatch | undefined => {
+  for (const attempt of data.attempts) {
+    const match = findOcrTextMatchInAttempt(attempt, expected, options);
+    if (match !== undefined) {
+      return match;
+    }
+  }
+  return undefined;
+};
+
 const createOcrText = (data: OcrTextData): GtkCaptureOcrText => {
   const artifactPaths =
     data.outputResultPath === undefined
@@ -1587,6 +1848,11 @@ const createOcrText = (data: OcrTextData): GtkCaptureOcrText => {
     normalizedText: data.normalizedText,
     pageSegmentationMode: data.pageSegmentationMode,
     text: data.text,
+    findText: async (
+      expected: string | RegExp,
+      options?: GtkCaptureOcrTextAssertionOptions
+    ): Promise<GtkCaptureOcrTextMatch | undefined> =>
+      findOcrTextMatch(data, expected, options),
     toContainText: async (
       expected: string | RegExp,
       options?: GtkCaptureOcrTextAssertionOptions
@@ -1614,7 +1880,10 @@ const readCaptureText = async (
     actualPng.height
   );
   const preparedImage = prepareOcrImage(capture.image, actualPng, ocrOptions);
-  const attempts = await workerController.recognize(preparedImage, ocrOptions);
+  const attempts = addScreenBoundsToAttempts(
+    await workerController.recognize(preparedImage, ocrOptions),
+    capture.visibleBounds
+  );
   await saveOcrArtifactsAndMetadata(
     context,
     capture,
