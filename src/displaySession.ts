@@ -16,6 +16,12 @@ import {
   createGtkInvalidArgumentError,
   createGtkOperationFailedError,
 } from './errors';
+import {
+  applyAccessibilitySessionEnvironment,
+  createAccessibilitySessionCommand,
+  resolveAccessibilitySessionMode,
+  type ResolvedAccessibilitySessionMode,
+} from './accessibilitySession';
 import { currentWaitDeadlineMs } from './wait';
 import {
   createGtkSystemOutputRecorder,
@@ -97,6 +103,7 @@ interface XvfbSessionOptions {
 }
 
 interface EffectiveDisplay {
+  readonly accessibilitySession: ResolvedAccessibilitySessionMode;
   readonly kind: 'host' | 'xvfb';
   readonly hostDisplay: string | undefined;
   readonly hostWaylandDisplay: string | undefined;
@@ -714,10 +721,15 @@ const resolveXvfbOptions = (
 
 const resolveEffectiveDisplay = (
   display: GtkAppDisplay,
-  xvfb: XvfbSessionOptions
+  xvfb: XvfbSessionOptions,
+  accessibilitySession: GtkAppLauncherOptions['accessibilitySession']
 ): EffectiveDisplay => {
   if (display === 'xvfb') {
     return {
+      accessibilitySession: resolveAccessibilitySessionMode(
+        accessibilitySession,
+        'isolated'
+      ),
       hostDisplay: undefined,
       hostWaylandDisplay: undefined,
       kind: 'xvfb',
@@ -728,6 +740,10 @@ const resolveEffectiveDisplay = (
   const hostDisplay = getHostDisplayState();
   if (resolveHostDisplayKind(hostDisplay) !== undefined) {
     return {
+      accessibilitySession: resolveAccessibilitySessionMode(
+        accessibilitySession,
+        'inherit'
+      ),
       hostDisplay: hostDisplay.display,
       hostWaylandDisplay: hostDisplay.waylandDisplay,
       kind: 'host',
@@ -736,6 +752,10 @@ const resolveEffectiveDisplay = (
   }
 
   return {
+    accessibilitySession: resolveAccessibilitySessionMode(
+      accessibilitySession,
+      'isolated'
+    ),
     hostDisplay: undefined,
     hostWaylandDisplay: undefined,
     kind: 'xvfb',
@@ -868,15 +888,10 @@ const createDriverEnvironment = (
   xvfb: PooledXvfb | undefined
 ): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  delete env.AT_SPI_BUS_ADDRESS;
-  delete env.NO_AT_BRIDGE;
 
   if (effective.kind === 'xvfb') {
-    delete env.DBUS_SESSION_BUS_ADDRESS;
     delete env.DISPLAY;
     delete env.WAYLAND_DISPLAY;
-    delete env.AT_SPI_BUS_ADDRESS;
-    delete env.NO_AT_BRIDGE;
     delete env.XAUTHORITY;
     env.GDK_BACKEND = 'x11';
     env.GESTAMENT_XVFB_ACTIVE = '1';
@@ -886,6 +901,7 @@ const createDriverEnvironment = (
     }
   }
 
+  applyAccessibilitySessionEnvironment(env, effective.accessibilitySession);
   return env;
 };
 
@@ -1312,14 +1328,18 @@ const returnXvfbToPool = async (
   await retainIdleXvfb(xvfb, limits);
 };
 
-const allPoolKey = (xvfb: XvfbSessionOptions): string =>
-  `${xvfb.screen}\n${xvfb.trayHost ? 'tray' : 'no-tray'}`;
+const allPoolKey = (
+  xvfb: XvfbSessionOptions,
+  accessibilitySession: ResolvedAccessibilitySessionMode
+): string =>
+  `${xvfb.screen}\n${xvfb.trayHost ? 'tray' : 'no-tray'}\n${accessibilitySession}`;
 
 const spawnDriverProcess = (
   driverPath: string,
   socketPath: string,
   effective: EffectiveDisplay,
   xvfb: PooledXvfb | undefined,
+  tempDirectory: string,
   systemOutputSink: SystemOutputSink | undefined
 ): DriverProcess => {
   const driverArgs = [
@@ -1332,17 +1352,12 @@ const spawnDriverProcess = (
   const env = createDriverEnvironment(effective, xvfb);
   const stdout: string[] = [];
   const stderr: string[] = [];
-
-  const command =
-    effective.kind === 'xvfb'
-      ? {
-          args: ['--', process.execPath, driverPath, ...driverArgs],
-          bin: 'dbus-run-session',
-        }
-      : {
-          args: [driverPath, ...driverArgs],
-          bin: process.execPath,
-        };
+  const command = createAccessibilitySessionCommand(
+    process.execPath,
+    [driverPath, ...driverArgs],
+    effective.accessibilitySession,
+    tempDirectory
+  );
 
   const child = spawn(command.bin, command.args, {
     env,
@@ -1936,6 +1951,7 @@ const startFreshDriverSession = async (
       socketPath,
       effective,
       xvfb,
+      tempDirectory,
       systemOutputSink
     );
     const connection = await waitForDriverReady(server, processState);
@@ -1979,7 +1995,11 @@ const startDriverSession = async (
   resolveRuntimeTimeouts();
   const display = resolveDisplay(options.display);
   const xvfbOptions = resolveXvfbOptions(options);
-  const effective = resolveEffectiveDisplay(display, xvfbOptions);
+  const effective = resolveEffectiveDisplay(
+    display,
+    xvfbOptions,
+    options.accessibilitySession
+  );
 
   if (effective.kind !== 'xvfb' || effective.xvfb === undefined) {
     return startFreshDriverSession(
@@ -2017,7 +2037,7 @@ const startDriverSession = async (
     );
   }
 
-  const key = allPoolKey(effective.xvfb);
+  const key = allPoolKey(effective.xvfb, effective.accessibilitySession);
   for (;;) {
     const idle = popArrayEntry(idleAllByKey, key);
     if (idle === undefined) {
@@ -2065,7 +2085,11 @@ const createLaunchPayload = (
 ): DriverLaunchPayload => {
   const display = resolveDisplay(options.display);
   const xvfb = resolveXvfbOptions(options);
-  const effective = resolveEffectiveDisplay(display, xvfb);
+  const effective = resolveEffectiveDisplay(
+    display,
+    xvfb,
+    options.accessibilitySession
+  );
 
   return {
     appPath: options.appPath,
@@ -2086,7 +2110,11 @@ const createEnvironmentPayload = (
 ): DriverEnvironmentPayload => {
   const display = resolveDisplay(options.display);
   const xvfb = resolveXvfbOptions(options);
-  const effective = resolveEffectiveDisplay(display, xvfb);
+  const effective = resolveEffectiveDisplay(
+    display,
+    xvfb,
+    options.accessibilitySession
+  );
 
   return {
     env: resolveLauncherEnvironment(options, effective, undefined),

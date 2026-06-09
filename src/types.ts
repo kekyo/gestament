@@ -1747,6 +1747,15 @@ export type GtkAppEnvironment = Readonly<Record<string, string | undefined>>;
  */
 export type GtkAppDisplay = 'xvfb' | 'host';
 
+/**
+ * Accessibility bus/session strategy used by a reusable GTK application launcher.
+ */
+export type GtkAccessibilitySessionMode =
+  | 'auto'
+  | 'inherit'
+  | 'isolated'
+  | 'minimal';
+
 /** Standard output stream captured from a launched GTK application. */
 export type GtkAppOutputStream = 'stdout' | 'stderr';
 
@@ -2125,6 +2134,16 @@ export interface GtkAppLauncherOptions {
    * host falls back to 'xvfb'.
    */
   readonly display?: GtkAppDisplay | undefined;
+  /**
+   * Accessibility bus/session strategy used by the launcher.
+   *
+   * @remarks
+   * 'auto' preserves the default behavior: internal Xvfb uses an isolated
+   * D-Bus session and host display inherits the parent session. 'minimal'
+   * starts an isolated D-Bus session whose service directory contains only
+   * org.a11y.Bus.
+   */
+  readonly accessibilitySession?: GtkAccessibilitySessionMode | undefined;
   /**
    * Xvfb screen geometry used when the effective display is xvfb.
    * Default is '1280x720x24'.

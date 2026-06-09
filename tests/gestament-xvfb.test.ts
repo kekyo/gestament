@@ -62,7 +62,12 @@ console.log(JSON.stringify({
   display: process.env.DISPLAY ?? null,
   gdkBackend: process.env.GDK_BACKEND ?? null,
   gestamentXvfbActive: process.env.GESTAMENT_XVFB_ACTIVE ?? null,
+  gioUseVfs: process.env.GIO_USE_VFS ?? null,
+  gnomeAccessibility: process.env.GNOME_ACCESSIBILITY ?? null,
+  gnomeKeyringControl: process.env.GNOME_KEYRING_CONTROL ?? null,
+  gtkUsePortal: process.env.GTK_USE_PORTAL ?? null,
   noAtBridge: process.env.NO_AT_BRIDGE ?? null,
+  sshAuthSock: process.env.SSH_AUTH_SOCK ?? null,
   status: result.status,
   stderr: result.stderr.trim(),
   stdout: result.stdout.trim(),
@@ -358,6 +363,240 @@ const launchOne = async (index) => {
     expect(atSpiBusNumber(probe.stdout)).toBe(
       displayNumber(probe.display as string)
     );
+  });
+
+  it('starts a minimal accessibility session inside Xvfb', () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        xvfbBin,
+        '--screen=640x480x24',
+        '--accessibility-session=minimal',
+        '--',
+        process.execPath,
+        '-e',
+        atSpiProbeScript,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          AT_SPI_BUS_ADDRESS: 'unix:path=/tmp/gestament-host-at-spi',
+          DBUS_SESSION_BUS_ADDRESS: 'unix:path=/tmp/gestament-host-dbus',
+          DISPLAY: ':77',
+          GDK_BACKEND: 'wayland',
+          GESTAMENT_XVFB_ACTIVE: 'host',
+          GIO_USE_VFS: 'gvfs',
+          GNOME_ACCESSIBILITY: '0',
+          GNOME_KEYRING_CONTROL: '/tmp/gestament-keyring',
+          GTK_USE_PORTAL: '1',
+          NO_AT_BRIDGE: '1',
+          SSH_AUTH_SOCK: '/tmp/gestament-ssh.sock',
+          WAYLAND_DISPLAY: 'wayland-host',
+          XAUTHORITY: '/tmp/gestament-host-xauthority',
+          XDG_SESSION_TYPE: 'wayland',
+        },
+        timeout: xvfbLauncherScriptTimeoutMs,
+      }
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+
+    const probeOutputLine = result.stdout.trim().split('\n').at(-1);
+    expect(probeOutputLine).toBeDefined();
+    const probe = JSON.parse(probeOutputLine as string) as {
+      readonly atSpiBusAddress: string | null;
+      readonly dbusSessionBusAddress: string | null;
+      readonly display: string | null;
+      readonly gdkBackend: string | null;
+      readonly gestamentXvfbActive: string | null;
+      readonly gioUseVfs: string | null;
+      readonly gnomeAccessibility: string | null;
+      readonly gnomeKeyringControl: string | null;
+      readonly gtkUsePortal: string | null;
+      readonly noAtBridge: string | null;
+      readonly sshAuthSock: string | null;
+      readonly stderr: string;
+      readonly stdout: string;
+      readonly waylandDisplay: string | null;
+      readonly xauthority: string | null;
+      readonly xdgSessionType: string | null;
+    };
+
+    expect(probe.atSpiBusAddress).toBeNull();
+    expect(probe.dbusSessionBusAddress).not.toBe(
+      'unix:path=/tmp/gestament-host-dbus'
+    );
+    expect(probe.display).not.toBeNull();
+    expect(probe.display).not.toBe(':77');
+    expect(probe.gdkBackend).toBe('x11');
+    expect(probe.gestamentXvfbActive).toBe('1');
+    expect(probe.gioUseVfs).toBe('local');
+    expect(probe.gnomeAccessibility).toBe('1');
+    expect(probe.gnomeKeyringControl).toBeNull();
+    expect(probe.gtkUsePortal).toBe('0');
+    expect(probe.noAtBridge).toBeNull();
+    expect(probe.sshAuthSock).toBeNull();
+    expect(probe.waylandDisplay).toBeNull();
+    expect(probe.xauthority).not.toBe('/tmp/gestament-host-xauthority');
+    expect(probe.xdgSessionType).toBe('x11');
+    expect(probe.stdout, probe.stderr).toContain('/at-spi/bus_');
+    expect(atSpiBusNumber(probe.stdout)).toBe(
+      displayNumber(probe.display as string)
+    );
+  });
+
+  it('starts launcher-scoped minimal accessibility sessions', async () => {
+    const env = {
+      ...process.env,
+      AT_SPI_BUS_ADDRESS: 'unix:path=/tmp/gestament-host-at-spi',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/tmp/gestament-host-dbus',
+      DISPLAY: ':77',
+      GDK_BACKEND: 'wayland',
+      GESTAMENT_XVFB_ACTIVE: 'host',
+      GIO_USE_VFS: 'gvfs',
+      GNOME_ACCESSIBILITY: '0',
+      GNOME_KEYRING_CONTROL: '/tmp/gestament-keyring',
+      GTK_USE_PORTAL: '1',
+      NO_AT_BRIDGE: '1',
+      SSH_AUTH_SOCK: '/tmp/gestament-ssh.sock',
+      WAYLAND_DISPLAY: 'wayland-host',
+      XAUTHORITY: '/tmp/gestament-host-xauthority',
+      XDG_SESSION_TYPE: 'wayland',
+    };
+    const script = `
+const { spawnSync } = require('node:child_process');
+const { createGtkAppLauncher } = require(${JSON.stringify(packageEntryPath)});
+const pickEnv = (env) => ({
+  atSpiBusAddress: env.AT_SPI_BUS_ADDRESS ?? null,
+  dbusSessionBusAddress: env.DBUS_SESSION_BUS_ADDRESS ?? null,
+  display: env.DISPLAY ?? null,
+  gdkBackend: env.GDK_BACKEND ?? null,
+  gestamentXvfbActive: env.GESTAMENT_XVFB_ACTIVE ?? null,
+  gioUseVfs: env.GIO_USE_VFS ?? null,
+  gnomeAccessibility: env.GNOME_ACCESSIBILITY ?? null,
+  gnomeKeyringControl: env.GNOME_KEYRING_CONTROL ?? null,
+  gtkUsePortal: env.GTK_USE_PORTAL ?? null,
+  noAtBridge: env.NO_AT_BRIDGE ?? null,
+  sshAuthSock: env.SSH_AUTH_SOCK ?? null,
+  waylandDisplay: env.WAYLAND_DISPLAY ?? null,
+  xauthority: env.XAUTHORITY ?? null,
+  xdgSessionType: env.XDG_SESSION_TYPE ?? null,
+});
+const childScript = [
+  "const pickEnv = " + pickEnv.toString() + ";",
+  "console.log(JSON.stringify(pickEnv(process.env)));",
+  "setInterval(() => {}, 2147483647);",
+].join("\\n");
+const delay = (timeoutMs) => new Promise((resolve) => setTimeout(resolve, timeoutMs));
+const waitForOutput = async (app) => {
+  const startedAt = Date.now();
+  const timeoutMs = ${JSON.stringify(xvfbLauncherChildEnvironmentTimeoutMs)};
+  while (Date.now() - startedAt <= timeoutMs) {
+    const stdout = (await app.output()).stdout.trim();
+    if (stdout.length > 0) {
+      return JSON.parse(stdout.split("\\n").at(-1));
+    }
+    await delay(25);
+  }
+  throw new Error('Timed out waiting for child environment output.');
+};
+(async () => {
+  const launcher = createGtkAppLauncher({
+    accessibilitySession: 'minimal',
+    appPath: process.execPath,
+    args: ['-e', childScript],
+    xvfbScreen: '640x480x24',
+    xvfbTrayHost: false,
+  });
+  try {
+    const launcherEnv = await launcher.environment();
+    const gdbusResult = spawnSync('gdbus', [
+      'call',
+      '--session',
+      '--dest',
+      'org.a11y.Bus',
+      '--object-path',
+      '/org/a11y/bus',
+      '--method',
+      'org.a11y.Bus.GetAddress',
+    ], {
+      encoding: 'utf8',
+      env: launcherEnv,
+      timeout: ${JSON.stringify(xvfbLauncherChildEnvironmentTimeoutMs)},
+    });
+    const app = await launcher.launch();
+    try {
+      console.log(JSON.stringify({
+        childEnv: await waitForOutput(app),
+        gdbusStatus: gdbusResult.status,
+        gdbusStderr: gdbusResult.stderr.trim(),
+        gdbusStdout: gdbusResult.stdout.trim(),
+        launcherEnv: pickEnv(launcherEnv),
+      }));
+    } finally {
+      await app.release();
+    }
+  } finally {
+    await launcher.release();
+  }
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+`;
+    const result = await spawnText(process.execPath, ['-e', script], {
+      env,
+      timeoutMs: xvfbLauncherScriptTimeoutMs,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const outputLine = result.stdout.trim().split('\n').at(-1);
+    expect(outputLine).toBeDefined();
+    const output = JSON.parse(outputLine as string) as {
+      readonly childEnv: {
+        readonly atSpiBusAddress: string | null;
+        readonly dbusSessionBusAddress: string | null;
+        readonly display: string | null;
+        readonly gioUseVfs: string | null;
+        readonly gnomeAccessibility: string | null;
+        readonly gnomeKeyringControl: string | null;
+        readonly gtkUsePortal: string | null;
+        readonly noAtBridge: string | null;
+        readonly sshAuthSock: string | null;
+      };
+      readonly gdbusStatus: number | null;
+      readonly gdbusStderr: string;
+      readonly gdbusStdout: string;
+      readonly launcherEnv: {
+        readonly atSpiBusAddress: string | null;
+        readonly dbusSessionBusAddress: string | null;
+        readonly display: string | null;
+        readonly gioUseVfs: string | null;
+        readonly gnomeAccessibility: string | null;
+        readonly gnomeKeyringControl: string | null;
+        readonly gtkUsePortal: string | null;
+        readonly noAtBridge: string | null;
+        readonly sshAuthSock: string | null;
+      };
+    };
+
+    for (const sessionEnv of [output.launcherEnv, output.childEnv]) {
+      expect(sessionEnv.atSpiBusAddress).toBeNull();
+      expect(sessionEnv.dbusSessionBusAddress).not.toBe(
+        'unix:path=/tmp/gestament-host-dbus'
+      );
+      expect(sessionEnv.display).not.toBeNull();
+      expect(sessionEnv.display).not.toBe(':77');
+      expect(sessionEnv.gioUseVfs).toBe('local');
+      expect(sessionEnv.gnomeAccessibility).toBe('1');
+      expect(sessionEnv.gnomeKeyringControl).toBeNull();
+      expect(sessionEnv.gtkUsePortal).toBe('0');
+      expect(sessionEnv.noAtBridge).toBeNull();
+      expect(sessionEnv.sshAuthSock).toBeNull();
+    }
+    expect(output.gdbusStatus, output.gdbusStderr).toBe(0);
+    expect(output.gdbusStdout).toContain('/at-spi/bus_');
   });
 
   it(

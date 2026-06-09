@@ -25,6 +25,7 @@ import {
 } from '../src/launchGtkApp';
 import type {
   GtkApp,
+  GtkAppLauncherOptions,
   GtkAppOutput,
   GtkAppOutputEvent,
   GtkSystemOutput,
@@ -139,6 +140,15 @@ describe.concurrent('GTK application launch environment', () => {
       GSETTINGS_BACKEND: 'memory',
       GTK_THEME: 'Adwaita',
     });
+  });
+
+  it('accepts accessibility session option types', () => {
+    const options: GtkAppLauncherOptions = {
+      accessibilitySession: 'minimal',
+      appPath: process.execPath,
+    };
+
+    expect(options.accessibilitySession).toBe('minimal');
   });
 
   it('allows explicit overrides except NO_AT_BRIDGE', () => {
