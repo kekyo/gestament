@@ -577,8 +577,13 @@ interface TesseractWorkerOptions {
 }
 
 interface TesseractWorker {
-  readonly recognize: (image: Buffer) => Promise<{
+  readonly recognize: (
+    image: Buffer,
+    options?: Record<string, never>,
+    output?: TesseractRecognizeOutput
+  ) => Promise<{
     readonly data: {
+      readonly blocks?: readonly TesseractBlock[] | null;
       readonly confidence: number;
       readonly text: string;
       readonly words?: readonly TesseractWord[];
@@ -588,6 +593,23 @@ interface TesseractWorker {
     parameters: Readonly<Record<string, string>>
   ) => Promise<unknown>;
   readonly terminate: () => Promise<unknown>;
+}
+
+interface TesseractRecognizeOutput {
+  readonly blocks: boolean;
+  readonly text: boolean;
+}
+
+interface TesseractBlock {
+  readonly paragraphs?: readonly TesseractParagraph[];
+}
+
+interface TesseractParagraph {
+  readonly lines?: readonly TesseractLine[];
+}
+
+interface TesseractLine {
+  readonly words?: readonly TesseractWord[];
 }
 
 interface TesseractWord {
@@ -1383,6 +1405,32 @@ const convertTesseractWord = (
   };
 };
 
+const collectTesseractWordsFromBlocks = (
+  blocks: readonly TesseractBlock[] | null | undefined
+): readonly TesseractWord[] => {
+  if (blocks === null || blocks === undefined) {
+    return [];
+  }
+
+  const words: TesseractWord[] = [];
+  for (const block of blocks) {
+    for (const paragraph of block.paragraphs ?? []) {
+      for (const line of paragraph.lines ?? []) {
+        words.push(...(line.words ?? []));
+      }
+    }
+  }
+  return words;
+};
+
+const collectTesseractWords = (data: {
+  readonly blocks?: readonly TesseractBlock[] | null;
+  readonly words?: readonly TesseractWord[];
+}): readonly TesseractWord[] =>
+  data.words !== undefined && data.words.length > 0
+    ? data.words
+    : collectTesseractWordsFromBlocks(data.blocks);
+
 const addScreenBoundsToWords = (
   words: readonly GtkCaptureOcrWord[],
   visibleBounds: GtkCaptureBounds
@@ -1412,7 +1460,11 @@ const recognizeWithWorker = async (
       ...options.parameters,
       tessedit_pageseg_mode: pageSegmentationModeValues[pageSegmentationMode],
     });
-    const recognized = await worker.recognize(preparedImage.image);
+    const recognized = await worker.recognize(
+      preparedImage.image,
+      {},
+      { blocks: true, text: true }
+    );
     const confidence = Number.isFinite(recognized.data.confidence)
       ? recognized.data.confidence
       : 0;
@@ -1421,7 +1473,7 @@ const recognizeWithWorker = async (
       normalizedText: normalizeWhitespace(recognized.data.text),
       pageSegmentationMode,
       text: recognized.data.text,
-      words: (recognized.data.words ?? [])
+      words: collectTesseractWords(recognized.data)
         .map((word) => convertTesseractWord(word, preparedImage, confidence))
         .filter((word): word is GtkCaptureOcrWord => word !== undefined),
     });

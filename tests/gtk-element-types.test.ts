@@ -50,6 +50,17 @@ const assertSpecializedOperations = async (
       expectType<Promise<void>>(element.activate());
       expectType<Promise<GtkCapture>>(element.capture());
       expectType<number>((await element.bounds()).x);
+      const textMatch = await element.findText('Open', {
+        pageSegmentationModes: ['singleWord'],
+        region: { height: 40, width: 100, x: 0, y: 0 },
+      });
+      expectType<string | undefined>(textMatch?.text);
+      expectType<number | undefined>(textMatch?.screenBounds.x);
+      await element.clickText(/Open/i, {
+        activate: true,
+        button: 'left',
+        region: { height: 40, width: 100, x: 0, y: 0 },
+      });
       expectType<number>((await element.resizeHints()).baseWidth);
       expectType<string>((await element.x11Info()).windowId);
       expectType<GtkWindowDebugDiagnostics>(await element.debugDiagnostics());

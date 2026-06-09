@@ -153,7 +153,7 @@ const withProbeApp = async (
   const launcher = createGtkAppLauncher({
     appPath: join(probeBuildDirectory, probeName),
     timeoutMs: visualE2eTestTimeoutMs,
-    xvfbScreen: '900x700x24',
+    xvfbScreen: '1280x900x24',
     xvfbTrayHost: false,
   });
   const app = await launcher.launch(args);
@@ -271,6 +271,38 @@ describeGtk3.concurrent('native window fusion e2e', () => {
           );
           expect(openButton).toBeDefined();
           await (openButton as ClickableElement).click();
+          await waitForOutputIncludes(app, 'response=accept');
+        }
+      );
+    },
+    visualE2eTestTimeoutMs
+  );
+
+  it(
+    'activates GTK file chooser accept controls by OCR text click',
+    async () => {
+      await withProbeApp(
+        'file-dialog-probe',
+        ['--default-file'],
+        async (app) => {
+          await waitForWindowCount(app, 1);
+
+          const dialog = expectWindow(await app.windowAt(0));
+          const capture = await dialog.capture();
+          await dialog.clickText('Open', {
+            minConfidence: 20,
+            pageSegmentationModes: ['singleBlock', 'singleLine', 'singleWord'],
+            preprocess: {
+              grayscale: true,
+              scale: 3,
+            },
+            region: {
+              height: Math.min(140, capture.visibleBounds.height),
+              width: capture.visibleBounds.width,
+              x: 0,
+              y: Math.max(0, capture.visibleBounds.height - 140),
+            },
+          });
           await waitForOutputIncludes(app, 'response=accept');
         }
       );

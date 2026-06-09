@@ -90,6 +90,8 @@ export type DriverCommand =
   | 'window.resizeTo'
   | 'window.setBounds'
   | 'window.activate'
+  | 'window.findText'
+  | 'window.clickText'
   | 'window.x11Info'
   | 'window.debugDiagnostics'
   | 'imageInfo.capture'
@@ -148,6 +150,22 @@ export interface DriverTableCellPayload {
 
 export interface DriverTextPayload {
   readonly text: string;
+}
+
+export type DriverTextMatcher =
+  | {
+      readonly type: 'string';
+      readonly value: string;
+    }
+  | {
+      readonly flags: string;
+      readonly source: string;
+      readonly type: 'regexp';
+    };
+
+export interface DriverWindowTextPayload {
+  readonly matcher: DriverTextMatcher;
+  readonly options: unknown | null;
 }
 
 export interface DriverValuePayload {

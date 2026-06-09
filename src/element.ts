@@ -16,6 +16,8 @@ import {
   nativeElementInfo,
   nativeFindByBounds,
   nativeImageInfo,
+  nativeInputMoveMouse,
+  nativeInputSetMouseButton,
   nativeMoveWindow,
   nativeResizeWindow,
   nativeSelectAllChildren,
@@ -56,10 +58,12 @@ import {
   type NativeImageInfo,
 } from './native';
 import {
+  createGtkElementNotFoundError,
   createGtkInvalidArgumentError,
   createGtkOperationFailedError,
   createGtkUnsupportedInterfaceError,
 } from './errors';
+import { createGtkCaptureExpect } from './testing';
 import type {
   GtkCapture,
   GtkCaptureBounds,
@@ -75,6 +79,9 @@ import type {
   GtkValueInfo,
   GtkWidgetElement,
   GtkWidgetKind,
+  GtkWindowTextClickOptions,
+  GtkWindowTextFindOptions,
+  GtkWindowTextMatch,
   GtkWindowDebugDiagnostics,
   GtkWindowElement,
   GtkWindowResizeHints,
@@ -1117,6 +1124,91 @@ const createActivateWindowOperation =
     nativeActivateWindow(handle);
   };
 
+const formatExpectedText = (expected: string | RegExp): string =>
+  typeof expected === 'string' ? JSON.stringify(expected) : expected.toString();
+
+const createWindowFindTextOperation =
+  (
+    capture: () => Promise<GtkCapture>
+  ): ((
+    expected: string | RegExp,
+    options?: GtkWindowTextFindOptions
+  ) => Promise<GtkWindowTextMatch | undefined>) =>
+  async (
+    expected: string | RegExp,
+    options?: GtkWindowTextFindOptions
+  ): Promise<GtkWindowTextMatch | undefined> => {
+    const gtkExpect = createGtkCaptureExpect();
+    try {
+      const ocrText = await gtkExpect
+        .expectCapture(await capture(), 'window-text')
+        .readText(options);
+      return await ocrText.findText(expected, options);
+    } finally {
+      await gtkExpect.release();
+    }
+  };
+
+const createWindowClickTextOperation = (
+  capture: () => Promise<GtkCapture>,
+  activateWindow: () => Promise<void>
+): ((
+  expected: string | RegExp,
+  options?: GtkWindowTextClickOptions
+) => Promise<GtkWindowTextMatch>) => {
+  const findText = createWindowFindTextOperation(capture);
+  return async (
+    expected: string | RegExp,
+    options?: GtkWindowTextClickOptions
+  ): Promise<GtkWindowTextMatch> => {
+    const match = await findText(expected, options);
+    if (match === undefined) {
+      throw createGtkElementNotFoundError(
+        `Window text was not found: ${formatExpectedText(expected)}`
+      );
+    }
+
+    if (options?.activate ?? true) {
+      await activateWindow();
+    }
+
+    const offset = options?.offset ?? { x: 0, y: 0 };
+    assertFiniteNumber('offset.x', offset.x);
+    assertFiniteNumber('offset.y', offset.y);
+    const clickX = Math.round(
+      match.screenBounds.x + match.screenBounds.width / 2 + offset.x
+    );
+    const clickY = Math.round(
+      match.screenBounds.y + match.screenBounds.height / 2 + offset.y
+    );
+    assertInt32('click x', clickX);
+    assertInt32('click y', clickY);
+
+    const button = options?.button ?? 'left';
+    nativeInputMoveMouse(clickX, clickY);
+    nativeInputSetMouseButton(button, true);
+    nativeInputSetMouseButton(button, false);
+    return match;
+  };
+};
+
+const createWindowTextOperations = (
+  capture: () => Promise<GtkCapture>,
+  activateWindow: () => Promise<void>
+): {
+  readonly findText: (
+    expected: string | RegExp,
+    options?: GtkWindowTextFindOptions
+  ) => Promise<GtkWindowTextMatch | undefined>;
+  readonly clickText: (
+    expected: string | RegExp,
+    options?: GtkWindowTextClickOptions
+  ) => Promise<GtkWindowTextMatch>;
+} => ({
+  clickText: createWindowClickTextOperation(capture, activateWindow),
+  findText: createWindowFindTextOperation(capture),
+});
+
 const createResizeHintsOperation =
   (handle: NativeElementHandle): (() => Promise<GtkWindowResizeHints>) =>
   async (): Promise<GtkWindowResizeHints> =>
@@ -1674,20 +1766,23 @@ export const createGtkElement = (
   const common = createCommonElement(handle);
 
   switch (initialInfo.kind) {
-    case 'window':
+    case 'window': {
+      const activate = createActivateWindowOperation(handle);
       return {
         ...common,
         kind: 'window',
         bounds: createBoundsOperation(handle),
+        ...createWindowTextOperations(common.capture, activate),
         moveTo: createMoveToOperation(handle),
         ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
         resizeTo: createResizeToOperation(handle),
         setBounds: createSetBoundsOperation(handle),
-        activate: createActivateWindowOperation(handle),
+        activate,
         resizeHints: createResizeHintsOperation(handle),
         x11Info: createX11InfoOperation(handle),
         debugDiagnostics: createAtspiWindowDebugDiagnosticsOperation(handle),
       };
+    }
     case 'button':
       return { ...common, kind: 'button', click: createClickOperation(handle) };
     case 'container':
@@ -1934,17 +2029,20 @@ const createX11OnlyGtkWindowElement = (
   if (x11 === null) {
     throw createGtkOperationFailedError('Unified window has no X11 source.');
   }
+  const capture = createX11WindowCaptureOperation(x11.windowId, undefined);
+  const activate = createX11ActivateOperation(x11.windowId);
 
   return {
     kind: 'window',
     info: createX11WindowInfoOperation(x11.windowId),
-    capture: createX11WindowCaptureOperation(x11.windowId, undefined),
+    capture,
     bounds: createX11WindowBoundsOperation(x11.windowId),
+    ...createWindowTextOperations(capture, activate),
     moveTo: createX11MoveToOperation(x11.windowId),
     ...createX11ChildContainerOperations(processId, x11.windowId),
     resizeTo: createX11ResizeToOperation(x11.windowId),
     setBounds: createX11SetBoundsOperation(x11.windowId),
-    activate: createX11ActivateOperation(x11.windowId),
+    activate,
     resizeHints: createX11ResizeHintsOperation(x11.windowId),
     x11Info: createX11WindowX11InfoOperation(x11.windowId),
     debugDiagnostics: createStaticWindowDebugDiagnosticsOperation(
@@ -1965,17 +2063,20 @@ export const createGtkWindowElement = (
       'window discovery'
     );
     if (window.x11 !== null) {
+      const capture = createX11WindowCaptureOperation(
+        window.x11.windowId,
+        undefined
+      );
+      const activate = createX11ActivateOperation(window.x11.windowId);
       return {
         ...element,
-        capture: createX11WindowCaptureOperation(
-          window.x11.windowId,
-          undefined
-        ),
+        capture,
         bounds: createX11WindowBoundsOperation(window.x11.windowId),
+        ...createWindowTextOperations(capture, activate),
         moveTo: createX11MoveToOperation(window.x11.windowId),
         resizeTo: createX11ResizeToOperation(window.x11.windowId),
         setBounds: createX11SetBoundsOperation(window.x11.windowId),
-        activate: createX11ActivateOperation(window.x11.windowId),
+        activate,
         childAt: createHybridChildAtOperation(
           window.atspi.handle,
           processId,

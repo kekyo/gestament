@@ -42,6 +42,7 @@ import type {
   DriverSelectedIndexPayload,
   DriverTableCellPayload,
   DriverTextPayload,
+  DriverTextMatcher,
   DriverTrayItemRef,
   DriverTrayPayload,
   DriverTraySelectorPayload,
@@ -49,6 +50,7 @@ import type {
   DriverWindowBoundsPayload,
   DriverWindowMovePayload,
   DriverWindowResizePayload,
+  DriverWindowTextPayload,
   SerializedDriverError,
   WireCapture,
   WireGtkAppEnvironment,
@@ -598,6 +600,18 @@ const elementPayload = (payload: unknown): DriverElementPayload =>
 const trayPayload = (payload: unknown): DriverTrayPayload =>
   payload as DriverTrayPayload;
 
+const deserializeTextMatcher = (
+  matcher: DriverTextMatcher
+): string | RegExp => {
+  if (matcher.type === 'string') {
+    return matcher.value;
+  }
+  if (matcher.type === 'regexp') {
+    return new RegExp(matcher.source, matcher.flags);
+  }
+  throw createGtkOperationFailedError('Unsupported window text matcher.');
+};
+
 const optionalElementRef = (
   appId: string,
   element: GtkWidgetElement | undefined
@@ -798,6 +812,24 @@ const handleElementCommand = async (
     case 'window.activate':
       await callElementMethod(entry, 'activate');
       return null;
+    case 'window.findText': {
+      const { matcher, options } = payload as DriverElementPayload &
+        DriverWindowTextPayload;
+      return (
+        (await callElementMethod(entry, 'findText', [
+          deserializeTextMatcher(matcher),
+          options ?? undefined,
+        ])) ?? null
+      );
+    }
+    case 'window.clickText': {
+      const { matcher, options } = payload as DriverElementPayload &
+        DriverWindowTextPayload;
+      return callElementMethod(entry, 'clickText', [
+        deserializeTextMatcher(matcher),
+        options ?? undefined,
+      ]);
+    }
     case 'window.x11Info':
       return callElementMethod(entry, 'x11Info');
     case 'window.debugDiagnostics':

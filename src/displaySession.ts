@@ -50,6 +50,7 @@ import type {
   DriverRequest,
   DriverResponse,
   DriverSuccessResponse,
+  DriverTextMatcher,
   DriverTrayItemRef,
   SerializedDriverError,
   WireCapture,
@@ -80,6 +81,9 @@ import type {
   GtkWidgetElement,
   GtkWindowDebugDiagnostics,
   GtkWindowResizeHints,
+  GtkWindowTextClickOptions,
+  GtkWindowTextFindOptions,
+  GtkWindowTextMatch,
   GtkX11WindowInfo,
   GtkXvfbPool,
 } from './types';
@@ -1600,6 +1604,22 @@ const decodeCapture = (capture: WireCapture): GtkCapture => ({
   visibleBounds: capture.visibleBounds,
 });
 
+const serializeTextMatcher = (expected: string | RegExp): DriverTextMatcher => {
+  if (typeof expected === 'string') {
+    return { type: 'string', value: expected };
+  }
+  if (expected instanceof RegExp) {
+    return {
+      flags: expected.flags,
+      source: expected.source,
+      type: 'regexp',
+    };
+  }
+  throw createGtkInvalidArgumentError(
+    'expected must be a string or regular expression.'
+  );
+};
+
 const createDriverSession = (
   socket: Socket,
   bufferedInput: string,
@@ -2444,6 +2464,24 @@ const createProxyGtkElement = (
         session.request<GtkCaptureBounds>('window.setBounds', {
           bounds,
           elementId,
+        });
+      target.findText = async (
+        expected: string | RegExp,
+        options?: GtkWindowTextFindOptions
+      ): Promise<GtkWindowTextMatch | undefined> =>
+        (await session.request<GtkWindowTextMatch | null>('window.findText', {
+          elementId,
+          matcher: serializeTextMatcher(expected),
+          options: options ?? null,
+        })) ?? undefined;
+      target.clickText = (
+        expected: string | RegExp,
+        options?: GtkWindowTextClickOptions
+      ): Promise<GtkWindowTextMatch> =>
+        session.request<GtkWindowTextMatch>('window.clickText', {
+          elementId,
+          matcher: serializeTextMatcher(expected),
+          options: options ?? null,
         });
       target.activate = (): Promise<void> =>
         session

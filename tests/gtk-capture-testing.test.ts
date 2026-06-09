@@ -35,6 +35,22 @@ import type { GtkCapture, Releasable } from '../src/types';
 type PixelColor = readonly [number, number, number, number];
 
 interface MockTesseractResult {
+  readonly blocks?: readonly {
+    readonly paragraphs: readonly {
+      readonly lines: readonly {
+        readonly words: readonly {
+          readonly bbox: {
+            readonly x0: number;
+            readonly x1: number;
+            readonly y0: number;
+            readonly y1: number;
+          };
+          readonly confidence?: number;
+          readonly text: string;
+        }[];
+      }[];
+    }[];
+  }[];
   readonly confidence: number;
   readonly text: string;
   readonly words?: readonly {
@@ -632,25 +648,37 @@ describe('GTK capture visual testing', () => {
   it('finds OCR text locations across words with region and scale transforms', async () => {
     tesseractMock.state.results = [
       {
-        confidence: 94,
-        text: 'Muon Probe Select',
-        words: [
+        blocks: [
           {
-            bbox: { x0: 10, x1: 30, y0: 4, y1: 20 },
-            confidence: 90,
-            text: 'Muon',
-          },
-          {
-            bbox: { x0: 34, x1: 60, y0: 4, y1: 20 },
-            confidence: 91,
-            text: 'Probe',
-          },
-          {
-            bbox: { x0: 64, x1: 98, y0: 4, y1: 20 },
-            confidence: 92,
-            text: 'Select',
+            paragraphs: [
+              {
+                lines: [
+                  {
+                    words: [
+                      {
+                        bbox: { x0: 10, x1: 30, y0: 4, y1: 20 },
+                        confidence: 90,
+                        text: 'Muon',
+                      },
+                      {
+                        bbox: { x0: 34, x1: 60, y0: 4, y1: 20 },
+                        confidence: 91,
+                        text: 'Probe',
+                      },
+                      {
+                        bbox: { x0: 64, x1: 98, y0: 4, y1: 20 },
+                        confidence: 92,
+                        text: 'Select',
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
           },
         ],
+        confidence: 94,
+        text: 'Muon Probe Select',
       },
     ];
     const capture = createCapture(
@@ -693,6 +721,11 @@ describe('GTK capture visual testing', () => {
       },
       text: 'Probe Select',
     });
+    expect(tesseractMock.state.workers[0]!.recognize).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      {},
+      { blocks: true, text: true }
+    );
   });
 
   it('writes OCR artifacts and applies preprocessing options', async () => {

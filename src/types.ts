@@ -3,6 +3,11 @@
 // Under MIT.
 // https://github.com/kekyo/gestament
 
+import type {
+  GtkCaptureOcrAssertionOptions,
+  GtkCaptureOcrTextMatch,
+} from './testing';
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 /** Error code values reported by the GTK automation library. */
@@ -621,6 +626,51 @@ export interface GtkSelectableChildContainer<
   readonly clearSelection: () => Promise<void>;
 }
 
+/** OCR text location match returned by GTK window text lookup. */
+export type GtkWindowTextMatch = GtkCaptureOcrTextMatch;
+
+/**
+ * Options for OCR text lookup inside a GTK window.
+ */
+export type GtkWindowTextFindOptions = GtkCaptureOcrAssertionOptions;
+
+/**
+ * Point offset applied to a matched OCR text location before clicking.
+ */
+export interface GtkWindowTextClickOffset {
+  /**
+   * Horizontal offset in pixels from the matched text center.
+   */
+  readonly x: number;
+
+  /**
+   * Vertical offset in pixels from the matched text center.
+   */
+  readonly y: number;
+}
+
+/**
+ * Options for OCR text clicks inside a GTK window.
+ */
+export interface GtkWindowTextClickOptions extends GtkWindowTextFindOptions {
+  /**
+   * Whether to activate the window before sending the click.
+   * @remarks The default is true.
+   */
+  readonly activate?: boolean;
+
+  /**
+   * Mouse button used for the click.
+   * @remarks The default is left.
+   */
+  readonly button?: GtkMouseButton;
+
+  /**
+   * Offset from the matched text center, in screen pixels.
+   */
+  readonly offset?: GtkWindowTextClickOffset;
+}
+
 /**
  * A GTK top-level window element.
  */
@@ -666,6 +716,30 @@ export interface GtkWindowElement
    * @returns A promise that resolves to the actual bounds observed after the change.
    */
   readonly setBounds: (bounds: GtkCaptureBounds) => Promise<GtkCaptureBounds>;
+
+  /**
+   * Finds an OCR text span inside the current window capture.
+   *
+   * @param expected - Expected string or regular expression.
+   * @param options - OCR and text matching options.
+   * @returns A promise that resolves to the matched text location, or undefined when no match is found.
+   */
+  readonly findText: (
+    expected: string | RegExp,
+    options?: GtkWindowTextFindOptions
+  ) => Promise<GtkWindowTextMatch | undefined>;
+
+  /**
+   * Clicks the center of an OCR text span inside the current window capture.
+   *
+   * @param expected - Expected string or regular expression.
+   * @param options - OCR, matching, activation, and mouse options.
+   * @returns A promise that resolves to the clicked text location.
+   */
+  readonly clickText: (
+    expected: string | RegExp,
+    options?: GtkWindowTextClickOptions
+  ) => Promise<GtkWindowTextMatch>;
 
   /**
    * Activates this window as if the window manager focused it.
