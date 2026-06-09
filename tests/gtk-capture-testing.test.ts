@@ -35,8 +35,34 @@ import type { GtkCapture, Releasable } from '../src/types';
 type PixelColor = readonly [number, number, number, number];
 
 interface MockTesseractResult {
+  readonly blocks?: readonly {
+    readonly paragraphs: readonly {
+      readonly lines: readonly {
+        readonly words: readonly {
+          readonly bbox: {
+            readonly x0: number;
+            readonly x1: number;
+            readonly y0: number;
+            readonly y1: number;
+          };
+          readonly confidence?: number;
+          readonly text: string;
+        }[];
+      }[];
+    }[];
+  }[];
   readonly confidence: number;
   readonly text: string;
+  readonly words?: readonly {
+    readonly bbox: {
+      readonly x0: number;
+      readonly x1: number;
+      readonly y0: number;
+      readonly y1: number;
+    };
+    readonly confidence?: number;
+    readonly text: string;
+  }[];
 }
 
 interface MockTesseractWorker {
@@ -104,6 +130,10 @@ const restoreEnv = (name: string, value: string | undefined): void => {
     return;
   }
   process.env[name] = value;
+};
+
+const expectType = <Expected>(_value: Expected): void => {
+  // Type-only assertion helper.
 };
 
 const createTempRoot = async (): Promise<string> => {
@@ -615,6 +645,89 @@ describe('GTK capture visual testing', () => {
     expect(tesseractMock.state.workers[0]!.recognize).toHaveBeenCalledTimes(1);
   });
 
+  it('finds OCR text locations across words with region and scale transforms', async () => {
+    tesseractMock.state.results = [
+      {
+        blocks: [
+          {
+            paragraphs: [
+              {
+                lines: [
+                  {
+                    words: [
+                      {
+                        bbox: { x0: 10, x1: 30, y0: 4, y1: 20 },
+                        confidence: 90,
+                        text: 'Muon',
+                      },
+                      {
+                        bbox: { x0: 34, x1: 60, y0: 4, y1: 20 },
+                        confidence: 91,
+                        text: 'Probe',
+                      },
+                      {
+                        bbox: { x0: 64, x1: 98, y0: 4, y1: 20 },
+                        confidence: 92,
+                        text: 'Select',
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        confidence: 94,
+        text: 'Muon Probe Select',
+      },
+    ];
+    const capture = createCapture(
+      solidPng(80, 40, [255, 255, 255, 255]),
+      80,
+      40
+    );
+    const gtkExpect = createGtkCaptureExpect();
+
+    const ocrText = await gtkExpect
+      .expectCapture(capture, 'ocr-location')
+      .readText({
+        pageSegmentationModes: ['singleBlock'],
+        preprocess: {
+          scale: 2,
+        },
+        region: {
+          height: 20,
+          width: 50,
+          x: 5,
+          y: 2,
+        },
+      });
+
+    const match = await ocrText.findText('Probe Select');
+
+    expect(match).toMatchObject({
+      bounds: {
+        height: 8,
+        width: 32,
+        x: 22,
+        y: 4,
+      },
+      confidence: 94,
+      screenBounds: {
+        height: 8,
+        width: 32,
+        x: 32,
+        y: 24,
+      },
+      text: 'Probe Select',
+    });
+    expect(tesseractMock.state.workers[0]!.recognize).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      {},
+      { blocks: true, text: true }
+    );
+  });
+
   it('writes OCR artifacts and applies preprocessing options', async () => {
     const root = await createTempRoot();
     const outputResultPath = join(root, 'artifacts');
@@ -775,9 +888,11 @@ describe('GTK capture visual testing types', () => {
         /submit/i,
         ocrAssertionOptions
       );
+      const ocrMatch = await ocrText.findText('Submit');
 
       expect(lookResult.diffPixels).toBe(similarityResult.diffPixels);
       expect(ocrText.text).toBe(ocrResult.text);
+      expectType<string | undefined>(ocrMatch?.text);
       await releasable.release();
       await gtkExpect[Symbol.asyncDispose]();
       // @ts-expect-error expected image must be supplied before options.

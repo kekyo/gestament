@@ -14,8 +14,15 @@ import { dirname, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { delay } from 'async-primitives';
 
+import {
+  applyAccessibilitySessionEnvironment,
+  createAccessibilitySessionCommand,
+  resolveAccessibilitySessionMode,
+  validateAccessibilitySessionMode,
+} from './accessibilitySession';
 import { appendPrerequisiteInstallHint } from './prerequisites';
 import { resolveRuntimeTimeouts } from './runtimeTimeouts';
+import type { GtkAccessibilitySessionMode } from './types';
 import {
   cleanupStaleX11DisplayArtifacts,
   connectUnixSocket,
@@ -30,6 +37,7 @@ import {
 /////////////////////////////////////////////////////////////////////////////////////////
 
 interface ParsedArguments {
+  readonly accessibilitySession: GtkAccessibilitySessionMode;
   readonly screen: string;
   readonly command: readonly string[];
   readonly withTrayHost: boolean;
@@ -53,9 +61,10 @@ const printUsage = (): void => {
   process.stdout.write(
     [
       'Usage: gestament-xvfb [--screen=WIDTHxHEIGHTxDEPTH] -- <command> [args...]',
-      '       gestament-xvfb [--with-tray-host] [--screen=WIDTHxHEIGHTxDEPTH] -- <command> [args...]',
+      '       gestament-xvfb [--with-tray-host] [--accessibility-session=MODE] [--screen=WIDTHxHEIGHTxDEPTH] -- <command> [args...]',
       '',
       'Runs a command under Xvfb and dbus-run-session for GTK visual tests.',
+      'MODE is auto, inherit, isolated, or minimal. Default is auto.',
       '',
     ].join('\n')
   );
@@ -410,6 +419,7 @@ const waitForChildExit = (
   });
 
 const parseArguments = (args: readonly string[]): ParsedArguments => {
+  let accessibilitySession: GtkAccessibilitySessionMode = 'auto';
   let screen = defaultScreen;
   let withTrayHost = false;
   let index = 0;
@@ -423,6 +433,7 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
 
     if (argument === '--') {
       return {
+        accessibilitySession,
         command: args.slice(index + 1),
         screen,
         withTrayHost,
@@ -441,6 +452,26 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
         throw new Error('--screen requires WIDTHxHEIGHTxDEPTH.');
       }
       screen = value;
+      index += 2;
+      continue;
+    }
+
+    if (argument.startsWith('--accessibility-session=')) {
+      accessibilitySession = validateAccessibilitySessionMode(
+        argument.slice('--accessibility-session='.length)
+      );
+      index += 1;
+      continue;
+    }
+
+    if (argument === '--accessibility-session') {
+      const value = args[index + 1];
+      if (value === undefined) {
+        throw new Error(
+          '--accessibility-session requires auto, inherit, isolated, or minimal.'
+        );
+      }
+      accessibilitySession = validateAccessibilitySessionMode(value);
       index += 2;
       continue;
     }
@@ -476,12 +507,14 @@ const run = async (): Promise<void> => {
     GTK_THEME: process.env.GTK_THEME ?? 'Adwaita',
     XDG_SESSION_TYPE: 'x11',
   };
-  delete env.AT_SPI_BUS_ADDRESS;
-  delete env.DBUS_SESSION_BUS_ADDRESS;
   delete env.DISPLAY;
-  delete env.NO_AT_BRIDGE;
   delete env.WAYLAND_DISPLAY;
   delete env.XAUTHORITY;
+  const accessibilitySession = resolveAccessibilitySessionMode(
+    parsed.accessibilitySession,
+    'isolated'
+  );
+  applyAccessibilitySessionEnvironment(env, accessibilitySession);
 
   const executablePath = process.argv[1];
   if (executablePath === undefined) {
@@ -510,22 +543,19 @@ const run = async (): Promise<void> => {
     process.exit(143);
   });
 
+  let sessionCommand:
+    | ReturnType<typeof createAccessibilitySessionCommand>
+    | undefined;
   try {
-    const child = spawn(
-      'dbus-run-session',
-      [
-        '--',
-        process.execPath,
-        workerPath,
-        ...workerArgs,
-        '--',
-        ...parsed.command,
-      ],
-      {
-        env,
-        stdio: 'inherit',
-      }
+    sessionCommand = createAccessibilitySessionCommand(
+      process.execPath,
+      [workerPath, ...workerArgs, '--', ...parsed.command],
+      accessibilitySession
     );
+    const child = spawn(sessionCommand.bin, sessionCommand.args, {
+      env,
+      stdio: 'inherit',
+    });
     const { code, signal } = await waitForChildExit(child).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
@@ -543,6 +573,7 @@ const run = async (): Promise<void> => {
     );
     process.exitCode = 1;
   } finally {
+    sessionCommand?.cleanup();
     process.removeListener('exit', killXvfbOnProcessExit);
     await terminateXvfb(xvfb);
   }

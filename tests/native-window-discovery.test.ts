@@ -106,6 +106,18 @@ describe.concurrent('native window discovery fusion', () => {
       atspi: 'probe_dialog',
       x11: '0x2200011',
     });
+    expect(window?.debugDiagnostics.discovery.atspiSnapshots).toHaveLength(1);
+    expect(window?.debugDiagnostics.discovery.x11Snapshots).toHaveLength(1);
+    expect(window?.debugDiagnostics.discovery.mergeCandidates).toEqual([
+      expect.objectContaining({
+        accepted: true,
+        atspiIndex: 0,
+        confidence: expect.any(Number),
+        matchedBy: 'pid-title-bounds-overlap',
+        rejectionReason: null,
+        x11WindowId: '0x2200011',
+      }),
+    ]);
   });
 
   it('does not merge same-title windows when pid and bounds disagree', () => {
@@ -125,6 +137,16 @@ describe.concurrent('native window discovery fusion', () => {
       ['at-spi'],
       ['x11'],
     ]);
+    expect(
+      windows[0]?.debugDiagnostics.discovery.mergeCandidates
+    ).toContainEqual(
+      expect.objectContaining({
+        accepted: false,
+        atspiIndex: 0,
+        rejectionReason: 'process-id-mismatch',
+        x11WindowId: '0x2200011',
+      })
+    );
   });
 
   it('merges child-process windows only when their owner pids match', () => {

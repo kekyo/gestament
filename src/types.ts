@@ -3,6 +3,11 @@
 // Under MIT.
 // https://github.com/kekyo/gestament
 
+import type {
+  GtkCaptureOcrAssertionOptions,
+  GtkCaptureOcrTextMatch,
+} from './testing';
+
 /////////////////////////////////////////////////////////////////////////////////////////
 
 /** Error code values reported by the GTK automation library. */
@@ -185,6 +190,104 @@ export interface GtkWindowRawIds {
 }
 
 /**
+ * AT-SPI window snapshot included in debug discovery diagnostics.
+ */
+export interface GtkWindowDiscoveryAtspiSnapshot {
+  /** AT-SPI window traversal index. */
+  readonly index: number;
+
+  /** Process id reported by AT-SPI. */
+  readonly processId: number;
+
+  /** Raw AT-SPI role name. */
+  readonly roleName: string;
+
+  /** Accessible name reported by AT-SPI. */
+  readonly name: string;
+
+  /** Accessible id, or null when the backend did not expose one. */
+  readonly accessibleId: string | null;
+
+  /** Screen-relative AT-SPI bounds, or null when unavailable. */
+  readonly bounds: GtkCaptureBounds | null;
+
+  /** X11 window id resolved from the AT-SPI component, or null. */
+  readonly x11WindowId: string | null;
+}
+
+/**
+ * X11 window snapshot included in debug discovery diagnostics.
+ */
+export interface GtkWindowDiscoveryX11Snapshot {
+  /** X11 window id formatted as a hexadecimal string. */
+  readonly windowId: string;
+
+  /** Window title read from X11 metadata. */
+  readonly title: string;
+
+  /** WM_CLASS class name. */
+  readonly className: string;
+
+  /** WM_CLASS instance name. */
+  readonly instanceName: string;
+
+  /** X11 transient parent window id, or null. */
+  readonly transientFor: string | null;
+
+  /** X11 owner process id, or null when unavailable. */
+  readonly processId: number | null;
+
+  /** Screen-relative X11 window bounds. */
+  readonly bounds: GtkCaptureBounds;
+
+  /** X11 stacking order reported by the discovery pass. */
+  readonly stackingOrder: number;
+
+  /** Whether the window was active during the discovery pass. */
+  readonly active: boolean;
+}
+
+/**
+ * Candidate pair considered while merging AT-SPI and X11 windows.
+ */
+export interface GtkWindowDiscoveryMergeCandidate {
+  /** AT-SPI window traversal index. */
+  readonly atspiIndex: number;
+
+  /** AT-SPI accessible id, or null when unavailable. */
+  readonly atspiAccessibleId: string | null;
+
+  /** X11 window id considered for this AT-SPI window. */
+  readonly x11WindowId: string;
+
+  /** Merge confidence when a rule matched, otherwise null. */
+  readonly confidence: number | null;
+
+  /** Merge rule name when a rule matched, otherwise null. */
+  readonly matchedBy: string | null;
+
+  /** Whether this candidate was selected for the final unified window list. */
+  readonly accepted: boolean;
+
+  /** Reason this candidate was not selected, or null when accepted. */
+  readonly rejectionReason: string | null;
+}
+
+/**
+ * Raw discovery data captured during a native window merge pass.
+ */
+export interface GtkWindowDiscoveryDiagnostics {
+  /** AT-SPI snapshots collected for the app process scope. */
+  readonly atspiSnapshots: readonly GtkWindowDiscoveryAtspiSnapshot[];
+
+  /** X11 snapshots collected for the app process scope. */
+  readonly x11Snapshots: readonly GtkWindowDiscoveryX11Snapshot[];
+
+  /** Candidate pairs considered during AT-SPI/X11 merge. */
+  readonly mergeCandidates: readonly GtkWindowDiscoveryMergeCandidate[];
+}
+
+/**
  * Debug diagnostics for a native window discovered through one or more
  * backends.
  *
@@ -224,6 +327,11 @@ export interface GtkWindowDebugDiagnostics {
    * Raw backend identifiers for troubleshooting.
    */
   readonly rawIds: GtkWindowRawIds;
+
+  /**
+   * Raw backend snapshots and merge decisions captured during discovery.
+   */
+  readonly discovery: GtkWindowDiscoveryDiagnostics;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -518,6 +626,51 @@ export interface GtkSelectableChildContainer<
   readonly clearSelection: () => Promise<void>;
 }
 
+/** OCR text location match returned by GTK window text lookup. */
+export type GtkWindowTextMatch = GtkCaptureOcrTextMatch;
+
+/**
+ * Options for OCR text lookup inside a GTK window.
+ */
+export type GtkWindowTextFindOptions = GtkCaptureOcrAssertionOptions;
+
+/**
+ * Point offset applied to a matched OCR text location before clicking.
+ */
+export interface GtkWindowTextClickOffset {
+  /**
+   * Horizontal offset in pixels from the matched text center.
+   */
+  readonly x: number;
+
+  /**
+   * Vertical offset in pixels from the matched text center.
+   */
+  readonly y: number;
+}
+
+/**
+ * Options for OCR text clicks inside a GTK window.
+ */
+export interface GtkWindowTextClickOptions extends GtkWindowTextFindOptions {
+  /**
+   * Whether to activate the window before sending the click.
+   * @remarks The default is true.
+   */
+  readonly activate?: boolean;
+
+  /**
+   * Mouse button used for the click.
+   * @remarks The default is left.
+   */
+  readonly button?: GtkMouseButton;
+
+  /**
+   * Offset from the matched text center, in screen pixels.
+   */
+  readonly offset?: GtkWindowTextClickOffset;
+}
+
 /**
  * A GTK top-level window element.
  */
@@ -563,6 +716,30 @@ export interface GtkWindowElement
    * @returns A promise that resolves to the actual bounds observed after the change.
    */
   readonly setBounds: (bounds: GtkCaptureBounds) => Promise<GtkCaptureBounds>;
+
+  /**
+   * Finds an OCR text span inside the current window capture.
+   *
+   * @param expected - Expected string or regular expression.
+   * @param options - OCR and text matching options.
+   * @returns A promise that resolves to the matched text location, or undefined when no match is found.
+   */
+  readonly findText: (
+    expected: string | RegExp,
+    options?: GtkWindowTextFindOptions
+  ) => Promise<GtkWindowTextMatch | undefined>;
+
+  /**
+   * Clicks the center of an OCR text span inside the current window capture.
+   *
+   * @param expected - Expected string or regular expression.
+   * @param options - OCR, matching, activation, and mouse options.
+   * @returns A promise that resolves to the clicked text location.
+   */
+  readonly clickText: (
+    expected: string | RegExp,
+    options?: GtkWindowTextClickOptions
+  ) => Promise<GtkWindowTextMatch>;
 
   /**
    * Activates this window as if the window manager focused it.
@@ -1570,6 +1747,15 @@ export type GtkAppEnvironment = Readonly<Record<string, string | undefined>>;
  */
 export type GtkAppDisplay = 'xvfb' | 'host';
 
+/**
+ * Accessibility bus/session strategy used by a reusable GTK application launcher.
+ */
+export type GtkAccessibilitySessionMode =
+  | 'auto'
+  | 'inherit'
+  | 'isolated'
+  | 'minimal';
+
 /** Standard output stream captured from a launched GTK application. */
 export type GtkAppOutputStream = 'stdout' | 'stderr';
 
@@ -1948,6 +2134,16 @@ export interface GtkAppLauncherOptions {
    * host falls back to 'xvfb'.
    */
   readonly display?: GtkAppDisplay | undefined;
+  /**
+   * Accessibility bus/session strategy used by the launcher.
+   *
+   * @remarks
+   * 'auto' preserves the default behavior: internal Xvfb uses an isolated
+   * D-Bus session and host display inherits the parent session. 'minimal'
+   * starts an isolated D-Bus session whose service directory contains only
+   * org.a11y.Bus.
+   */
+  readonly accessibilitySession?: GtkAccessibilitySessionMode | undefined;
   /**
    * Xvfb screen geometry used when the effective display is xvfb.
    * Default is '1280x720x24'.

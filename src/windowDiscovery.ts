@@ -20,6 +20,10 @@ import type {
   GtkCaptureBounds,
   GtkWindowBackend,
   GtkWindowBackendStatus,
+  GtkWindowDiscoveryAtspiSnapshot,
+  GtkWindowDiscoveryDiagnostics,
+  GtkWindowDiscoveryMergeCandidate,
+  GtkWindowDiscoveryX11Snapshot,
   GtkWindowDebugDiagnostics,
 } from './types';
 
@@ -78,6 +82,17 @@ interface WindowMergeMatch {
   readonly index: number;
   readonly confidence: number;
   readonly matchedBy: string;
+}
+
+interface WindowMergeDecision {
+  readonly confidence: number | null;
+  readonly matchedBy: string | null;
+  readonly rejectionReason: string | null;
+}
+
+interface AcceptedWindowMerge {
+  readonly atspiIndex: number;
+  readonly x11Index: number;
 }
 
 const knownBackends: readonly GtkWindowBackend[] = ['at-spi', 'x11'];
@@ -222,6 +237,61 @@ const matchAtspiToX11 = (
   return undefined;
 };
 
+const explainRejectedAtspiToX11 = (
+  atspi: AtspiWindowSnapshot,
+  x11: X11WindowSnapshot
+): string => {
+  if (!processIdsCompatible(atspi, x11)) {
+    return 'process-id-mismatch';
+  }
+  if (atspi.bounds === null) {
+    return 'missing-atspi-bounds';
+  }
+  if (
+    atspi.x11WindowId !== null &&
+    atspi.x11WindowId !== x11.windowId &&
+    processIdsMatch(atspi, x11)
+  ) {
+    return 'resolved-x11-window-mismatch';
+  }
+  if (!boundsOverlapEnough(atspi, x11)) {
+    return 'bounds-overlap-too-small';
+  }
+  if (!titlesMatch(atspi, x11) && !roleCanRepresentWindow(atspi.roleName)) {
+    return 'title-and-role-mismatch';
+  }
+  if (centerDistance(atspi.bounds, x11.bounds) > maximumCenterDistance) {
+    return 'center-distance-too-large';
+  }
+  return 'below-merge-threshold';
+};
+
+const evaluateAtspiToX11 = (
+  atspi: AtspiWindowSnapshot,
+  x11: X11WindowSnapshot
+): WindowMergeDecision => {
+  const match = matchAtspiToX11(atspi, x11);
+  if (match === undefined) {
+    return {
+      confidence: null,
+      matchedBy: null,
+      rejectionReason: explainRejectedAtspiToX11(atspi, x11),
+    };
+  }
+  if (match.confidence < minimumMergeConfidence) {
+    return {
+      confidence: match.confidence,
+      matchedBy: match.matchedBy,
+      rejectionReason: 'below-merge-threshold',
+    };
+  }
+  return {
+    confidence: match.confidence,
+    matchedBy: match.matchedBy,
+    rejectionReason: null,
+  };
+};
+
 const findBestX11Match = (
   atspi: AtspiWindowSnapshot,
   x11Snapshots: readonly X11WindowSnapshot[],
@@ -302,7 +372,8 @@ const createDebugDiagnostics = (
   x11: X11WindowSnapshot | null,
   statuses: readonly GtkWindowBackendStatus[],
   mergeConfidence: number,
-  matchedBy: string
+  matchedBy: string,
+  discovery: GtkWindowDiscoveryDiagnostics
 ): GtkWindowDebugDiagnostics => {
   const seenBy = sourceList(atspi, x11);
   const missingFrom = knownBackends.filter(
@@ -322,15 +393,98 @@ const createDebugDiagnostics = (
         atspi?.accessibleId.length === 0 ? null : (atspi?.accessibleId ?? null),
       x11: x11?.windowId ?? null,
     },
+    discovery,
   };
 };
+
+const toAtspiDiscoverySnapshot = (
+  snapshot: AtspiWindowSnapshot
+): GtkWindowDiscoveryAtspiSnapshot => ({
+  accessibleId:
+    snapshot.accessibleId.length === 0 ? null : snapshot.accessibleId,
+  bounds: snapshot.bounds,
+  index: snapshot.index,
+  name: snapshot.name,
+  processId: snapshot.processId,
+  roleName: snapshot.roleName,
+  x11WindowId: snapshot.x11WindowId,
+});
+
+const toX11DiscoverySnapshot = (
+  snapshot: X11WindowSnapshot
+): GtkWindowDiscoveryX11Snapshot => ({
+  active: snapshot.active,
+  bounds: snapshot.bounds,
+  className: snapshot.className,
+  instanceName: snapshot.instanceName,
+  processId: snapshot.processId,
+  stackingOrder: snapshot.stackingOrder,
+  title: snapshot.title,
+  transientFor: snapshot.transientFor,
+  windowId: snapshot.windowId,
+});
+
+const createDiscoveryDiagnostics = (
+  atspiSnapshots: readonly AtspiWindowSnapshot[],
+  x11Snapshots: readonly X11WindowSnapshot[],
+  acceptedMerges: readonly AcceptedWindowMerge[]
+): GtkWindowDiscoveryDiagnostics => {
+  const acceptedKeys = new Set(
+    acceptedMerges.map((merge) => `${merge.atspiIndex}:${merge.x11Index}`)
+  );
+  const mergeCandidates: GtkWindowDiscoveryMergeCandidate[] = [];
+  for (
+    let atspiIndex = 0;
+    atspiIndex < atspiSnapshots.length;
+    atspiIndex += 1
+  ) {
+    const atspi = atspiSnapshots[atspiIndex];
+    if (atspi === undefined) {
+      continue;
+    }
+    for (let x11Index = 0; x11Index < x11Snapshots.length; x11Index += 1) {
+      const x11 = x11Snapshots[x11Index];
+      if (x11 === undefined) {
+        continue;
+      }
+
+      const decision = evaluateAtspiToX11(atspi, x11);
+      const accepted = acceptedKeys.has(`${atspi.index}:${x11Index}`);
+      mergeCandidates.push({
+        accepted,
+        atspiAccessibleId:
+          atspi.accessibleId.length === 0 ? null : atspi.accessibleId,
+        atspiIndex: atspi.index,
+        confidence: decision.confidence,
+        matchedBy: decision.matchedBy,
+        rejectionReason: accepted
+          ? null
+          : (decision.rejectionReason ?? 'not-selected'),
+        x11WindowId: x11.windowId,
+      });
+    }
+  }
+
+  return {
+    atspiSnapshots: atspiSnapshots.map(toAtspiDiscoverySnapshot),
+    mergeCandidates,
+    x11Snapshots: x11Snapshots.map(toX11DiscoverySnapshot),
+  };
+};
+
+const emptyDiscoveryDiagnostics = (): GtkWindowDiscoveryDiagnostics => ({
+  atspiSnapshots: [],
+  mergeCandidates: [],
+  x11Snapshots: [],
+});
 
 const createUnifiedWindow = (
   atspi: AtspiWindowSnapshot | null,
   x11: X11WindowSnapshot | null,
   statuses: readonly GtkWindowBackendStatus[],
   mergeConfidence: number,
-  matchedBy: string
+  matchedBy: string,
+  discovery: GtkWindowDiscoveryDiagnostics
 ): UnifiedNativeWindow => ({
   atspi,
   x11,
@@ -345,7 +499,8 @@ const createUnifiedWindow = (
     x11,
     statuses,
     mergeConfidence,
-    matchedBy
+    matchedBy,
+    discovery
   ),
 });
 
@@ -372,19 +527,25 @@ export const mergeNativeWindowSnapshots = (
   statuses: readonly GtkWindowBackendStatus[]
 ): readonly UnifiedNativeWindow[] => {
   const usedX11Indexes = new Set<number>();
+  const acceptedMerges: AcceptedWindowMerge[] = [];
   const unifiedWindows: UnifiedNativeWindow[] = [];
 
   for (const atspi of atspiSnapshots) {
     const match = findBestX11Match(atspi, x11Snapshots, usedX11Indexes);
     if (match !== undefined) {
       usedX11Indexes.add(match.index);
+      acceptedMerges.push({
+        atspiIndex: atspi.index,
+        x11Index: match.index,
+      });
       unifiedWindows.push(
         createUnifiedWindow(
           atspi,
           x11Snapshots[match.index] ?? null,
           statuses,
           match.confidence,
-          match.matchedBy
+          match.matchedBy,
+          emptyDiscoveryDiagnostics()
         )
       );
       continue;
@@ -396,7 +557,8 @@ export const mergeNativeWindowSnapshots = (
         null,
         statuses,
         atspiOnlyConfidence,
-        'at-spi-only'
+        'at-spi-only',
+        emptyDiscoveryDiagnostics()
       )
     );
   }
@@ -412,12 +574,26 @@ export const mergeNativeWindowSnapshots = (
         x11Snapshots[index] ?? null,
         statuses,
         x11OnlyConfidence,
-        'x11-only'
+        'x11-only',
+        emptyDiscoveryDiagnostics()
       )
     );
   }
 
-  return unifiedWindows.sort(
+  const discovery = createDiscoveryDiagnostics(
+    atspiSnapshots,
+    x11Snapshots,
+    acceptedMerges
+  );
+  const discoveredWindows = unifiedWindows.map((window) => ({
+    ...window,
+    debugDiagnostics: {
+      ...window.debugDiagnostics,
+      discovery,
+    },
+  }));
+
+  return discoveredWindows.sort(
     (first, second) => first.sortIndex - second.sortIndex
   );
 };

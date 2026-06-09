@@ -16,6 +16,8 @@ import {
   nativeElementInfo,
   nativeFindByBounds,
   nativeImageInfo,
+  nativeInputMoveMouse,
+  nativeInputSetMouseButton,
   nativeMoveWindow,
   nativeResizeWindow,
   nativeSelectAllChildren,
@@ -56,10 +58,12 @@ import {
   type NativeImageInfo,
 } from './native';
 import {
+  createGtkElementNotFoundError,
   createGtkInvalidArgumentError,
   createGtkOperationFailedError,
   createGtkUnsupportedInterfaceError,
 } from './errors';
+import { createGtkCaptureExpect } from './testing';
 import type {
   GtkCapture,
   GtkCaptureBounds,
@@ -75,6 +79,9 @@ import type {
   GtkValueInfo,
   GtkWidgetElement,
   GtkWidgetKind,
+  GtkWindowTextClickOptions,
+  GtkWindowTextFindOptions,
+  GtkWindowTextMatch,
   GtkWindowDebugDiagnostics,
   GtkWindowElement,
   GtkWindowResizeHints,
@@ -116,6 +123,98 @@ const assertPositiveInt32 = (name: string, value: number): void => {
 
 const normalizeRoleName = (roleName: string): string =>
   roleName.trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+
+interface SemanticBoundsFallbackTarget {
+  readonly bounds: GtkCaptureBounds;
+  readonly title: string;
+  readonly windowId: string;
+}
+
+interface SemanticBoundsFallbackCandidate {
+  readonly bounds: GtkCaptureBounds;
+  readonly name: string;
+  readonly roleName: string;
+  readonly x11WindowId: string | null;
+}
+
+const boundsArea = (bounds: GtkCaptureBounds): number =>
+  bounds.width * bounds.height;
+
+const intersectionArea = (
+  first: GtkCaptureBounds,
+  second: GtkCaptureBounds
+): number => {
+  const left = Math.max(first.x, second.x);
+  const top = Math.max(first.y, second.y);
+  const right = Math.min(first.x + first.width, second.x + second.width);
+  const bottom = Math.min(first.y + first.height, second.y + second.height);
+  return Math.max(0, right - left) * Math.max(0, bottom - top);
+};
+
+const boundsOverlapRatio = (
+  first: GtkCaptureBounds,
+  second: GtkCaptureBounds
+): number => {
+  const smallerArea = Math.min(boundsArea(first), boundsArea(second));
+  return smallerArea <= 0 ? 0 : intersectionArea(first, second) / smallerArea;
+};
+
+const centerDistance = (
+  first: GtkCaptureBounds,
+  second: GtkCaptureBounds
+): number => {
+  const firstX = first.x + first.width / 2;
+  const firstY = first.y + first.height / 2;
+  const secondX = second.x + second.width / 2;
+  const secondY = second.y + second.height / 2;
+  return Math.hypot(firstX - secondX, firstY - secondY);
+};
+
+const roleCanRepresentNativeWindow = (roleName: string): boolean => {
+  const normalized = normalizeRoleName(roleName);
+  return (
+    normalized === 'frame' ||
+    normalized === 'window' ||
+    normalized === 'dialog' ||
+    normalized === 'alert dialog' ||
+    normalized === 'file chooser'
+  );
+};
+
+/**
+ * Checks whether a bounds-matched AT-SPI element can safely stand in for an X11 window.
+ * @param target X11 window identity and bounds.
+ * @param candidate AT-SPI element metadata found by bounds.
+ * @returns true when the candidate is a window-like semantic representation of the X11 window.
+ * @remarks This helper is exported for regression tests; it is not re-exported from the package entrypoint.
+ */
+export const shouldUseSemanticBoundsFallback = (
+  target: SemanticBoundsFallbackTarget,
+  candidate: SemanticBoundsFallbackCandidate
+): boolean => {
+  if (!roleCanRepresentNativeWindow(candidate.roleName)) {
+    return false;
+  }
+  if (
+    candidate.x11WindowId !== null &&
+    candidate.x11WindowId === target.windowId
+  ) {
+    return true;
+  }
+
+  const overlapRatio = boundsOverlapRatio(target.bounds, candidate.bounds);
+  if (
+    target.title.length > 0 &&
+    candidate.name === target.title &&
+    overlapRatio >= 0.5
+  ) {
+    return true;
+  }
+
+  return (
+    overlapRatio >= 0.9 && centerDistance(target.bounds, candidate.bounds) <= 48
+  );
+};
 
 const hasInterface = (info: NativeElementInfo, name: string): boolean =>
   info.interfaces.some(
@@ -1025,6 +1124,91 @@ const createActivateWindowOperation =
     nativeActivateWindow(handle);
   };
 
+const formatExpectedText = (expected: string | RegExp): string =>
+  typeof expected === 'string' ? JSON.stringify(expected) : expected.toString();
+
+const createWindowFindTextOperation =
+  (
+    capture: () => Promise<GtkCapture>
+  ): ((
+    expected: string | RegExp,
+    options?: GtkWindowTextFindOptions
+  ) => Promise<GtkWindowTextMatch | undefined>) =>
+  async (
+    expected: string | RegExp,
+    options?: GtkWindowTextFindOptions
+  ): Promise<GtkWindowTextMatch | undefined> => {
+    const gtkExpect = createGtkCaptureExpect();
+    try {
+      const ocrText = await gtkExpect
+        .expectCapture(await capture(), 'window-text')
+        .readText(options);
+      return await ocrText.findText(expected, options);
+    } finally {
+      await gtkExpect.release();
+    }
+  };
+
+const createWindowClickTextOperation = (
+  capture: () => Promise<GtkCapture>,
+  activateWindow: () => Promise<void>
+): ((
+  expected: string | RegExp,
+  options?: GtkWindowTextClickOptions
+) => Promise<GtkWindowTextMatch>) => {
+  const findText = createWindowFindTextOperation(capture);
+  return async (
+    expected: string | RegExp,
+    options?: GtkWindowTextClickOptions
+  ): Promise<GtkWindowTextMatch> => {
+    const match = await findText(expected, options);
+    if (match === undefined) {
+      throw createGtkElementNotFoundError(
+        `Window text was not found: ${formatExpectedText(expected)}`
+      );
+    }
+
+    if (options?.activate ?? true) {
+      await activateWindow();
+    }
+
+    const offset = options?.offset ?? { x: 0, y: 0 };
+    assertFiniteNumber('offset.x', offset.x);
+    assertFiniteNumber('offset.y', offset.y);
+    const clickX = Math.round(
+      match.screenBounds.x + match.screenBounds.width / 2 + offset.x
+    );
+    const clickY = Math.round(
+      match.screenBounds.y + match.screenBounds.height / 2 + offset.y
+    );
+    assertInt32('click x', clickX);
+    assertInt32('click y', clickY);
+
+    const button = options?.button ?? 'left';
+    nativeInputMoveMouse(clickX, clickY);
+    nativeInputSetMouseButton(button, true);
+    nativeInputSetMouseButton(button, false);
+    return match;
+  };
+};
+
+const createWindowTextOperations = (
+  capture: () => Promise<GtkCapture>,
+  activateWindow: () => Promise<void>
+): {
+  readonly findText: (
+    expected: string | RegExp,
+    options?: GtkWindowTextFindOptions
+  ) => Promise<GtkWindowTextMatch | undefined>;
+  readonly clickText: (
+    expected: string | RegExp,
+    options?: GtkWindowTextClickOptions
+  ) => Promise<GtkWindowTextMatch>;
+} => ({
+  clickText: createWindowClickTextOperation(capture, activateWindow),
+  findText: createWindowFindTextOperation(capture),
+});
+
 const createResizeHintsOperation =
   (handle: NativeElementHandle): (() => Promise<GtkWindowResizeHints>) =>
   async (): Promise<GtkWindowResizeHints> =>
@@ -1048,6 +1232,11 @@ const createAtspiWindowDebugDiagnosticsOperation =
       rawIds: {
         atspi: info.accessibleId.length === 0 ? null : info.accessibleId,
         x11: null,
+      },
+      discovery: {
+        atspiSnapshots: [],
+        mergeCandidates: [],
+        x11Snapshots: [],
       },
     };
   };
@@ -1075,6 +1264,63 @@ const intersectCaptureBounds = (
   };
 };
 
+const readSemanticBoundsFallbackCandidate = (
+  handle: NativeElementHandle
+): SemanticBoundsFallbackCandidate | undefined => {
+  let bounds: GtkCaptureBounds;
+  try {
+    bounds = nativeBounds(handle);
+  } catch {
+    return undefined;
+  }
+
+  const info = nativeElementInfo(handle);
+  let x11WindowId: string | null = null;
+  try {
+    x11WindowId = nativeX11Info(handle).windowId;
+  } catch {
+    x11WindowId = null;
+  }
+
+  return {
+    bounds,
+    name: info.name,
+    roleName: info.roleName,
+    x11WindowId,
+  };
+};
+
+const findSemanticBoundsFallback = (
+  processId: number,
+  target: SemanticBoundsFallbackTarget
+): NativeElementHandle | undefined => {
+  const semanticHandle = nativeFindByBounds(processId, target.bounds);
+  if (semanticHandle === undefined) {
+    return undefined;
+  }
+
+  const candidate = readSemanticBoundsFallbackCandidate(semanticHandle);
+  if (
+    candidate === undefined ||
+    !shouldUseSemanticBoundsFallback(target, candidate)
+  ) {
+    return undefined;
+  }
+  return semanticHandle;
+};
+
+const createSemanticBoundsFallbackTarget = (
+  windowId: string,
+  bounds: GtkCaptureBounds
+): SemanticBoundsFallbackTarget => {
+  const snapshot = nativeX11WindowSnapshot(windowId);
+  return {
+    bounds,
+    title: snapshot.title,
+    windowId,
+  };
+};
+
 const createX11ChildAtOperation =
   (
     processId: number,
@@ -1086,9 +1332,10 @@ const createX11ChildAtOperation =
     const child = children[index];
     if (child === undefined) {
       if (children.length === 0 && index === 0) {
-        const semanticHandle = nativeFindByBounds(
+        const bounds = nativeX11WindowBounds(windowId);
+        const semanticHandle = findSemanticBoundsFallback(
           processId,
-          nativeX11WindowBounds(windowId)
+          createSemanticBoundsFallbackTarget(windowId, bounds)
         );
         return semanticHandle === undefined
           ? undefined
@@ -1101,7 +1348,11 @@ const createX11ChildAtOperation =
       nativeX11WindowBounds(windowId),
       child.bounds
     );
-    const semanticHandle = nativeFindByBounds(processId, bounds);
+    const semanticHandle = findSemanticBoundsFallback(processId, {
+      bounds,
+      title: child.title,
+      windowId: child.windowId,
+    });
     return semanticHandle === undefined
       ? createX11GtkContainerElement(processId, child.windowId, bounds)
       : createGtkElement(semanticHandle);
@@ -1114,8 +1365,11 @@ const createX11GetChildCountOperation =
     if (childCount > 0) {
       return childCount;
     }
-    return nativeFindByBounds(processId, nativeX11WindowBounds(windowId)) ===
-      undefined
+    const bounds = nativeX11WindowBounds(windowId);
+    return findSemanticBoundsFallback(
+      processId,
+      createSemanticBoundsFallbackTarget(windowId, bounds)
+    ) === undefined
       ? 0
       : 1;
   };
@@ -1512,20 +1766,23 @@ export const createGtkElement = (
   const common = createCommonElement(handle);
 
   switch (initialInfo.kind) {
-    case 'window':
+    case 'window': {
+      const activate = createActivateWindowOperation(handle);
       return {
         ...common,
         kind: 'window',
         bounds: createBoundsOperation(handle),
+        ...createWindowTextOperations(common.capture, activate),
         moveTo: createMoveToOperation(handle),
         ...createChildContainerOperations<GtkWidgetElement>(handle, undefined),
         resizeTo: createResizeToOperation(handle),
         setBounds: createSetBoundsOperation(handle),
-        activate: createActivateWindowOperation(handle),
+        activate,
         resizeHints: createResizeHintsOperation(handle),
         x11Info: createX11InfoOperation(handle),
         debugDiagnostics: createAtspiWindowDebugDiagnosticsOperation(handle),
       };
+    }
     case 'button':
       return { ...common, kind: 'button', click: createClickOperation(handle) };
     case 'container':
@@ -1772,17 +2029,20 @@ const createX11OnlyGtkWindowElement = (
   if (x11 === null) {
     throw createGtkOperationFailedError('Unified window has no X11 source.');
   }
+  const capture = createX11WindowCaptureOperation(x11.windowId, undefined);
+  const activate = createX11ActivateOperation(x11.windowId);
 
   return {
     kind: 'window',
     info: createX11WindowInfoOperation(x11.windowId),
-    capture: createX11WindowCaptureOperation(x11.windowId, undefined),
+    capture,
     bounds: createX11WindowBoundsOperation(x11.windowId),
+    ...createWindowTextOperations(capture, activate),
     moveTo: createX11MoveToOperation(x11.windowId),
     ...createX11ChildContainerOperations(processId, x11.windowId),
     resizeTo: createX11ResizeToOperation(x11.windowId),
     setBounds: createX11SetBoundsOperation(x11.windowId),
-    activate: createX11ActivateOperation(x11.windowId),
+    activate,
     resizeHints: createX11ResizeHintsOperation(x11.windowId),
     x11Info: createX11WindowX11InfoOperation(x11.windowId),
     debugDiagnostics: createStaticWindowDebugDiagnosticsOperation(
@@ -1803,17 +2063,20 @@ export const createGtkWindowElement = (
       'window discovery'
     );
     if (window.x11 !== null) {
+      const capture = createX11WindowCaptureOperation(
+        window.x11.windowId,
+        undefined
+      );
+      const activate = createX11ActivateOperation(window.x11.windowId);
       return {
         ...element,
-        capture: createX11WindowCaptureOperation(
-          window.x11.windowId,
-          undefined
-        ),
+        capture,
         bounds: createX11WindowBoundsOperation(window.x11.windowId),
+        ...createWindowTextOperations(capture, activate),
         moveTo: createX11MoveToOperation(window.x11.windowId),
         resizeTo: createX11ResizeToOperation(window.x11.windowId),
         setBounds: createX11SetBoundsOperation(window.x11.windowId),
-        activate: createX11ActivateOperation(window.x11.windowId),
+        activate,
         childAt: createHybridChildAtOperation(
           window.atspi.handle,
           processId,
