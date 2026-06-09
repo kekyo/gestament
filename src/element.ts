@@ -117,6 +117,98 @@ const assertPositiveInt32 = (name: string, value: number): void => {
 const normalizeRoleName = (roleName: string): string =>
   roleName.trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
 
+interface SemanticBoundsFallbackTarget {
+  readonly bounds: GtkCaptureBounds;
+  readonly title: string;
+  readonly windowId: string;
+}
+
+interface SemanticBoundsFallbackCandidate {
+  readonly bounds: GtkCaptureBounds;
+  readonly name: string;
+  readonly roleName: string;
+  readonly x11WindowId: string | null;
+}
+
+const boundsArea = (bounds: GtkCaptureBounds): number =>
+  bounds.width * bounds.height;
+
+const intersectionArea = (
+  first: GtkCaptureBounds,
+  second: GtkCaptureBounds
+): number => {
+  const left = Math.max(first.x, second.x);
+  const top = Math.max(first.y, second.y);
+  const right = Math.min(first.x + first.width, second.x + second.width);
+  const bottom = Math.min(first.y + first.height, second.y + second.height);
+  return Math.max(0, right - left) * Math.max(0, bottom - top);
+};
+
+const boundsOverlapRatio = (
+  first: GtkCaptureBounds,
+  second: GtkCaptureBounds
+): number => {
+  const smallerArea = Math.min(boundsArea(first), boundsArea(second));
+  return smallerArea <= 0 ? 0 : intersectionArea(first, second) / smallerArea;
+};
+
+const centerDistance = (
+  first: GtkCaptureBounds,
+  second: GtkCaptureBounds
+): number => {
+  const firstX = first.x + first.width / 2;
+  const firstY = first.y + first.height / 2;
+  const secondX = second.x + second.width / 2;
+  const secondY = second.y + second.height / 2;
+  return Math.hypot(firstX - secondX, firstY - secondY);
+};
+
+const roleCanRepresentNativeWindow = (roleName: string): boolean => {
+  const normalized = normalizeRoleName(roleName);
+  return (
+    normalized === 'frame' ||
+    normalized === 'window' ||
+    normalized === 'dialog' ||
+    normalized === 'alert dialog' ||
+    normalized === 'file chooser'
+  );
+};
+
+/**
+ * Checks whether a bounds-matched AT-SPI element can safely stand in for an X11 window.
+ * @param target X11 window identity and bounds.
+ * @param candidate AT-SPI element metadata found by bounds.
+ * @returns true when the candidate is a window-like semantic representation of the X11 window.
+ * @remarks This helper is exported for regression tests; it is not re-exported from the package entrypoint.
+ */
+export const shouldUseSemanticBoundsFallback = (
+  target: SemanticBoundsFallbackTarget,
+  candidate: SemanticBoundsFallbackCandidate
+): boolean => {
+  if (!roleCanRepresentNativeWindow(candidate.roleName)) {
+    return false;
+  }
+  if (
+    candidate.x11WindowId !== null &&
+    candidate.x11WindowId === target.windowId
+  ) {
+    return true;
+  }
+
+  const overlapRatio = boundsOverlapRatio(target.bounds, candidate.bounds);
+  if (
+    target.title.length > 0 &&
+    candidate.name === target.title &&
+    overlapRatio >= 0.5
+  ) {
+    return true;
+  }
+
+  return (
+    overlapRatio >= 0.9 && centerDistance(target.bounds, candidate.bounds) <= 48
+  );
+};
+
 const hasInterface = (info: NativeElementInfo, name: string): boolean =>
   info.interfaces.some(
     (interfaceName) => interfaceName.toLowerCase() === name.toLowerCase()
@@ -1080,6 +1172,63 @@ const intersectCaptureBounds = (
   };
 };
 
+const readSemanticBoundsFallbackCandidate = (
+  handle: NativeElementHandle
+): SemanticBoundsFallbackCandidate | undefined => {
+  let bounds: GtkCaptureBounds;
+  try {
+    bounds = nativeBounds(handle);
+  } catch {
+    return undefined;
+  }
+
+  const info = nativeElementInfo(handle);
+  let x11WindowId: string | null = null;
+  try {
+    x11WindowId = nativeX11Info(handle).windowId;
+  } catch {
+    x11WindowId = null;
+  }
+
+  return {
+    bounds,
+    name: info.name,
+    roleName: info.roleName,
+    x11WindowId,
+  };
+};
+
+const findSemanticBoundsFallback = (
+  processId: number,
+  target: SemanticBoundsFallbackTarget
+): NativeElementHandle | undefined => {
+  const semanticHandle = nativeFindByBounds(processId, target.bounds);
+  if (semanticHandle === undefined) {
+    return undefined;
+  }
+
+  const candidate = readSemanticBoundsFallbackCandidate(semanticHandle);
+  if (
+    candidate === undefined ||
+    !shouldUseSemanticBoundsFallback(target, candidate)
+  ) {
+    return undefined;
+  }
+  return semanticHandle;
+};
+
+const createSemanticBoundsFallbackTarget = (
+  windowId: string,
+  bounds: GtkCaptureBounds
+): SemanticBoundsFallbackTarget => {
+  const snapshot = nativeX11WindowSnapshot(windowId);
+  return {
+    bounds,
+    title: snapshot.title,
+    windowId,
+  };
+};
+
 const createX11ChildAtOperation =
   (
     processId: number,
@@ -1091,9 +1240,10 @@ const createX11ChildAtOperation =
     const child = children[index];
     if (child === undefined) {
       if (children.length === 0 && index === 0) {
-        const semanticHandle = nativeFindByBounds(
+        const bounds = nativeX11WindowBounds(windowId);
+        const semanticHandle = findSemanticBoundsFallback(
           processId,
-          nativeX11WindowBounds(windowId)
+          createSemanticBoundsFallbackTarget(windowId, bounds)
         );
         return semanticHandle === undefined
           ? undefined
@@ -1106,7 +1256,11 @@ const createX11ChildAtOperation =
       nativeX11WindowBounds(windowId),
       child.bounds
     );
-    const semanticHandle = nativeFindByBounds(processId, bounds);
+    const semanticHandle = findSemanticBoundsFallback(processId, {
+      bounds,
+      title: child.title,
+      windowId: child.windowId,
+    });
     return semanticHandle === undefined
       ? createX11GtkContainerElement(processId, child.windowId, bounds)
       : createGtkElement(semanticHandle);
@@ -1119,8 +1273,11 @@ const createX11GetChildCountOperation =
     if (childCount > 0) {
       return childCount;
     }
-    return nativeFindByBounds(processId, nativeX11WindowBounds(windowId)) ===
-      undefined
+    const bounds = nativeX11WindowBounds(windowId);
+    return findSemanticBoundsFallback(
+      processId,
+      createSemanticBoundsFallbackTarget(windowId, bounds)
+    ) === undefined
       ? 0
       : 1;
   };
